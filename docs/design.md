@@ -686,6 +686,18 @@ autograder scaffold <assignment-repo> --out starter-<id>/   # emit starter templ
    for full parity?
 5. **`autograder` release artifacts** — which targets to cross-compile and pin
    for the CI download step; version-pinning/upgrade story across assignments.
+   Resolved for v1 (M3 step 19): `.github/workflows/release.yml` cross-compiles
+   `x86_64-unknown-linux-gnu` on a `v*` tag push and publishes
+   `autograder-x86_64-linux` + its `.sha256` as GitHub release assets, named
+   after the tag. `scaffold::autograde_workflow_yaml` embeds the
+   `RELEASE_REPO`/`RELEASE_VERSION`/`RELEASE_SHA256_PLACEHOLDER` constants an
+   instructor must edit to point at their own fork's release before
+   distributing a starter template — there is no automatic propagation from a
+   new release to already-scaffolded starter repos, so upgrading the pinned
+   `autograder` version for an assignment already handed out means students
+   re-pull the workflow file (or the instructor re-scaffolds). Additional
+   targets (macOS, Windows) are a matrix-row addition to the same workflow
+   when needed, not a design change.
 6. **Public/private spec drift** — the instructor repo is now fully self-contained
    (§5, no `extends`/materialization), which *raises* drift risk: how strictly to
    validate that the standalone `autograder.toml` and the shipped

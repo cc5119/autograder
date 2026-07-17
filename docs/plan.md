@@ -1,6 +1,6 @@
 # Autograder — Implementation Plan
 
-Status: M1 and M2 done
+Status: M1, M2, and M3 done
 Last updated: 2026-07-17
 Companion to: [`docs/design.md`](./design.md)
 
@@ -307,7 +307,20 @@ instructor-authored test code overlaid from `harness/`).
 
 ---
 
-## M3 — CI tier (public, advisory)
+## M3 — CI tier (public, advisory) — **Done**
+
+**Status:** done. `autograder ci --harness <public-dir>` runs Prepare (overlay
++ offline env + manifest diagnostics) → a `LinkedLibrary` evaluator over
+`LocalSandbox` → `CiReport`, with `tier: "ci"` and no scores. Verified real
+end-to-end on this host short of `cargo-nextest` (not installed here, same
+deferred boundary as M2's podman): build succeeds, the run stage correctly
+reports `HarnessError` rather than crashing or false-passing when nextest is
+missing, and the CLI exits 1. `scaffold <public-repo> --out <dir>` produces
+the documented starter tree (`.autograder/public/`, `.github/workflows/autograde.yml`,
+a student `Cargo.toml` pre-populated from `[allowed-crates]`) — verified live
+against a fixture public repo. `binary-harness` for the CI tier remains
+`NotImplemented` pending M4, matching the authoritative tier. 12 new
+unit/integration tests added (65 total, up from 53 at M2 close).
 
 ### Step 16 — `autograder ci` entrypoint
 - `ci` command: Prepare + Build + Evaluate against the **public harness**
@@ -340,6 +353,10 @@ instructor-authored test code overlaid from `harness/`).
   sha256 for the CI download step. Document the version-pinning/upgrade story
   (open question §18.5).
 - **Compiles because:** this is YAML/docs; no Rust change. **M3 done.**
+- **Status:** done. `.github/workflows/release.yml` builds
+  `x86_64-unknown-linux-gnu` on a `v*` tag push and publishes
+  `autograder-x86_64-linux` + `.sha256` as release assets; version-pinning/
+  upgrade story documented at design.md §18.5.
 
 ---
 

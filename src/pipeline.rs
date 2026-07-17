@@ -59,7 +59,7 @@ fn terminal_eval(ctx: &JobContext, status: StageStatus, message: Option<String>)
     }
 }
 
-fn generate_run_id() -> String {
+pub(crate) fn generate_run_id() -> String {
     let n = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!(
         "{}-{:04x}",
