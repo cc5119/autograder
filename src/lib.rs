@@ -25,7 +25,7 @@ use evaluator::Evaluator;
 use grade::{DefaultGrader, Grader};
 use model::{JobContext, Tier};
 use report::{ci::CiReport, Reporter, csv::CsvReporter, json::JsonReporter};
-use sandbox::{ContainerSandbox, LocalSandbox};
+use sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
 use source::Submissions;
 use spec::{AssignmentKind, Spec};
 use store::Store;
@@ -38,7 +38,8 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
             submissions,
             jobs: _,
             as_of: _,
-        } => run_grade(&assignment, &submissions, config),
+            local_sandbox,
+        } => run_grade(&assignment, &submissions, local_sandbox, config),
         Command::Ci { harness } => run_ci(&harness),
         Command::Regrade {
             assignment_id,
@@ -67,10 +68,20 @@ fn run_prefetch(assignment: &std::path::Path) -> Result<()> {
 fn run_grade(
     assignment: &std::path::Path,
     submissions: &std::path::Path,
+    local_sandbox: bool,
     config: &Config,
 ) -> Result<()> {
     let spec = Spec::load(assignment)?;
-    let evaluator = build_evaluator(&spec, assignment, config)?;
+    let evaluator = if local_sandbox {
+        tracing::warn!(
+            "grading with --local-sandbox: skipping Podman entirely, running student code as a \
+             host process with no container isolation (design §10) -- for local development/ \
+             testing only, never for grading real submissions"
+        );
+        build_local_evaluator(&spec, assignment)?
+    } else {
+        build_evaluator(&spec, assignment, config)?
+    };
     let store = Store::new(&config.storage_dir);
     let work_dir = config.storage_dir.join(".work");
 
@@ -103,9 +114,9 @@ fn run_grade(
 
 /// Picks the `Evaluator` for `spec.assignment.kind` (design §9), wired over
 /// a `ContainerSandbox` (design §10). `binary-harness` lands in M4 (step
-/// 22). Live grading needs podman + the assignment's base image + nextest
-/// inside it — **[deferred: needs podman]** here; the orchestration and
-/// junit parsing this drives are unit-tested in `evaluator::linked_library`.
+/// 22). Runs `ContainerSandbox::preflight` once up front so a broken Podman
+/// setup fails the whole `grade` invocation with one clear error instead of
+/// silently scoring every student `build_failed` — see its doc comment.
 fn build_evaluator(
     spec: &Spec,
     package_dir: &std::path::Path,
@@ -115,6 +126,7 @@ fn build_evaluator(
         AssignmentKind::LinkedLibrary => {
             let base_image = format!("autograder-base:{}", spec.toolchain.channel);
             let sandbox = ContainerSandbox::new(base_image, config.seccomp_profile.clone());
+            sandbox.preflight()?;
             Ok(Box::new(LinkedLibrary::new(spec, package_dir, sandbox)?))
         }
         AssignmentKind::BinaryHarness => Err(Error::NotImplemented(
@@ -142,7 +154,7 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
     let prepared = prepare::prepare(&workspace, harness_dir, &spec)?;
 
     let eval = if prepared.manifest_diagnostics.is_empty() {
-        let evaluator = build_ci_evaluator(&spec, harness_dir)?;
+        let evaluator = build_local_evaluator(&spec, harness_dir)?;
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: "local".into(),
@@ -167,13 +179,16 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Picks the `Evaluator` for the CI tier, same construction as
-/// `build_evaluator` but over `LocalSandbox` (design §11.3).
-/// `binary-harness` lands in M4 (step 22), same as the authoritative tier.
-fn build_ci_evaluator(spec: &Spec, harness_dir: &std::path::Path) -> Result<Box<dyn Evaluator>> {
+/// Picks the `Evaluator` for `spec.assignment.kind`, same construction as
+/// `build_evaluator` but over `LocalSandbox` instead of `ContainerSandbox` —
+/// no Podman needed. Used both by the CI tier (design §11.3, always) and by
+/// `grade --local-sandbox` (never for real submissions — see that flag's
+/// doc comment in `cli.rs`). `binary-harness` lands in M4 (step 22), same as
+/// the authoritative tier.
+fn build_local_evaluator(spec: &Spec, package_dir: &std::path::Path) -> Result<Box<dyn Evaluator>> {
     match spec.assignment.kind {
         AssignmentKind::LinkedLibrary => {
-            Ok(Box::new(LinkedLibrary::new(spec, harness_dir, LocalSandbox)?))
+            Ok(Box::new(LinkedLibrary::new(spec, package_dir, LocalSandbox)?))
         }
         AssignmentKind::BinaryHarness => Err(Error::NotImplemented(
             "binary-harness evaluator (lands in M4)",
@@ -304,7 +319,7 @@ visibility = "public"
         let prepared = prepare::prepare(workspace.path(), harness_dir.path(), &spec).unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
 
-        let evaluator = build_ci_evaluator(&spec, harness_dir.path()).unwrap();
+        let evaluator = build_local_evaluator(&spec, harness_dir.path()).unwrap();
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: "local".into(),
@@ -334,7 +349,46 @@ visibility = "public"
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
-        let result = build_ci_evaluator(&spec, harness_dir.path());
+        let result = build_local_evaluator(&spec, harness_dir.path());
         assert!(matches!(result, Err(Error::NotImplemented(_))));
+    }
+
+    /// `grade --local-sandbox` must never touch `ContainerSandbox` (and so
+    /// never require Podman) -- regression guard for the flag added so
+    /// `grade` still works on a host where Podman isn't usable. Real
+    /// end-to-end short of `cargo-nextest`, same as the test above: `run_grade`
+    /// completes (an `Ok(())`, not an `Err` about a missing/broken podman
+    /// binary) and persists a `HarnessError` grade rather than a `BuildFailed`
+    /// one -- `BuildFailed`/podman-preflight errors are exactly what this
+    /// flag is meant to route around.
+    #[test]
+    fn grade_with_local_sandbox_never_requires_podman() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write(
+            &assignment_dir.path().join(spec::PUBLIC_SPEC_FILE),
+            PUBLIC_SPEC,
+        );
+
+        let submissions_dir = tempfile::tempdir().unwrap();
+        write(
+            &submissions_dir.path().join("alice/Cargo.toml"),
+            "[package]\nname = \"bst\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            &submissions_dir.path().join("alice/src/lib.rs"),
+            "pub fn noop() {}\n",
+        );
+
+        let config = Config {
+            storage_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
+            ..Config::default()
+        };
+
+        run_grade(assignment_dir.path(), submissions_dir.path(), true, &config).unwrap();
+
+        let store = Store::new(&config.storage_dir);
+        let grades = store.latest_grades("hw3").unwrap();
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].status, "HarnessError");
     }
 }

@@ -1,0 +1,40 @@
+# Public spec subset for the `linked-library-stack` example (design §5.1,
+# §5.3). Carries no point values — this is what gets vendored into a
+# student's starter template via `autograder scaffold` and what
+# `autograder ci` runs against.
+
+[assignment]
+id = "linked-library-stack-example"
+name = "Stack (linked-library example)"
+kind = "linked-library"
+deadline = "2099-01-01T00:00:00-00:00"
+
+[student]
+package-name = "stack"
+
+[toolchain]
+channel = "1.86.0"
+
+[allowed-crates]
+
+[limits.build]
+wall-clock = "60s"
+cpus = 2
+memory = "1GiB"
+pids = 128
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "256MiB"
+pids = 64
+max-output-bytes = "64KiB"
+
+[scoring]
+model = "weighted"
+
+[[scoring.tests]]
+name = "push_pop_basic"
+visibility = "public"
+# no `points`: the shipped spec never reveals weighting.

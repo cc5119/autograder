@@ -31,6 +31,14 @@ pub enum Command {
         /// Override the deadline used for commit selection (RFC3339).
         #[arg(long)]
         as_of: Option<String>,
+        /// Grade using the host-process `LocalSandbox` instead of the
+        /// `ContainerSandbox` (skips Podman entirely). This drops the
+        /// container isolation the authoritative tier relies on for
+        /// untrusted student code (design §10) -- only for local
+        /// development/testing on a host without a working Podman, never
+        /// for grading real submissions.
+        #[arg(long)]
+        local_sandbox: bool,
     },
     /// Student-facing: run public tests only, advisory.
     Ci {

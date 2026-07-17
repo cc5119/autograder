@@ -1,0 +1,44 @@
+# Private, standalone full spec for the `linked-library-stack` example
+# (design §5.2). Self-contained: defines every test (public + hidden) and
+# its point value. Never shipped to students — see ../public/ for that.
+
+[assignment]
+id = "linked-library-stack-example"
+name = "Stack (linked-library example)"
+kind = "linked-library"
+deadline = "2099-01-01T00:00:00-00:00"
+
+[student]
+package-name = "stack"
+
+[toolchain]
+channel = "1.86.0"
+
+[allowed-crates]
+
+[limits.build]
+wall-clock = "60s"
+cpus = 2
+memory = "1GiB"
+pids = 128
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "256MiB"
+pids = 64
+max-output-bytes = "64KiB"
+
+[scoring]
+model = "weighted"
+
+[[scoring.tests]]
+name = "push_pop_basic"
+points = 10
+visibility = "public"
+
+[[scoring.tests]]
+name = "many_pushes_then_pops"
+points = 20
+visibility = "private"

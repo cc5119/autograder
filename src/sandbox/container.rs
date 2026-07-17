@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::ResourceUsage;
 
 use super::exec::run_with_timeout;
@@ -93,6 +93,61 @@ impl ContainerSandbox {
 }
 
 impl Sandbox for ContainerSandbox {
+    /// Two checks, run once before any student is touched, so a broken
+    /// environment produces one clear top-level error instead of every
+    /// student in the batch silently scoring a misleading `build_failed`
+    /// (both failure modes below are, to `run`, just "the sandboxed command
+    /// exited non-zero" — indistinguishable from a real `cargo build`
+    /// failure without this check):
+    ///
+    /// 1. `podman version` — catches "podman isn't usable at all" (missing
+    ///    binary, no rootless storage configured, no `/run`, etc.).
+    /// 2. `podman image exists <base_image>` — catches "podman works fine,
+    ///    but the assignment's base image was never built." This is a pure
+    ///    local-storage check (no registry contact), so it fails cleanly
+    ///    instead of surfacing as `podman run`'s much more confusing
+    ///    registry short-name-resolution error when a job actually tries to
+    ///    run against a nonexistent image. Never builds the image itself
+    ///    (that stays a manual/M4-automation step, deliberately) — this
+    ///    only tells you clearly that it's missing.
+    fn preflight(&self) -> Result<()> {
+        let output = Command::new(&self.podman_bin).arg("version").output();
+        match output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                return Err(Error::Other(format!(
+                    "podman is not usable in this environment (`{} version` failed): {}",
+                    self.podman_bin,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+            Err(source) => {
+                return Err(Error::Other(format!(
+                    "podman is not usable in this environment (failed to run `{}`): {source}",
+                    self.podman_bin
+                )));
+            }
+        }
+
+        let exists = Command::new(&self.podman_bin)
+            .args(["image", "exists", &self.base_image])
+            .status();
+        match exists {
+            Ok(status) if status.success() => Ok(()),
+            Ok(_) => Err(Error::Other(format!(
+                "container base image {:?} was not found locally. Jobs run with \
+                 --network=none, so the base image must already have the pinned toolchain \
+                 (and cargo-nextest) baked in -- build and tag one before grading, e.g.:\n  \
+                 podman build -t {} -f Containerfile .",
+                self.base_image, self.base_image
+            ))),
+            Err(source) => Err(Error::Other(format!(
+                "failed to check for container base image {:?}: {source}",
+                self.base_image
+            ))),
+        }
+    }
+
     /// **[deferred: needs podman]** — argv construction (`build_argv`) is
     /// unit-tested directly; this method shells out and is exercised on a
     /// provisioned host.
@@ -127,6 +182,7 @@ impl Sandbox for ContainerSandbox {
 mod tests {
     use super::*;
     use crate::sandbox::{Mount, SandboxLimits};
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -196,5 +252,64 @@ mod tests {
         let argv = sandbox().build_argv(&s);
         assert_eq!(argv[argv.len() - 2], "/judge.sh");
         assert_eq!(argv[argv.len() - 1], "--flag");
+    }
+
+    fn sandbox_with_bin(podman_bin: &str) -> ContainerSandbox {
+        let mut sandbox = sandbox();
+        sandbox.podman_bin = podman_bin.to_string();
+        sandbox
+    }
+
+    #[test]
+    fn preflight_fails_clearly_when_podman_is_not_on_path() {
+        let err = sandbox_with_bin("autograder-podman-does-not-exist")
+            .preflight()
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("not usable in this environment"));
+    }
+
+    #[test]
+    fn preflight_fails_clearly_when_podman_runs_but_errors() {
+        // `false` always exits non-zero without needing a real podman
+        // install, standing in for a podman binary that runs but can't
+        // actually operate (e.g. this host's real "lstat /run" failure).
+        let err = sandbox_with_bin("false").preflight().unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("not usable in this environment"));
+    }
+
+    #[test]
+    fn preflight_succeeds_when_podman_runs_cleanly() {
+        // `true` always exits zero, standing in for a working podman.
+        assert!(sandbox_with_bin("true").preflight().is_ok());
+    }
+
+    /// A fake `podman` that answers `version` successfully but reports
+    /// every `image exists` check as "not found" — standing in for a host
+    /// where podman itself works fine but the assignment's base image was
+    /// never built.
+    fn fake_podman_missing_image() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("podman");
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then exit 0; else exit 1; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn preflight_fails_clearly_when_the_base_image_is_missing() {
+        let dir = fake_podman_missing_image();
+        let sandbox = sandbox_with_bin(dir.path().join("podman").to_str().unwrap());
+
+        let err = sandbox.preflight().unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("was not found locally"));
+        assert!(message.contains("autograder-base:hw3"));
+        assert!(message.contains("podman build"));
     }
 }

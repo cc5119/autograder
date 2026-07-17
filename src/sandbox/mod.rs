@@ -18,6 +18,16 @@ pub use local::LocalSandbox;
 /// (rootless podman shell-out, authoritative tier).
 pub trait Sandbox {
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome>;
+
+    /// Cheap up-front check that this sandbox is actually usable, run once
+    /// before a batch rather than discovered per-student. `LocalSandbox`
+    /// has nothing to check (it just runs a host process) and accepts the
+    /// default no-op; `ContainerSandbox` overrides this to catch a broken
+    /// Podman setup as one clear error instead of every student in the
+    /// batch scoring a misleading `build_failed`.
+    fn preflight(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
