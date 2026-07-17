@@ -15,6 +15,50 @@ use crate::store::Store;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// Builds an `EvaluationResult` for a stage that failed before Evaluate
+/// ever ran (fetch failure, disallowed dependency), so a non-fatal
+/// per-student problem still produces a well-formed, gradeable result
+/// instead of aborting the batch.
+fn terminal_eval(ctx: &JobContext, status: StageStatus, message: Option<String>) -> EvaluationResult {
+    EvaluationResult {
+        schema_version: 1,
+        tier: ctx.tier,
+        assignment_id: ctx.assignment_id.clone(),
+        student_id: ctx.student_id.clone(),
+        run_id: ctx.run_id.clone(),
+        graded_commit: None,
+        instructor_commit: None,
+        public_harness_commit: None,
+        stages: StageReports {
+            fetch: if status == StageStatus::FetchFailed {
+                StageReport {
+                    status,
+                    duration_ms: None,
+                    warnings: None,
+                }
+            } else {
+                StageReport::ok()
+            },
+            build: if status == StageStatus::FetchFailed {
+                StageReport::ok()
+            } else {
+                StageReport {
+                    status,
+                    duration_ms: None,
+                    warnings: None,
+                }
+            },
+            run: StageReport::ok(),
+        },
+        tests: Vec::new(),
+        resource_usage: ResourceUsage::default(),
+        diagnostics: Diagnostics {
+            compiler_errors: None,
+            stderr_excerpt: message,
+        },
+    }
+}
+
 fn generate_run_id() -> String {
     let n = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!(
@@ -59,34 +103,20 @@ pub fn grade_batch<F: Fetchable>(
         let fetch_outcome = submission.fetch(&workspace)?;
 
         let eval = if fetch_outcome.status != StageStatus::Ok {
-            EvaluationResult {
-                schema_version: 1,
-                tier: ctx.tier,
-                assignment_id: ctx.assignment_id.clone(),
-                student_id: ctx.student_id.clone(),
-                run_id: ctx.run_id.clone(),
-                graded_commit: None,
-                instructor_commit: None,
-                public_harness_commit: None,
-                stages: StageReports {
-                    fetch: StageReport {
-                        status: fetch_outcome.status,
-                        duration_ms: None,
-                        warnings: None,
-                    },
-                    build: StageReport::ok(),
-                    run: StageReport::ok(),
-                },
-                tests: Vec::new(),
-                resource_usage: ResourceUsage::default(),
-                diagnostics: Diagnostics {
-                    compiler_errors: None,
-                    stderr_excerpt: fetch_outcome.message.clone(),
-                },
-            }
+            terminal_eval(&ctx, StageStatus::FetchFailed, fetch_outcome.message.clone())
         } else {
-            crate::prepare::prepare(&workspace, package_dir, spec)?;
-            evaluator.evaluate(&ctx)?
+            let prepared = crate::prepare::prepare(&workspace, package_dir, spec)?;
+            if !prepared.manifest_diagnostics.is_empty() {
+                let message = prepared
+                    .manifest_diagnostics
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                terminal_eval(&ctx, StageStatus::DisallowedDependency, Some(message))
+            } else {
+                evaluator.evaluate(&ctx)?
+            }
         };
 
         store.save_eval(&eval)?;
@@ -195,6 +225,60 @@ visibility = "public"
         assert_eq!(persisted.len(), 1);
         let persisted_grades = store.latest_grades("hw3").unwrap();
         assert_eq!(persisted_grades.len(), 1);
+    }
+
+    #[test]
+    fn grade_batch_scores_zero_for_a_disallowed_dependency_without_running_the_evaluator() {
+        let package_dir = tempfile::tempdir().unwrap();
+        let submission_src = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+
+        write(&submission_src.path().join("src/lib.rs"), "// student code");
+        write(
+            &submission_src.path().join("Cargo.toml"),
+            "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1\"\n",
+        );
+
+        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let source = FixedSource(vec![crate::model::Submission {
+            student_id: "alice".into(),
+            fetchable: LocalPath(submission_src.path().to_path_buf()),
+            metadata: Default::default(),
+        }]);
+        // A StubEvaluator that would score everything as passing if it ever
+        // ran — the assertion below only holds if the pipeline actually
+        // short-circuits before reaching it.
+        let evaluator = crate::evaluator::StubEvaluator {
+            tests: spec.scoring.tests.clone(),
+        };
+        let store = Store::new(store_dir.path());
+
+        let grades = grade_batch(
+            &source,
+            &evaluator,
+            &DefaultGrader,
+            package_dir.path(),
+            &spec,
+            work_dir.path(),
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].score, 0.0);
+        assert_eq!(grades[0].status, "DisallowedDependency");
+
+        let persisted = store.latest_evals("hw3").unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert!(
+            persisted[0]
+                .diagnostics
+                .stderr_excerpt
+                .as_deref()
+                .unwrap()
+                .contains("tokio")
+        );
     }
 
     #[test]

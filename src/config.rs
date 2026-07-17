@@ -11,6 +11,10 @@ pub struct Config {
     pub storage_dir: PathBuf,
     /// Number of concurrent grading jobs.
     pub jobs: usize,
+    /// Seccomp profile passed to `podman run --security-opt seccomp=...`
+    /// (design §10). Must exist on the podman host; base-image build-out
+    /// and profile provisioning land in M4 (step 21).
+    pub seccomp_profile: PathBuf,
 }
 
 impl Default for Config {
@@ -18,6 +22,7 @@ impl Default for Config {
         Self {
             storage_dir: PathBuf::from(".autograder-store"),
             jobs: 1,
+            seccomp_profile: PathBuf::from("/etc/autograder/seccomp.json"),
         }
     }
 }

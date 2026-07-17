@@ -1,6 +1,6 @@
 # Autograder — Implementation Plan
 
-Status: Draft
+Status: M1 and M2 done
 Last updated: 2026-07-17
 Companion to: [`docs/design.md`](./design.md)
 
@@ -81,7 +81,7 @@ destination, not something created all at once in step 1.
 
 ---
 
-## M1 — Skeleton (trusted wiring, no sandbox)
+## M1 — Skeleton (trusted wiring, no sandbox) — **Done**
 
 Goal: a working `grade` pipeline over the **mock filesystem fetcher** and a
 **stub evaluator**, proving SubmissionsSource → Fetch → Prepare → Evaluate →
@@ -216,12 +216,31 @@ Grade → Report + result persistence. No untrusted-code isolation yet.
   a folder of sample submissions produces a JSON report, a gradebook CSV, and
   persisted `EvaluationResult`s. **M1 done.**
 
+**Status:** done. `grade` runs Fetch → Prepare → Evaluate (stub) → persist →
+Grade → Report end to end over a `DirectorySource`; `report`/`regrade` read
+persisted results. 25 unit/integration tests pass; `Submissions::Csv` still
+returns `NotImplemented` pending M6's `GitHubFetcher`.
+
 ---
 
-## M2 — Sandbox, offline vendoring, linked-library evaluator
+## M2 — Sandbox, offline vendoring, linked-library evaluator — **Done**
 
 Goal: replace the stub evaluator with a real sandboxed `linked-library` run and
 enforce the dependency allowlist offline.
+
+**Status:** done. `grade` now builds a `LinkedLibrary` evaluator over a
+`ContainerSandbox` for `linked-library` assignments (`binary-harness` still
+`NotImplemented`, M4). Confirmed end-to-end short of the actual container
+run: fetch → prepare (offline env + manifest diagnostics) → evaluator
+correctly shells out to `podman run <exact flags>` and fails there with "No
+such file or directory" since this host has neither podman nor nextest —
+exactly the deferred boundary the ground rules describe. 55 unit/integration
+tests pass (up from 25 at M1 close); one deviation from the design doc worth
+noting: verdicts come from parsing `cargo nextest`'s JUnit report rather than
+a custom judge process writing `EvaluationResult` JSON to `/out` — this
+follows the plan's own step 14 wording and keeps `linked_library.rs` agnostic
+to any particular assignment's op-sequence protocol (that protocol is fully
+instructor-authored test code overlaid from `harness/`).
 
 ### Step 10 — Sandbox trait + LocalSandbox
 - `sandbox/mod.rs`: `Sandbox` trait (`run(&SandboxSpec) -> Result<SandboxOutcome>`)

@@ -4,28 +4,33 @@ pub mod error;
 pub mod evaluator;
 pub mod fetch;
 pub mod grade;
+pub mod manifest_check;
 pub mod model;
 pub mod pipeline;
 pub mod prepare;
 pub mod report;
+pub mod sandbox;
 pub mod source;
 pub mod spec;
 pub mod store;
+pub mod vendor;
 
 use cli::{Command, ReportFormat};
 pub use config::Config;
 pub use error::{Error, Result};
 
-use evaluator::StubEvaluator;
+use evaluator::linked_library::LinkedLibrary;
+use evaluator::Evaluator;
 use grade::{DefaultGrader, Grader};
 use report::{Reporter, csv::CsvReporter, json::JsonReporter};
+use sandbox::ContainerSandbox;
 use source::Submissions;
-use spec::Spec;
+use spec::{AssignmentKind, Spec};
 use store::Store;
 
 pub fn dispatch(command: Command, config: &Config) -> Result<()> {
     match command {
-        Command::Prefetch { .. } => Err(Error::NotImplemented("prefetch")),
+        Command::Prefetch { assignment } => run_prefetch(&assignment),
         Command::Grade {
             assignment,
             submissions,
@@ -46,15 +51,24 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
     }
 }
 
+fn run_prefetch(assignment: &std::path::Path) -> Result<()> {
+    let spec = Spec::load(assignment)?;
+    let outcome = vendor::prefetch(assignment, &spec)?;
+    tracing::info!(
+        vendor_dir = %outcome.vendor_dir.display(),
+        cargo_config = %outcome.cargo_config_path.display(),
+        "prefetch complete"
+    );
+    Ok(())
+}
+
 fn run_grade(
     assignment: &std::path::Path,
     submissions: &std::path::Path,
     config: &Config,
 ) -> Result<()> {
     let spec = Spec::load(assignment)?;
-    let evaluator = StubEvaluator {
-        tests: spec.scoring.tests.clone(),
-    };
+    let evaluator = build_evaluator(&spec, assignment, config)?;
     let store = Store::new(&config.storage_dir);
     let work_dir = config.storage_dir.join(".work");
 
@@ -67,7 +81,7 @@ fn run_grade(
     let grades = match Submissions::open(submissions)? {
         Submissions::Directory(source) => pipeline::grade_batch(
             &source,
-            &evaluator,
+            evaluator.as_ref(),
             &DefaultGrader,
             assignment,
             &spec,
@@ -83,6 +97,28 @@ fn run_grade(
     };
 
     write_reports(&spec.assignment.id, &grades, config)
+}
+
+/// Picks the `Evaluator` for `spec.assignment.kind` (design §9), wired over
+/// a `ContainerSandbox` (design §10). `binary-harness` lands in M4 (step
+/// 22). Live grading needs podman + the assignment's base image + nextest
+/// inside it — **[deferred: needs podman]** here; the orchestration and
+/// junit parsing this drives are unit-tested in `evaluator::linked_library`.
+fn build_evaluator(
+    spec: &Spec,
+    package_dir: &std::path::Path,
+    config: &Config,
+) -> Result<Box<dyn Evaluator>> {
+    match spec.assignment.kind {
+        AssignmentKind::LinkedLibrary => {
+            let base_image = format!("autograder-base:{}", spec.toolchain.channel);
+            let sandbox = ContainerSandbox::new(base_image, config.seccomp_profile.clone());
+            Ok(Box::new(LinkedLibrary::new(spec, package_dir, sandbox)?))
+        }
+        AssignmentKind::BinaryHarness => Err(Error::NotImplemented(
+            "binary-harness evaluator (lands in M4)",
+        )),
+    }
 }
 
 fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Config) -> Result<()> {

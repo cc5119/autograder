@@ -1,3 +1,5 @@
+pub mod linked_library;
+
 use crate::error::Result;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
