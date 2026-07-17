@@ -1,0 +1,232 @@
+use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use crate::error::Result;
+use crate::evaluator::Evaluator;
+use crate::fetch::Fetchable;
+use crate::grade::Grader;
+use crate::model::{
+    Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
+    StageStatus, Tier,
+};
+use crate::source::SubmissionsSource;
+use crate::spec::Spec;
+use crate::store::Store;
+
+static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+fn generate_run_id() -> String {
+    let n = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{}-{:04x}",
+        chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ"),
+        n
+    )
+}
+
+/// Stage orchestration for the authoritative-tier `grade` pipeline:
+/// Fetch -> Prepare -> Evaluate -> persist -> Grade. Sequential for M1; an
+/// async worker pool lands in M4 (step 20).
+///
+/// Generic over the fetchable type `F: Fetchable`: `source` yields
+/// `Submission<F>`s and each one fetches itself, so the compiler rejects
+/// ever pairing e.g. a `CsvRoster` (`SubmissionsSource<GitRepo>`) with a
+/// workspace that only makes sense for a `LocalPath`.
+#[allow(clippy::too_many_arguments)]
+pub fn grade_batch<F: Fetchable>(
+    source: &dyn SubmissionsSource<F>,
+    evaluator: &dyn Evaluator,
+    grader: &dyn Grader,
+    package_dir: &Path,
+    spec: &Spec,
+    work_dir: &Path,
+    store: &Store,
+) -> Result<Vec<crate::model::Grade>> {
+    let submissions = source.submissions()?;
+    let mut grades = Vec::new();
+
+    for submission in submissions {
+        let run_id = generate_run_id();
+        let workspace = work_dir.join(&submission.student_id);
+        let ctx = JobContext {
+            assignment_id: spec.assignment.id.clone(),
+            student_id: submission.student_id.clone(),
+            run_id: run_id.clone(),
+            tier: Tier::Authoritative,
+            workspace: workspace.clone(),
+        };
+
+        let fetch_outcome = submission.fetch(&workspace)?;
+
+        let eval = if fetch_outcome.status != StageStatus::Ok {
+            EvaluationResult {
+                schema_version: 1,
+                tier: ctx.tier,
+                assignment_id: ctx.assignment_id.clone(),
+                student_id: ctx.student_id.clone(),
+                run_id: ctx.run_id.clone(),
+                graded_commit: None,
+                instructor_commit: None,
+                public_harness_commit: None,
+                stages: StageReports {
+                    fetch: StageReport {
+                        status: fetch_outcome.status,
+                        duration_ms: None,
+                        warnings: None,
+                    },
+                    build: StageReport::ok(),
+                    run: StageReport::ok(),
+                },
+                tests: Vec::new(),
+                resource_usage: ResourceUsage::default(),
+                diagnostics: Diagnostics {
+                    compiler_errors: None,
+                    stderr_excerpt: fetch_outcome.message.clone(),
+                },
+            }
+        } else {
+            crate::prepare::prepare(&workspace, package_dir, spec)?;
+            evaluator.evaluate(&ctx)?
+        };
+
+        store.save_eval(&eval)?;
+        let grade = grader.grade(&eval, &spec.scoring);
+        store.save_grade(&ctx.assignment_id, &ctx.run_id, &grade)?;
+        grades.push(grade);
+    }
+
+    Ok(grades)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grade::DefaultGrader;
+    use crate::model::LocalPath;
+    use crate::source::SubmissionsSource;
+
+    struct FixedSource(Vec<crate::model::Submission<LocalPath>>);
+    impl SubmissionsSource<LocalPath> for FixedSource {
+        fn submissions(&self) -> Result<Vec<crate::model::Submission<LocalPath>>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn write(path: &std::path::Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    const SPEC_TOML: &str = r#"
+[assignment]
+id = "hw3"
+name = "Binary search tree"
+kind = "linked-library"
+deadline = "2026-02-14T23:59:59-08:00"
+
+[student]
+package-name = "bst"
+
+[toolchain]
+channel = "1.86.0"
+
+[allowed-crates]
+
+[limits.build]
+wall-clock = "120s"
+cpus = 2
+memory = "2GiB"
+pids = 256
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "512MiB"
+pids = 128
+max-output-bytes = "1MiB"
+
+[scoring]
+model = "weighted"
+
+[[scoring.tests]]
+name = "insert_basic"
+points = 10
+visibility = "public"
+"#;
+
+    #[test]
+    fn grade_batch_runs_end_to_end_over_a_directory_submission() {
+        let package_dir = tempfile::tempdir().unwrap();
+        let submission_src = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+
+        write(&submission_src.path().join("src/lib.rs"), "// student code");
+
+        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let source = FixedSource(vec![crate::model::Submission {
+            student_id: "alice".into(),
+            fetchable: LocalPath(submission_src.path().to_path_buf()),
+            metadata: Default::default(),
+        }]);
+        let evaluator = crate::evaluator::StubEvaluator {
+            tests: spec.scoring.tests.clone(),
+        };
+        let store = Store::new(store_dir.path());
+
+        let grades = grade_batch(
+            &source,
+            &evaluator,
+            &DefaultGrader,
+            package_dir.path(),
+            &spec,
+            work_dir.path(),
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].student_id, "alice");
+        assert_eq!(grades[0].score, 10.0);
+        assert_eq!(grades[0].max, 10.0);
+
+        let persisted = store.latest_evals("hw3").unwrap();
+        assert_eq!(persisted.len(), 1);
+        let persisted_grades = store.latest_grades("hw3").unwrap();
+        assert_eq!(persisted_grades.len(), 1);
+    }
+
+    #[test]
+    fn grade_batch_handles_fetch_failure_without_aborting_the_batch() {
+        let package_dir = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+
+        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let source = FixedSource(vec![crate::model::Submission {
+            student_id: "ghost".into(),
+            fetchable: LocalPath("/nonexistent/path".into()),
+            metadata: Default::default(),
+        }]);
+        let evaluator = crate::evaluator::StubEvaluator {
+            tests: spec.scoring.tests.clone(),
+        };
+        let store = Store::new(store_dir.path());
+
+        let grades = grade_batch(
+            &source,
+            &evaluator,
+            &DefaultGrader,
+            package_dir.path(),
+            &spec,
+            work_dir.path(),
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].score, 0.0);
+        assert_eq!(grades[0].status, "FetchFailed");
+    }
+}

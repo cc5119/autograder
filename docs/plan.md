@@ -43,13 +43,18 @@ src/
   cli.rs          # clap command/argument definitions
   config.rs       # host-wide config (credentials location, storage dir, limits, runtime)
   error.rs        # crate error type(s) (thiserror) + Result alias
-  model.rs        # core data types: Submission, JobContext, EvaluationResult,
-                  #   TestResult, statuses, ResourceUsage, Grade, Tier
+  model.rs        # core data types: Submission<F> (generic over a Fetchable
+                  #   locator type), JobContext, EvaluationResult, TestResult,
+                  #   statuses, ResourceUsage, Grade, Tier, LocalPath, GitRepo
   spec.rs         # assignment spec parsing (autograder.toml / .public.toml)
-  source/         # Source trait + impls
-    mod.rs
-    csv.rs        # CsvRoster
-  fetch.rs        # Fetch stage + Fetcher seam (LocalDirFetcher now; GitHubFetcher later)
+  source/         # SubmissionsSource<F> trait + impls
+    mod.rs        # SubmissionsSource<F> trait + Submissions (open() picks the
+                  #   kind from the --submissions path: dir vs file)
+    csv.rs        # CsvRoster: SubmissionsSource<GitRepo>
+  fetch.rs        # Fetch stage + the Fetchable trait (each locator type knows
+                  #   how to fetch itself: LocalPath now, GitRepo is a stub
+                  #   until M6's GitHubFetcher fills it in). No separate
+                  #   Fetcher/LocalDirFetcher indirection — see step 5 note.
   prepare.rs      # Prepare stage: workspace overlay, offline cargo env, manifest allowlist diff
   sandbox/        # Sandbox trait + SandboxSpec/Outcome
     mod.rs
@@ -79,8 +84,8 @@ destination, not something created all at once in step 1.
 ## M1 — Skeleton (trusted wiring, no sandbox)
 
 Goal: a working `grade` pipeline over the **mock filesystem fetcher** and a
-**stub evaluator**, proving Source → Fetch → Prepare → Evaluate → Grade → Report
-+ result persistence. No untrusted-code isolation yet.
+**stub evaluator**, proving SubmissionsSource → Fetch → Prepare → Evaluate →
+Grade → Report + result persistence. No untrusted-code isolation yet.
 
 ### Step 1 — lib/bin split, dependencies, CLI skeleton
 - Convert to `lib.rs` + thin `main.rs`. Add `error.rs` (thiserror error enum +
@@ -88,9 +93,13 @@ Goal: a working `grade` pipeline over the **mock filesystem fetcher** and a
 - Add deps: `clap` (derive), `serde` (derive), `serde_json`, `thiserror`,
   `anyhow`, `tracing`, `tracing-subscriber`.
 - Define all v1 subcommands in `cli.rs` per design §16: `prefetch`, `grade`,
-  `ci`, `regrade`, `report`, `scaffold` (with their flags: `--roster`, `--jobs`,
-  `--as-of`, `--harness`, `--format`, `--out`). Each dispatches to a handler that
-  returns a "not implemented" error for now.
+  `ci`, `regrade`, `report`, `scaffold` (with their flags: `--submissions`,
+  `--jobs`, `--as-of`, `--harness`, `--format`, `--out`). Each dispatches to a
+  handler that returns a "not implemented" error for now.
+  - `grade` takes a single `--submissions <path>` rather than separate
+    `--roster`/`--submissions` flags (revised post-M1): the kind is inferred
+    from the path shape (directory vs file) instead of a second flag — see
+    step 4/5.
 - **Compiles because:** handlers are real functions returning `Err(...)`.
 - **Verify:** `cargo run -- --help`, `cargo run -- grade --help`.
 
@@ -100,6 +109,10 @@ Goal: a working `grade` pipeline over the **mock filesystem fetcher** and a
   (`Pass`/`Fail`/`Timeout`/`Oom`/`Error`/…), `TestResult`, `StageReport`,
   `ResourceUsage`, `Diagnostics`, `EvaluationResult`, `Grade`. All `serde`
   (de)serializable, matching the JSON in design §12.
+  - Revised in step 5: `Submission` became `Submission<F>`, generic over a
+    `Fetchable` locator type (`LocalPath`, `GitRepo`), so a submission can
+    only be fetched through the `Fetchable` impl matching how it was
+    produced — see step 5 note.
 - **Compiles because:** pure data + derives.
 - **Verify:** a round-trip unit test serializing the §12 example `EvaluationResult`
   to JSON and back.
@@ -116,31 +129,53 @@ Goal: a working `grade` pipeline over the **mock filesystem fetcher** and a
 - **Verify:** unit tests parsing both example specs from design §5.3; assert the
   public spec exposes no points.
 
-### Step 4 — Source trait + CsvRoster
+### Step 4 — SubmissionsSource trait + CsvRoster
 - Add `csv` dep.
-- `source/mod.rs`: `Source` trait (`fn submissions(&self) -> Result<Vec<Submission>>`).
-  `source/csv.rs`: `CsvRoster` reading the design §6 columns
-  (`student_id,repo_url,ref,email,section`), carrying extra columns into
-  `metadata`.
+- `source/mod.rs`: `SubmissionsSource<F>` trait
+  (`fn submissions(&self) -> Result<Vec<Submission<F>>>`), generic over the
+  locator type `F` its submissions carry.
+  `source/csv.rs`: `CsvRoster` (`SubmissionsSource<GitRepo>`) reading the
+  design §6 columns (`student_id,repo_url,ref,email,section`), carrying extra
+  columns into `metadata`. `repo_url`/`ref` become the `GitRepo` locator.
 - **Verify:** unit test parsing the sample roster; extra columns land in metadata.
 
-### Step 5 — Fetch stage: mock filesystem fetcher
-- `fetch.rs`: a `Fetcher` seam (small trait / enum) so the checkout source is
-  swappable. First impl `LocalDirFetcher`: given a `Submission` whose locator is
-  a local directory path, materialize a clean checkout by copying that directory
-  into a per-job workspace. Records a synthetic `graded_commit` (e.g. a content
-  hash of the tree) and a `FetchOutcome`.
-- Deadline handling: `--as-of` is threaded through but the mock fetcher does not
-  enforce push-time (there's no server) — it just checks out the directory as-is.
-  The real GitHub clone + server-side push-time selection (design §7.1) is a
-  documented later step (M6, Step 24) behind this same `Fetcher` seam.
-- Optional convenience: a `DirectorySource` impl of `Source` that treats each
-  subdirectory of a root as one student (`student_id` = dir name), so a full run
-  needs only a folder of sample submissions — no CSV, no network.
+### Step 5 — Fetch stage: mock filesystem fetcher, and a type-safe fetch seam
+- `fetch.rs`: instead of a separate swappable `Fetcher` object, each locator
+  type implements a `Fetchable` trait (`fn fetch(&self, dest: &Path) ->
+  Result<FetchOutcome>`) directly — revised from the original "`Fetcher`
+  seam" plan once it became clear each locator has exactly one way to
+  resolve itself, so a separate strategy object per locator was pure
+  indirection. `impl Fetchable for LocalPath`: given a local directory path,
+  materialize a clean checkout by copying that directory into a per-job
+  workspace. Records a synthetic `graded_commit` (e.g. a content hash of the
+  tree) and a `FetchOutcome`. `impl Fetchable for GitRepo` is a
+  `NotImplemented` stub until M6's `GitHubFetcher` fills it in.
+  `Submission<F>::fetch(&self, dest)` is sugar for `self.fetchable.fetch(dest)`.
+- **Type safety:** `Submission<F>`/`SubmissionsSource<F>`/`Fetchable` are
+  generic over the same `F`, so pairing e.g. a `CsvRoster`'s (`GitRepo`)
+  submissions with code that only knows how to fetch a `LocalPath` is a
+  *compile* error, not a silent misinterpretation of a stringly-typed
+  locator. This closed a real gap: `Submission` originally carried a single
+  `repo_url: String` field whose meaning (local path vs. git URL) depended
+  entirely on which fetcher happened to consume it.
+- Deadline handling: `--as-of` is threaded through but `LocalPath::fetch`
+  does not enforce push-time (there's no server) — it just checks out the
+  directory as-is. The real GitHub clone + server-side push-time selection
+  (design §7.1) is a documented later step (M6, Step 25) behind
+  `impl Fetchable for GitRepo`.
+- Optional convenience: a `DirectorySource` impl of `SubmissionsSource<LocalPath>`
+  that treats each subdirectory of a root as one student (`student_id` = dir
+  name), so a full run needs only a folder of sample submissions — no CSV,
+  no network.
+- `source::Submissions::open(path)` resolves the single `--submissions <path>`
+  CLI flag into the right kind at runtime (directory -> `DirectorySource`,
+  file -> `CsvRoster`) via an enum, so `grade` needs no separate flag to pick
+  the source kind; the `Csv` arm currently returns `NotImplemented` at the
+  `grade` command level pending step 25's `GitHubFetcher`.
 - Missing/empty directories become a structured non-fatal `fetch_failed` outcome;
   the batch continues.
-- **Verify:** point the fetcher at a temp dir tree; assert a workspace is
-  produced and a missing dir yields `fetch_failed` (not a panic).
+- **Verify:** point `LocalPath::fetch` at a temp dir tree; assert a workspace
+  is produced and a missing dir yields `fetch_failed` (not a panic).
 
 ### Step 6 — Prepare stage (overlay only, no offline env yet)
 - `prepare.rs`: assemble the workspace — student checkout + instructor
@@ -341,21 +376,24 @@ enforce the dependency allowlist offline.
 ## M6 — Real GitHub fetch + extensibility polish
 
 ### Step 25 — GitHubFetcher + server-side push-time deadline
-- Implement the real fetcher behind the M1 `Fetcher` seam: clone/`git fetch`
-  (shell out to `git`, or `git2`) using host-side instructor credentials, then
-  resolve the graded commit via **GitHub's server-side push time** — newest
-  commit on the target branch whose *push* was `<= deadline` (design §7.1) — via
-  the GitHub API (`reqwest`/`octocrab`, or `gh`). Never trust committer/author
-  dates. Record resolved SHA + push time. `--as-of` overrides the deadline for
-  dry runs; a CSV `ref` pinning a SHA is still push-time checked.
-- The mock `LocalDirFetcher` stays as the offline/dev path; selection is by
-  locator scheme / config.
+- Fill in the `impl Fetchable for GitRepo` stub (in `fetch.rs` since step 5):
+  clone/`git fetch` (shell out to `git`, or `git2`) using host-side instructor
+  credentials, then resolve the graded commit via **GitHub's server-side push
+  time** — newest commit on the target branch whose *push* was `<= deadline`
+  (design §7.1) — via the GitHub API (`reqwest`/`octocrab`, or `gh`). Never
+  trust committer/author dates. Record resolved SHA + push time. `--as-of`
+  overrides the deadline for dry runs; a CSV `ref` pinning a SHA is still
+  push-time checked.
+- `LocalPath::fetch` stays as the offline/dev path; selection is already
+  automatic via `source::Submissions::open` (directory vs file), so no new
+  flag or config is needed — the `grade` command's `Submissions::Csv` arm
+  (currently `NotImplemented`) starts working once this lands.
 - **Verify:** integration test against a scratch repo **[deferred: needs GitHub
   credentials + network]**; push-time selection logic unit-tested with mocked API
   responses.
 
 ### Step 26 — Extensibility seams + polish
-- Add stub `Source` (e.g. `GitHubClassroom`) and document the `Sandbox`
+- Add a stub `SubmissionsSource` (e.g. `GitHubClassroom`) and document the `Sandbox`
   Firecracker upgrade path and additional CI-platform wrappers (GitLab) around the
   existing `autograder ci` entrypoint. Note the service-mode groundwork (queue /
   workers / storage / `EvaluationResult` persistence already daemon-shaped, §15).
