@@ -1,9 +1,9 @@
 //! The `binary` `Evaluator` (design §9.2): the student repo builds a
 //! **binary** (target named `[assignment].id`); the trusted judge —
 //! instructor-authored integration tests overlaid from `harness/` directly
-//! onto the student's own workspace by `Prepare` (see
-//! `prepare::Wiring::Binary`, unlike `library`'s separate `driver_dir`) —
-//! spawns that binary as a child and asserts on its observable behavior
+//! onto the student's own workspace by `Prepare` (unlike `library`'s
+//! separate `driver_dir`) — spawns that binary as a child and asserts on
+//! its observable behavior
 //! (stdout/files/exit code), never on anything the student's own process
 //! self-reports.
 //!

@@ -8,8 +8,8 @@
 //! `<assignment-id>/` — the required reference solution). `[assignment].id`
 //! is the single identifier for everything student-facing (design §5): the
 //! crate name the harness's `Cargo.toml` depends on (`evaluator::library`),
-//! the binary target name for `binary`-kind assignments
-//! (`prepare::Wiring::Binary`), *and* the directory name the reference
+//! the binary target name for `binary`-kind assignments, *and* the
+//! directory name the reference
 //! solution (privately) / the student's own crate (once published) must
 //! live in. No `[student]` section to keep in sync with it, no `--solution`
 //! flag.
@@ -156,9 +156,9 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
 
     // `binary`-kind has no harness crate to link in via the workspace
     // (`harness/` there is just loose `tests/*.rs`, merged onto whatever
-    // crate `Prepare` targets at grading time -- see `prepare::Wiring::
-    // Binary`), so the only way a plain `cargo test` finds those tests is
-    // if they're statically sitting in the student's own `tests/` already.
+    // crate `Prepare` targets at grading time -- see `prepare::prepare`'s
+    // doc comment), so the only way a plain `cargo test` finds those tests
+    // is if they're statically sitting in the student's own `tests/` already.
     // `library` doesn't need this: the workspace path dependency links the
     // harness in place, no duplication required.
     if spec.assignment.kind == AssignmentKind::Binary {

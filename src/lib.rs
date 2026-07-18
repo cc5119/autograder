@@ -163,7 +163,7 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
     // Only ever actually used for `binary` (where `driver_dir` goes
     // unread) or if `Prepare` ever needs a scratch copy again -- for
     // `library`, `Prepare` builds the harness in place instead (see its
-    // doc comment) and `prepared.wiring` below carries the real
+    // doc comment) and `prepared.driver_dir` below carries the real
     // `driver_dir` to use, which is never this scratch path.
     let scratch_driver_dir = std::env::temp_dir().join(format!("autograder-ci-{run_id}"));
 
@@ -174,10 +174,6 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
         &spec,
         Tier::Ci,
     )?;
-    let driver_dir = match &prepared.wiring {
-        prepare::Wiring::Library { driver_dir } => driver_dir.clone(),
-        prepare::Wiring::Binary { .. } => scratch_driver_dir,
-    };
 
     let eval = if prepared.manifest_diagnostics.is_empty() {
         let evaluator = build_evaluator(&spec, &harness_dir, local_sandbox)?;
@@ -187,7 +183,7 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
             run_id,
             tier: Tier::Ci,
             workspace,
-            driver_dir,
+            driver_dir: prepared.driver_dir.clone(),
         };
         Some(evaluator.evaluate(&ctx)?)
     } else {
@@ -361,12 +357,7 @@ visibility = "public"
         )
         .unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
-
-        let driver_dir = match &prepared.wiring {
-            prepare::Wiring::Library { driver_dir } => driver_dir.clone(),
-            prepare::Wiring::Binary { .. } => scratch_driver_dir.path().to_path_buf(),
-        };
-        assert_eq!(driver_dir, harness_dir.path().join("harness"));
+        assert_eq!(prepared.driver_dir, harness_dir.path().join("harness"));
 
         let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
@@ -375,7 +366,7 @@ visibility = "public"
             run_id: "run-1".into(),
             tier: Tier::Ci,
             workspace,
-            driver_dir,
+            driver_dir: prepared.driver_dir,
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 

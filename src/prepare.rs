@@ -6,22 +6,6 @@ use crate::model::Tier;
 use crate::spec::{AssignmentKind, Spec};
 use crate::vendor;
 
-/// How the student's checkout is wired to the harness, decided structurally
-/// from `[assignment].kind`. Offline cargo env + manifest allowlist diff are
-/// added in M2 (steps 12-13); this only identifies the wiring target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Wiring {
-    /// `library`: the driver crate builds against `driver_dir`, depending
-    /// on the student's package (named `[assignment].id`) via whatever
-    /// `harness/Cargo.toml` declares. For `Tier::Ci`, `driver_dir` is
-    /// `package_dir/harness` itself, built **in place** -- see `prepare`'s
-    /// doc comment for why. For `Tier::Authoritative`, it's a fresh
-    /// per-job scratch copy.
-    Library { driver_dir: std::path::PathBuf },
-    /// `binary`: the built binary target the judge will spawn.
-    Binary { bin_name: String },
-}
-
 /// The offline cargo environment installed into the workspace so the build
 /// stage can only resolve vendored crates (design §8.2). `vendor_dir` is
 /// `None` when the assignment package hasn't been prefetched yet (or has an
@@ -35,7 +19,14 @@ pub struct OfflineEnv {
 
 #[derive(Debug, Clone)]
 pub struct PrepareOutcome {
-    pub wiring: Wiring,
+    /// Where the `library` driver crate was built (`package_dir/harness`
+    /// itself, in place, for `Tier::Ci`; the passed-in `driver_dir`, copied
+    /// into, for `Tier::Authoritative` -- see `prepare`'s doc comment).
+    /// Unused by `binary`, which builds the student's own binary directly
+    /// in `workspace` -- the value is still filled in (mirroring the
+    /// passed-in `driver_dir` hint) so callers don't need a `kind`-specific
+    /// case to construct a `JobContext`.
+    pub driver_dir: std::path::PathBuf,
     pub offline_env: OfflineEnv,
     /// Allowlist/`[patch]`/git/path violations found in the student
     /// `Cargo.toml`, in the order found (design §8.3, §8.4). Non-empty means
@@ -87,30 +78,25 @@ pub fn prepare(
     tier: Tier,
 ) -> Result<PrepareOutcome> {
     let harness_dir = package_dir.join("harness");
-    let wiring = match spec.assignment.kind {
-        AssignmentKind::Library => {
-            let driver_dir = match tier {
-                Tier::Ci => harness_dir.clone(),
-                Tier::Authoritative => {
-                    std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
-                        path: driver_dir.to_path_buf(),
-                        source,
-                    })?;
-                    if harness_dir.is_dir() {
-                        copy_dir_into(driver_dir, &harness_dir)?;
-                    }
-                    driver_dir.to_path_buf()
+    let resolved_driver_dir = match spec.assignment.kind {
+        AssignmentKind::Library => match tier {
+            Tier::Ci => harness_dir.clone(),
+            Tier::Authoritative => {
+                std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
+                    path: driver_dir.to_path_buf(),
+                    source,
+                })?;
+                if harness_dir.is_dir() {
+                    copy_dir_into(driver_dir, &harness_dir)?;
                 }
-            };
-            Wiring::Library { driver_dir }
-        }
+                driver_dir.to_path_buf()
+            }
+        },
         AssignmentKind::Binary => {
             if harness_dir.is_dir() {
                 copy_dir_into(workspace, &harness_dir)?;
             }
-            Wiring::Binary {
-                bin_name: spec.assignment.id.clone(),
-            }
+            driver_dir.to_path_buf()
         }
     };
 
@@ -119,7 +105,7 @@ pub fn prepare(
         diagnose_manifest(workspace, spec, offline_env.vendor_dir.as_deref())?;
 
     Ok(PrepareOutcome {
-        wiring,
+        driver_dir: resolved_driver_dir,
         offline_env,
         manifest_diagnostics,
     })
@@ -377,12 +363,7 @@ model = "weighted"
         )
         .unwrap();
 
-        assert_eq!(
-            outcome.wiring,
-            Wiring::Library {
-                driver_dir: package.path().join("harness"),
-            }
-        );
+        assert_eq!(outcome.driver_dir, package.path().join("harness"));
         assert!(
             std::fs::read_dir(unused_driver_dir.path())
                 .unwrap()
@@ -413,12 +394,7 @@ model = "weighted"
         )
         .unwrap();
 
-        assert_eq!(
-            outcome.wiring,
-            Wiring::Library {
-                driver_dir: driver_dir.path().to_path_buf(),
-            }
-        );
+        assert_eq!(outcome.driver_dir, driver_dir.path().to_path_buf());
         assert!(driver_dir.path().join("Cargo.toml").is_file());
     }
 
