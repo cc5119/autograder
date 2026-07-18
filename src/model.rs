@@ -30,21 +30,12 @@ pub struct GitRepo {
     pub r#ref: Option<String>,
 }
 
-/// Which tier a run belongs to: instructor-authoritative or student-facing CI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Tier {
-    Authoritative,
-    Ci,
-}
-
 /// Per-job context threaded through the pipeline stages.
 #[derive(Debug, Clone)]
 pub struct JobContext {
     pub assignment_id: String,
     pub student_id: String,
     pub run_id: String,
-    pub tier: Tier,
     /// Where the code being evaluated actually is. For `grade`, this is
     /// **not** the raw fetch destination -- `pipeline::grade_batch` fetches
     /// the whole submitted checkout into a `checkout/` directory that's
@@ -162,7 +153,6 @@ pub struct StageReports {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
     pub schema_version: u32,
-    pub tier: Tier,
     pub assignment_id: String,
     pub student_id: String,
     pub run_id: String,
@@ -207,7 +197,6 @@ mod tests {
     fn sample() -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
-            tier: Tier::Authoritative,
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "2026-07-17T18-03-00Z-ab12".into(),

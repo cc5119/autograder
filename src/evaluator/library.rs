@@ -220,7 +220,6 @@ impl<S: Sandbox> Evaluator for Library<S> {
 
         Ok(EvaluationResult {
             schema_version: 1,
-            tier: ctx.tier,
             assignment_id: ctx.assignment_id.clone(),
             student_id: ctx.student_id.clone(),
             run_id: ctx.run_id.clone(),
@@ -252,7 +251,6 @@ fn terminal_result(
 ) -> EvaluationResult {
     EvaluationResult {
         schema_version: 1,
-        tier: ctx.tier,
         assignment_id: ctx.assignment_id.clone(),
         student_id: ctx.student_id.clone(),
         run_id: ctx.run_id.clone(),
@@ -364,7 +362,6 @@ fn visibility_for(name: &str, tests: &[ScoredTest]) -> TestVisibility {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Tier;
     use crate::sandbox::SandboxOutcome;
     use std::sync::Mutex;
 
@@ -510,7 +507,6 @@ visibility = "public"
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "run-1".into(),
-            tier: Tier::Authoritative,
             workspace,
             driver_dir,
         }

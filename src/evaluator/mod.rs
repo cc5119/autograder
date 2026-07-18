@@ -62,7 +62,6 @@ impl Evaluator for StubEvaluator {
 
         Ok(EvaluationResult {
             schema_version: 1,
-            tier: ctx.tier,
             assignment_id: ctx.assignment_id.clone(),
             student_id: ctx.student_id.clone(),
             run_id: ctx.run_id.clone(),
@@ -84,7 +83,7 @@ impl Evaluator for StubEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TestVisibility, Tier};
+    use crate::model::TestVisibility;
     use std::path::PathBuf;
 
     #[test]
@@ -100,7 +99,6 @@ mod tests {
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "run-1".into(),
-            tier: Tier::Authoritative,
             workspace: PathBuf::from("/tmp/does-not-matter"),
             driver_dir: PathBuf::from("/tmp/does-not-matter-either"),
         };

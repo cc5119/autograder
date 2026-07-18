@@ -107,14 +107,11 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        Diagnostics, ResourceUsage, StageReport, StageReports, Tier,
-    };
+    use crate::model::{Diagnostics, ResourceUsage, StageReport, StageReports};
 
     fn eval(assignment_id: &str, student_id: &str, run_id: &str) -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
-            tier: Tier::Authoritative,
             assignment_id: assignment_id.into(),
             student_id: student_id.into(),
             run_id: run_id.into(),

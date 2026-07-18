@@ -31,10 +31,7 @@ impl<'a> CiReport<'a> {
         };
         eval.stages.build.status == StageStatus::Ok
             && eval.stages.run.status == StageStatus::Ok
-            && eval
-                .tests
-                .iter()
-                .all(|t| t.status == TestStatus::Pass)
+            && eval.tests.iter().all(|t| t.status == TestStatus::Pass)
     }
 
     pub fn render(&self) -> String {
@@ -138,14 +135,12 @@ fn test_status_label(status: TestStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        Diagnostics, ResourceUsage, StageReport, StageReports, TestResult, TestVisibility, Tier,
-    };
+    use crate::model::Diagnostics;
+    use crate::model::{ResourceUsage, StageReport, StageReports, TestResult, TestVisibility};
 
     fn eval_with_tests(tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
-            tier: Tier::Ci,
             assignment_id: "hw3".into(),
             student_id: "local".into(),
             run_id: "run-1".into(),

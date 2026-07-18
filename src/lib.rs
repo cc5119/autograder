@@ -29,7 +29,7 @@ use evaluator::Evaluator;
 use evaluator::binary::Binary;
 use evaluator::library::Library;
 use grade::{DefaultGrader, Grader};
-use model::{JobContext, Tier};
+use model::JobContext;
 use report::{Reporter, ci::CiReport, csv::CsvReporter, json::JsonReporter};
 use sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
 use source::Submissions;
@@ -175,7 +175,6 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
         assignment_id: spec.assignment.id.clone(),
         student_id: "local".into(),
         run_id,
-        tier: Tier::Ci,
         workspace: workspace.clone(),
         driver_dir,
     };
@@ -359,7 +358,6 @@ visibility = "public"
             assignment_id: spec.assignment.id.clone(),
             student_id: "local".into(),
             run_id: "run-1".into(),
-            tier: Tier::Ci,
             workspace,
             driver_dir,
         };
@@ -448,7 +446,7 @@ mod regrade_tests {
     use super::*;
     use model::{
         Diagnostics, EvaluationResult, ResourceUsage, StageReport, StageReports, TestResult,
-        TestStatus, TestVisibility, Tier,
+        TestStatus, TestVisibility,
     };
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -503,7 +501,6 @@ visibility = "private"
     fn persisted_eval() -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
-            tier: Tier::Authoritative,
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "run-1".into(),

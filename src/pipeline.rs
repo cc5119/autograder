@@ -7,7 +7,7 @@ use crate::fetch::Fetchable;
 use crate::grade::Grader;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    StageStatus, Tier,
+    StageStatus,
 };
 use crate::overrides::{self, Overrides};
 use crate::source::SubmissionsSource;
@@ -27,7 +27,6 @@ fn terminal_eval(
 ) -> EvaluationResult {
     EvaluationResult {
         schema_version: 1,
-        tier: ctx.tier,
         assignment_id: ctx.assignment_id.clone(),
         student_id: ctx.student_id.clone(),
         run_id: ctx.run_id.clone(),
@@ -138,7 +137,6 @@ pub fn grade_batch<F: Fetchable>(
             assignment_id: spec.assignment.id.clone(),
             student_id: submission.student_id.clone(),
             run_id: run_id.clone(),
-            tier: Tier::Authoritative,
             workspace: workspace.clone(),
             driver_dir: driver_dir.clone(),
         };
@@ -439,7 +437,6 @@ visibility = "public"
 
             Ok(EvaluationResult {
                 schema_version: 1,
-                tier: ctx.tier,
                 assignment_id: ctx.assignment_id.clone(),
                 student_id: ctx.student_id.clone(),
                 run_id: ctx.run_id.clone(),

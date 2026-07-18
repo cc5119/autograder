@@ -95,12 +95,11 @@ fn stage_status_label(eval: &EvaluationResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ResourceUsage, StageReport, StageReports, Tier};
+    use crate::model::{ResourceUsage, StageReport, StageReports};
 
     fn eval_with(stages: StageReports, tests: Vec<crate::model::TestResult>) -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
-            tier: Tier::Authoritative,
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "run1".into(),

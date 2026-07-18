@@ -180,7 +180,6 @@ impl<S: Sandbox> Evaluator for Binary<S> {
 
         Ok(EvaluationResult {
             schema_version: 1,
-            tier: ctx.tier,
             assignment_id: ctx.assignment_id.clone(),
             student_id: ctx.student_id.clone(),
             run_id: ctx.run_id.clone(),
@@ -212,7 +211,6 @@ fn terminal_result(
 ) -> EvaluationResult {
     EvaluationResult {
         schema_version: 1,
-        tier: ctx.tier,
         assignment_id: ctx.assignment_id.clone(),
         student_id: ctx.student_id.clone(),
         run_id: ctx.run_id.clone(),
@@ -268,7 +266,7 @@ fn capped_utf8(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TestStatus, Tier};
+    use crate::model::TestStatus;
     use std::sync::Mutex;
 
     const SAMPLE_JUNIT: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -362,7 +360,6 @@ visibility = "public"
             assignment_id: "wc".into(),
             student_id: "alice".into(),
             run_id: "run-1".into(),
-            tier: Tier::Authoritative,
             workspace,
             driver_dir: PathBuf::from("/tmp/unused-for-binary"),
         }
