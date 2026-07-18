@@ -1,7 +1,7 @@
 # Autograder — Implementation Plan
 
-Status: M1, M2, and M3 done
-Last updated: 2026-07-17
+Status: M1, M2, M3, and M4 done
+Last updated: 2026-07-18
 Companion to: [`docs/design.md`](./design.md)
 
 This plan turns the design into an ordered sequence of implementation steps.
@@ -446,7 +446,34 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 
 ---
 
-## M4 — Caching, binary-harness
+## M4 — Caching, binary-harness — **Done**
+
+**Status:** done. `evaluator/binary_harness.rs` builds the student's own
+crate directly in `workspace` (no separate driver dir) and runs the
+instructor-authored `harness/` integration tests under `cargo nextest`,
+exactly like `linked-library` minus the `[patch]` injection — the harness
+locates the built binary via Cargo's own `env!("CARGO_BIN_EXE_<name>")`
+inside its test code, so this module needs no extra wiring for that.
+`build_evaluator`/`build_local_evaluator` in `lib.rs` now construct it for
+`AssignmentKind::BinaryHarness` instead of returning `NotImplemented`. Base
+image tag/`Containerfile` construction moved out of `lib.rs`'s inline
+`format!` into `image.rs` (`base_image_tag`, `containerfile`, `build_argv`,
+`build_base_image`) so `ContainerSandbox::preflight`'s expected tag and the
+tag an instructor actually builds can't drift apart. `cache.rs` adds
+host-side bare-clone path derivation + `git clone --bare`/`git fetch` argv
+construction for the M6 `GitHubFetcher` to build on. `volume.rs` adds a
+best-effort directory-size quota check (`directory_size_bytes`/
+`exceeds_quota`) as the portable fallback for the "size-quota'd target
+volume" requirement — real kernel-enforced quotas need host filesystem
+setup this binary can't provision itself (same category of prerequisite as
+the podman base image or the seccomp profile), so this is offered as a
+utility rather than wired into `pipeline::grade_batch`'s control flow; the
+"fresh, disk-backed, never-shared" part of that requirement was already
+satisfied by the existing per-student `job_root` scheme (design §13). 99
+unit/integration tests pass (up from 65 at M3 close). Deferred
+as ground rule 3 describes: live `podman build`/`podman run`/`git clone`
+execution **[deferred: needs podman / network]**; all command/file
+construction is unit-tested without them.
 
 ### Step 20 — Caching: base image + bare clones + quota'd target volumes
 - Build a per-assignment base image (toolchain + pre-warmed vendored deps).
@@ -455,6 +482,9 @@ unit/integration tests added (65 total, up from 53 at M2 close).
   (not tmpfs, not shared) per design §10/§13.
 - **Compiles/tested:** volume/quota provisioning + image-build command
   construction unit-tested; **[deferred: needs podman]** live image build.
+- **Status:** done. See M4's status write-up above for what shipped
+  (`image.rs`, `cache.rs`, `volume.rs`) and the scoping decision on real
+  disk-quota enforcement.
 
 ### Step 21 — `binary-harness` evaluator
 - `evaluator/binary_harness.rs`: the trusted judge spawns the built student
@@ -465,6 +495,17 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 - Funnels into the same `EvaluationResult` shape as `linked-library`.
 - **Verify (unit):** protocol driver + verdict logic against a fake child;
   live sandboxed run **[deferred: needs podman]**. **M4 done.**
+- **Status:** done. The "protocol/timing/stdin/args" driving and the
+  stdout/file assertions are entirely instructor-authored code living in
+  `harness/tests/*.rs` (mirroring how `linked-library`'s judge protocol is
+  fully instructor-authored, per that evaluator's own doc comment) — this
+  module's job stayed mechanical: build the student crate, run `cargo
+  nextest run --offline` in the same workspace, parse the resulting JUnit
+  report into `TestResult`s (reusing `linked_library::parse_junit_report`).
+  Verified: build-failure short-circuit, missing-JUnit-report →
+  `HarnessError` (never a silent pass), and a captured JUnit sample parsing
+  correctly, all against a scripted `Sandbox` double — live sandboxed run
+  **[deferred: needs podman + nextest]**.
 
 ---
 

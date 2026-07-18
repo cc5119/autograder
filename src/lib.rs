@@ -1,9 +1,11 @@
+pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod error;
 pub mod evaluator;
 pub mod fetch;
 pub mod grade;
+pub mod image;
 pub mod manifest_check;
 pub mod model;
 pub mod pipeline;
@@ -17,12 +19,14 @@ pub mod spec;
 pub mod store;
 pub mod stub;
 pub mod vendor;
+pub mod volume;
 
 use cli::{Command, ReportFormat};
 pub use config::Config;
 pub use error::{Error, Result};
 
 use evaluator::Evaluator;
+use evaluator::binary_harness::BinaryHarness;
 use evaluator::linked_library::LinkedLibrary;
 use grade::{DefaultGrader, Grader};
 use model::{JobContext, Tier};
@@ -114,25 +118,25 @@ fn run_grade(
 }
 
 /// Picks the `Evaluator` for `spec.assignment.kind` (design §9), wired over
-/// a `ContainerSandbox` (design §10). `binary-harness` lands in M4 (step
-/// 22). Runs `ContainerSandbox::preflight` once up front so a broken Podman
-/// setup fails the whole `grade` invocation with one clear error instead of
-/// silently scoring every student `build_failed` — see its doc comment.
+/// a `ContainerSandbox` (design §10). Runs `ContainerSandbox::preflight`
+/// once up front so a broken Podman setup fails the whole `grade`
+/// invocation with one clear error instead of silently scoring every
+/// student `build_failed` — see its doc comment.
 fn build_evaluator(
     spec: &Spec,
     package_dir: &std::path::Path,
     config: &Config,
 ) -> Result<Box<dyn Evaluator>> {
+    let base_image = image::base_image_tag(spec);
+    let sandbox = ContainerSandbox::new(base_image, config.seccomp_profile.clone());
+    sandbox.preflight()?;
     match spec.assignment.kind {
         AssignmentKind::LinkedLibrary => {
-            let base_image = format!("autograder-base:{}", spec.toolchain.channel);
-            let sandbox = ContainerSandbox::new(base_image, config.seccomp_profile.clone());
-            sandbox.preflight()?;
             Ok(Box::new(LinkedLibrary::new(spec, package_dir, sandbox)?))
         }
-        AssignmentKind::BinaryHarness => Err(Error::NotImplemented(
-            "binary-harness evaluator (lands in M4)",
-        )),
+        AssignmentKind::BinaryHarness => {
+            Ok(Box::new(BinaryHarness::new(spec, package_dir, sandbox)?))
+        }
     }
 }
 
@@ -190,8 +194,7 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
 /// `build_evaluator` but over `LocalSandbox` instead of `ContainerSandbox` —
 /// no Podman needed. Used both by the CI tier (design §11.3, always) and by
 /// `grade --local-sandbox` (never for real submissions — see that flag's
-/// doc comment in `cli.rs`). `binary-harness` lands in M4 (step 22), same as
-/// the authoritative tier.
+/// doc comment in `cli.rs`).
 fn build_local_evaluator(spec: &Spec, package_dir: &std::path::Path) -> Result<Box<dyn Evaluator>> {
     match spec.assignment.kind {
         AssignmentKind::LinkedLibrary => Ok(Box::new(LinkedLibrary::new(
@@ -199,9 +202,11 @@ fn build_local_evaluator(spec: &Spec, package_dir: &std::path::Path) -> Result<B
             package_dir,
             LocalSandbox,
         )?)),
-        AssignmentKind::BinaryHarness => Err(Error::NotImplemented(
-            "binary-harness evaluator (lands in M4)",
-        )),
+        AssignmentKind::BinaryHarness => Ok(Box::new(BinaryHarness::new(
+            spec,
+            package_dir,
+            LocalSandbox,
+        )?)),
     }
 }
 
@@ -362,13 +367,24 @@ visibility = "public"
     }
 
     #[test]
-    fn ci_evaluator_selection_rejects_binary_harness_until_m4() {
+    fn ci_evaluator_selection_builds_binary_harness_when_its_harness_dir_exists() {
+        let toml = PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
+        let spec: Spec = toml::from_str(&toml).unwrap();
+
+        let harness_dir = tempfile::tempdir().unwrap();
+        write(&harness_dir.path().join("harness/tests/judge.rs"), "");
+        let result = build_local_evaluator(&spec, harness_dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ci_evaluator_selection_errors_clearly_when_binary_harness_dir_is_missing() {
         let toml = PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
         let result = build_local_evaluator(&spec, harness_dir.path());
-        assert!(matches!(result, Err(Error::NotImplemented(_))));
+        assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
     /// `grade --local-sandbox` must never touch `ContainerSandbox` (and so

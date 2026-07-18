@@ -58,10 +58,10 @@ use crate::model::{
     StageStatus, TestResult, TestStatus, TestVisibility,
 };
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
-use crate::spec::{BuildLimits, RunLimits, ScoredTest, Spec};
+use crate::spec::{ScoredTest, Spec};
 use crate::vendor;
 
-use super::Evaluator;
+use super::{Evaluator, build_sandbox_limits, run_sandbox_limits};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
 /// writes to; mirrors `vendor::prefetch`'s output layout.
@@ -322,29 +322,6 @@ fn run_diagnostics(outcome: &SandboxOutcome) -> Diagnostics {
 
 fn capped_utf8(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn build_sandbox_limits(build: &BuildLimits, run: &RunLimits) -> SandboxLimits {
-    SandboxLimits {
-        wall_clock: build.wall_clock.0,
-        cpus: build.cpus,
-        memory_bytes: build.memory.0,
-        pids: build.pids,
-        // `[limits.build]` carries no `max-output-bytes` of its own (design
-        // §5.3); compiler output still needs a cap, so reuse the run
-        // stage's.
-        max_output_bytes: run.max_output_bytes.0,
-    }
-}
-
-fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
-    SandboxLimits {
-        wall_clock: run.wall_clock.0,
-        cpus: run.cpus,
-        memory_bytes: run.memory.0,
-        pids: run.pids,
-        max_output_bytes: run.max_output_bytes.0,
-    }
 }
 
 /// Parses `cargo nextest`'s JUnit XML report into `TestResult`s. `tests` is

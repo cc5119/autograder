@@ -1,3 +1,4 @@
+pub mod binary_harness;
 pub mod linked_library;
 
 use crate::error::Result;
@@ -5,7 +6,30 @@ use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     TestResult, TestStatus,
 };
-use crate::spec::ScoredTest;
+use crate::sandbox::SandboxLimits;
+use crate::spec::{BuildLimits, RunLimits, ScoredTest};
+
+/// Shared by both evaluators: `[limits.build]` carries no `max-output-bytes`
+/// of its own (design §5.3), so compiler output reuses the run stage's cap.
+pub(crate) fn build_sandbox_limits(build: &BuildLimits, run: &RunLimits) -> SandboxLimits {
+    SandboxLimits {
+        wall_clock: build.wall_clock.0,
+        cpus: build.cpus,
+        memory_bytes: build.memory.0,
+        pids: build.pids,
+        max_output_bytes: run.max_output_bytes.0,
+    }
+}
+
+pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
+    SandboxLimits {
+        wall_clock: run.wall_clock.0,
+        cpus: run.cpus,
+        memory_bytes: run.memory.0,
+        pids: run.pids,
+        max_output_bytes: run.max_output_bytes.0,
+    }
+}
 
 /// Turns a prepared workspace into a raw evaluation result. Real impls
 /// (`LinkedLibrary`, `BinaryHarness`, M2/M4) launch a trusted judge process
