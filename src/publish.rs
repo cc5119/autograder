@@ -113,8 +113,8 @@ kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
-[toolchain]
-channel = "1.86.0"
+[sandbox]
+image = "autograder-base:1.86.0"
 
 [allowed-crates]
 serde = "1"

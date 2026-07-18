@@ -1,15 +1,14 @@
-//! Per-job target volume provisioning (design §10 "writable workspace",
-//! §13 -- M4 step 20). `pipeline::grade_batch` already gives each job a
-//! **fresh-per-student, disk-backed, never-shared** directory under
-//! `config.storage_dir` (`job_root`/`workspace`/`driver_dir` -- plain host
-//! directories, never a container `tmpfs`, never reused across different
-//! students): that satisfies everything design §10/§13 ask of the volume
-//! *except* the size quota.
+//! Per-job target volume provisioning. `pipeline::grade_batch` already
+//! gives each job a **fresh-per-student, disk-backed, never-shared**
+//! directory under `config.storage_dir` (`job_root`/`workspace`/
+//! `driver_dir` -- plain host directories, never a container `tmpfs`,
+//! never reused across different students): that satisfies everything
+//! asked of the volume *except* the size quota.
 //!
 //! A real, kernel-enforced quota (an XFS project quota, a loopback-mounted
 //! per-job filesystem) needs host setup this binary can't provision itself
 //! -- the same category of prerequisite as the podman base image
-//! (`image::build_base_image`) or the seccomp profile
+//! (`spec::Sandbox::image`) or the seccomp profile
 //! (`config::Config::seccomp_profile`): provisioned once by whoever deploys
 //! the grading host, not per job. What this module provides instead is the
 //! portable fallback available without any of that: measure a job

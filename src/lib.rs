@@ -5,7 +5,6 @@ pub mod error;
 pub mod evaluator;
 pub mod fetch;
 pub mod grade;
-pub mod image;
 pub mod manifest_check;
 pub mod model;
 pub mod overrides;
@@ -130,8 +129,7 @@ fn build_evaluator(
     package_dir: &std::path::Path,
     config: &Config,
 ) -> Result<Box<dyn Evaluator>> {
-    let base_image = image::base_image_tag(spec);
-    let sandbox = ContainerSandbox::new(base_image, config.seccomp_profile.clone());
+    let sandbox = ContainerSandbox::new(spec.sandbox.image.clone(), config.seccomp_profile.clone());
     sandbox.preflight()?;
     match spec.assignment.kind {
         AssignmentKind::Library => Ok(Box::new(Library::new(spec, package_dir, sandbox)?)),
@@ -283,8 +281,8 @@ name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[toolchain]
-channel = "1.86.0"
+[sandbox]
+image = "autograder-base:1.86.0"
 
 [allowed-crates]
 
@@ -462,8 +460,8 @@ name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[toolchain]
-channel = "1.86.0"
+[sandbox]
+image = "autograder-base:1.86.0"
 
 [allowed-crates]
 

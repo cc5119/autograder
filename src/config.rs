@@ -9,9 +9,9 @@ use serde::Deserialize;
 pub struct Config {
     /// Directory where persisted `EvaluationResult`s and other run state live.
     pub storage_dir: PathBuf,
-    /// Seccomp profile passed to `podman run --security-opt seccomp=...`
-    /// (design §10). Must exist on the podman host; base-image build-out
-    /// and profile provisioning land in M4 (step 20).
+    /// Seccomp profile passed to `podman run --security-opt seccomp=...`.
+    /// Must already exist on the podman host -- provisioning it is an
+    /// operator concern, same as the base image (`spec::Sandbox::image`).
     pub seccomp_profile: PathBuf,
 }
 

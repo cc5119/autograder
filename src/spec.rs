@@ -31,9 +31,24 @@ pub struct Assignment {
     pub deadline: DateTime<FixedOffset>,
 }
 
+/// Describes the environment jobs run in — currently just the container
+/// image, but the natural home for future execution-environment knobs
+/// (a runtime choice, design §18.8) rather than overloading `[assignment]`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Toolchain {
-    pub channel: String,
+pub struct Sandbox {
+    /// The container image `ContainerSandbox` requires to already exist
+    /// locally (`podman image exists <ref>` — see `ContainerSandbox::
+    /// preflight`'s doc comment). Any string `podman run`/`podman image
+    /// exists` accepts: a bare local tag (`autograder-base:1.86.0`) or a
+    /// fully-qualified registry reference (`ghcr.io/org/autograder-base:
+    /// 1.86.0`) that an operator has already `podman pull`ed onto this
+    /// host — `autograder` never pulls images itself (the sandbox runs
+    /// fully offline; fetching a base image is a deliberate, out-of-band
+    /// host action, the same category of prerequisite as the seccomp
+    /// profile). Building/hosting that image (pinning a Rust toolchain,
+    /// installing `cargo-nextest`) is entirely the operator's concern —
+    /// this crate has no opinion on how it was produced.
+    pub image: String,
 }
 
 /// A size in bytes, parsed from strings like "2GiB", "1MiB", "512B".
@@ -183,7 +198,7 @@ pub struct Scoring {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Spec {
     pub assignment: Assignment,
-    pub toolchain: Toolchain,
+    pub sandbox: Sandbox,
     #[serde(default, rename = "allowed-crates")]
     pub allowed_crates: BTreeMap<String, String>,
     pub limits: Limits,
@@ -230,8 +245,8 @@ kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
-[toolchain]
-channel = "1.86.0"
+[sandbox]
+image = "autograder-base:1.86.0"
 
 [allowed-crates]
 serde = "1"
@@ -266,8 +281,8 @@ kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
-[toolchain]
-channel = "1.86.0"
+[sandbox]
+image = "autograder-base:1.86.0"
 
 [allowed-crates]
 serde = "1"
@@ -328,6 +343,29 @@ visibility = "private"
     fn scoring_with_no_late_penalty_table_parses_to_none() {
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert!(spec.scoring.late_penalty.is_none());
+    }
+
+    #[test]
+    fn parses_the_image_and_accepts_a_registry_reference() {
+        let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
+        assert_eq!(spec.sandbox.image, "autograder-base:1.86.0");
+
+        let toml = PUBLIC_TOML.replace(
+            r#"image = "autograder-base:1.86.0""#,
+            r#"image = "ghcr.io/org/autograder-base:1.86.0""#,
+        );
+        let spec: Spec = toml::from_str(&toml).unwrap();
+        assert_eq!(spec.sandbox.image, "ghcr.io/org/autograder-base:1.86.0");
+    }
+
+    #[test]
+    fn missing_sandbox_table_is_a_clear_parse_error() {
+        let toml = PUBLIC_TOML.replace(
+            "[sandbox]\nimage = \"autograder-base:1.86.0\"\n",
+            "",
+        );
+        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+        assert!(result.is_err());
     }
 
     #[test]

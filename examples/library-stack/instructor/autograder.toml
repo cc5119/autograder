@@ -14,8 +14,8 @@ name = "Stack (library example)"
 kind = "library"
 deadline = "2099-01-01T00:00:00-00:00"
 
-[toolchain]
-channel = "1.86.0"
+[sandbox]
+image = "ghcr.io/cc5119/autograder-base:1.97.1"
 
 [allowed-crates]
 

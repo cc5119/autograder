@@ -1,8 +1,6 @@
 # autograder
 
-A sandboxed autograder for Rust programming assignments. See
-[`docs/design.md`](docs/design.md) and [`docs/plan.md`](docs/plan.md) for
-design and implementation status.
+A sandboxed autograder for Rust programming assignments.
 
 ```sh
 cargo build
@@ -21,7 +19,7 @@ shape but `todo!()` bodies) straight from `instructor/` in one pass — see
 `src/publish.rs` and `src/stub.rs`.
 
 There's no `[student]` spec section either: `[assignment].id` doubles as
-the student-facing crate name everywhere (design §5) — it's what
+the student-facing crate name everywhere — it's what
 `harness/Cargo.toml` depends on, and what the reference solution's own
 directory must be named (`instructor/<id>/`, validated by `scaffold`).
 The starter's `Cargo.toml` is a straight copy of that solution's own
@@ -108,13 +106,17 @@ containers. Three things need to be in place first:
    sudo mkdir -p /etc/autograder
    sudo cp /usr/share/containers/seccomp.json /etc/autograder/seccomp.json
    ```
-3. **Base image**, tagged `autograder-base:<channel>` where `<channel>`
-   matches the assignment's `[toolchain].channel` (no CLI command builds
-   this yet, so do it by hand per toolchain version):
+3. **Base image**, matching the assignment's `[sandbox].image` (a
+   required field in `autograder.toml`; see `examples/library-stack/
+   instructor/autograder.toml`). Build and tag it yourself:
    ```sh
    printf 'FROM docker.io/library/rust:1.86.0\nRUN cargo install cargo-nextest --locked\n' > Containerfile
    podman build -t autograder-base:1.86.0 -f Containerfile .
    ```
+   `[sandbox].image` can also name a registry reference (e.g.
+   `ghcr.io/org/autograder-base:1.86.0`) that you've already `podman pull`ed
+   onto this host — `autograder` never builds or pulls the image itself, it
+   only checks the configured reference already exists locally.
 
 `ContainerSandbox::preflight` checks all this up front and fails clearly if
 anything's missing, rather than grading anyone. `ci` and `--local-sandbox`
