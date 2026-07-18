@@ -10,27 +10,54 @@
 //! crate name the harness's `Cargo.toml` depends on (`evaluator::library`),
 //! the binary target name for `binary`-kind assignments
 //! (`prepare::Wiring::Binary`), *and* the directory name the reference
-//! solution must live in — `package_dir.join(&spec.assignment.id)`. No
-//! `[student]` section to keep in sync with it, no `--solution` flag.
+//! solution (privately) / the student's own crate (once published) must
+//! live in. No `[student]` section to keep in sync with it, no `--solution`
+//! flag.
+//!
+//! The published starter is laid out as a **structural mirror** of the
+//! private package: `autograder.public.toml`/`harness/`/`<id>/` sit at
+//! `out_dir`'s top level, exactly where `autograder.toml`/`harness/`/`<id>/`
+//! sit in `package_dir` -- there's no `.autograder/public/` wrapper
+//! directory the way earlier versions of this module had. That parity is
+//! deliberate, not cosmetic: `harness/Cargo.toml`'s dependency on `<id>`
+//! resolves via a plain path (`../<id>`, see
+//! `publish::rewrite_harness_dependency_to_path`) precisely because
+//! `<id>/` is always sitting right there as a sibling, in both the private
+//! package and the published starter alike -- no patch, no `--config`
+//! override, no per-tier special-casing needed to make it resolve
+//! correctly. A generated root `[workspace]` manifest (`Cargo.toml`, see
+//! `write_workspace_manifest`) is the one thing with no private-package
+//! counterpart: it's what makes a bare `cargo test` run from `out_dir`
+//! build and run *both* the student's own crate and the harness's public
+//! judge tests, no `autograder` involvement, no flags.
 //!
 //! From `package_dir`, `scaffold` produces `out_dir` as:
-//! - A full recursive copy of `package_dir/<id>/` (the reference solution —
-//!   `Cargo.toml`, `src/`, anything else that's there), with every `.rs`
-//!   file then stripped in place via [`crate::stub`]: pub signatures
-//!   survive, bodies become `todo!()`, private items and `#[cfg(test)]`
-//!   modules are dropped. `cargo fix` then runs directly in `out_dir` to
-//!   prune imports the stripping left unused — no separate scratch copy,
-//!   since `out_dir` already *is* a real, disposable copy of the solution
-//!   crate at this point. A solution directory is required: if it's
-//!   missing, or its own `Cargo.toml` `[package].name` doesn't match
-//!   `[assignment].id`, `scaffold` refuses to guess and errors out clearly.
-//! - `.autograder/public/` — `autograder.public.toml` with `points` and
-//!   non-public `[[scoring.tests]]` entries stripped
-//!   ([`crate::publish::derive_public_spec_toml`]), a copy of `harness/`
-//!   with test files filtered down to the public-visibility tests named in
-//!   that same spec transform ([`crate::publish::keep_only_named_tests`])
-//!   and its `Cargo.toml`'s `[patch]` table dropped (it points at the
-//!   solution directory, which doesn't exist once copied out).
+//! - `<id>/` — a full recursive copy of `package_dir/<id>/` (the reference
+//!   solution — `Cargo.toml`, `src/`, anything else that's there), with
+//!   every `.rs` file then stripped in place via [`crate::stub`]: pub
+//!   signatures survive, bodies become `todo!()`, private items and
+//!   `#[cfg(test)]` modules are dropped. `cargo fix` then runs directly in
+//!   `out_dir/<id>` to prune imports the stripping left unused — no
+//!   separate scratch copy, since it's already a real, disposable copy of
+//!   the solution crate at this point. A solution directory is required:
+//!   if it's missing, or its own `Cargo.toml` `[package].name` doesn't
+//!   match `[assignment].id`, `scaffold` refuses to guess and errors out
+//!   clearly.
+//! - `autograder.public.toml` — `points` and non-public
+//!   `[[scoring.tests]]` entries stripped
+//!   ([`crate::publish::derive_public_spec_toml`]).
+//! - `harness/` — a copy of the private `harness/`, with test files
+//!   filtered down to the public-visibility tests named in that same spec
+//!   transform ([`crate::publish::keep_only_named_tests`]) and its
+//!   manifest's `<id> = "*"` + checked-in `[patch]` rewritten to a plain
+//!   `<id> = { path = "../<id>" }` dependency
+//!   ([`crate::publish::rewrite_harness_dependency_to_path`]). `binary`-kind
+//!   has no `harness/Cargo.toml` at all (its harness is just loose
+//!   `tests/*.rs`, merged onto whatever crate `Prepare` targets at grading
+//!   time), so for that kind those same public-only test files are
+//!   *additionally* copied straight into `<id>/tests/` — the only way a
+//!   plain `cargo test` finds them there, since there's no crate-linking
+//!   trick available without a `Cargo.toml` to attach a path dependency to.
 //!   Deliberately *not* copied here: `vendor/`/`.cargo/` (`prefetch`'s
 //!   offline-vendoring output) — that's grading-only infrastructure (design
 //!   §8), not something the published starter carries; a student's own
@@ -39,16 +66,18 @@
 //!   nothing in this codebase currently reads it (same reasoning as the
 //!   `fixtures/` overlay removed from `prepare.rs`); reintroduce it,
 //!   correctly scoped, once an evaluator actually needs fixture data.
+//! - `Cargo.toml` — the root `[workspace]` manifest (see above).
 //! - `.github/workflows/autograde.yml` — a thin wrapper around `autograder
-//!   ci`. The one file with no private-repo counterpart to copy, so it's
-//!   still generated.
+//!   ci`, run from inside `<id>/` (the student's own crate) with
+//!   `--harness ..` pointing back at the repo root. The one file with no
+//!   private-repo counterpart to copy, so it's still generated.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::publish;
-use crate::spec::{self, Spec};
+use crate::spec::{self, AssignmentKind, Spec};
 
 /// Placeholder release coordinates for the downloaded `autograder` binary
 /// (design §11.2). The real pinned version + sha256 come from the release
@@ -65,7 +94,16 @@ pub struct ScaffoldOutcome {
 }
 
 /// Builds the starter template at `out_dir` from the private instructor
-/// package at `package_dir`.
+/// package at `package_dir`, laid out as a **structural mirror** of the
+/// private package itself: `autograder.public.toml`/`harness/`/`<id>/` as
+/// top-level siblings, exactly where `autograder.toml`/`harness/`/`<id>/`
+/// sit in `package_dir`. That parity is what lets `harness/`'s dependency
+/// on `<id>` be an ordinary, always-resolving path dependency instead of
+/// needing a patch or `--config` override in the starter (see
+/// `publish::rewrite_harness_dependency_to_path`) -- and it's why a plain
+/// `cargo test` from `out_dir` (no `autograder` involvement) already runs
+/// both the student's own tests and the public harness's, via the
+/// `[workspace]` manifest this also writes.
 pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
     let private_spec_path = package_dir.join(spec::PRIVATE_SPEC_FILE);
     if !private_spec_path.is_file() {
@@ -76,8 +114,9 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         )));
     }
     let spec = Spec::load_file(&private_spec_path)?;
+    let id = spec.assignment.id.as_str();
 
-    let solution_dir = package_dir.join(&spec.assignment.id);
+    let solution_dir = package_dir.join(id);
     if !solution_dir.is_dir() {
         return Err(Error::InvalidSpec(format!(
             "scaffold requires a reference solution at {} (a directory named after \
@@ -85,11 +124,12 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
             solution_dir.display()
         )));
     }
-    check_solution_package_name(&solution_dir, &spec.assignment.id)?;
+    check_solution_package_name(&solution_dir, id)?;
 
-    copy_dir_if_exists(&solution_dir, out_dir)?;
-    strip_rust_files_in_place(out_dir)?;
-    run_cargo_fix(out_dir)?;
+    let student_dir = out_dir.join(id);
+    copy_dir_if_exists(&solution_dir, &student_dir)?;
+    strip_rust_files_in_place(&student_dir)?;
+    run_cargo_fix(&student_dir)?;
 
     let private_toml = std::fs::read_to_string(&private_spec_path).map_err(|source| Error::Io {
         path: private_spec_path.clone(),
@@ -97,22 +137,30 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
     })?;
     let (public_spec_toml, public_test_names) = publish::derive_public_spec_toml(&private_toml)?;
 
-    let public_dir = out_dir.join(".autograder/public");
-    std::fs::create_dir_all(&public_dir).map_err(|source| Error::Io {
-        path: public_dir.clone(),
-        source,
-    })?;
-    let public_spec_path = public_dir.join(spec::PUBLIC_SPEC_FILE);
+    let public_spec_path = out_dir.join(spec::PUBLIC_SPEC_FILE);
     std::fs::write(&public_spec_path, public_spec_toml).map_err(|source| Error::Io {
         path: public_spec_path,
         source,
     })?;
 
+    let harness_dir = out_dir.join("harness");
     copy_public_harness(
         &package_dir.join("harness"),
-        &public_dir.join("harness"),
+        &harness_dir,
         &public_test_names,
+        id,
     )?;
+
+    // `binary`-kind has no harness crate to link in via the workspace
+    // (`harness/` there is just loose `tests/*.rs`, merged onto whatever
+    // crate `Prepare` targets at grading time -- see `prepare::Wiring::
+    // Binary`), so the only way a plain `cargo test` finds those tests is
+    // if they're statically sitting in the student's own `tests/` already.
+    // `library` doesn't need this: the workspace path dependency links the
+    // harness in place, no duplication required.
+    if spec.assignment.kind == AssignmentKind::Binary {
+        copy_dir_if_exists(&harness_dir.join("tests"), &student_dir.join("tests"))?;
+    }
 
     let workflow_dir = out_dir.join(".github/workflows");
     std::fs::create_dir_all(&workflow_dir).map_err(|source| Error::Io {
@@ -120,22 +168,51 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         source,
     })?;
     let workflow_path = workflow_dir.join("autograde.yml");
-    std::fs::write(&workflow_path, autograde_workflow_yaml()).map_err(|source| Error::Io {
+    std::fs::write(&workflow_path, autograde_workflow_yaml(id)).map_err(|source| Error::Io {
         path: workflow_path.clone(),
         source,
     })?;
+
+    write_workspace_manifest(out_dir, id, spec.assignment.kind)?;
 
     Ok(ScaffoldOutcome {
         out_dir: out_dir.to_path_buf(),
     })
 }
 
+/// The root `[workspace]` manifest that makes a bare `cargo test` from
+/// `out_dir` build+run every member with no flags: for `library`, the
+/// student's crate (`<id>/`) and the harness/judge crate (`harness/`); for
+/// `binary`, just `<id>/` (its harness has no `Cargo.toml` of its own, so
+/// there's nothing else to list -- declaring the workspace at all still
+/// buys command parity with `library`'s starter, "cargo test always
+/// works" regardless of kind). A virtual manifest (`[workspace]` with no
+/// `[package]` of its own) defaults to operating on every member for a
+/// bare `cargo test`/`cargo build` with no package-selection flags, so no
+/// `default-members` key is needed here.
+fn write_workspace_manifest(out_dir: &Path, id: &str, kind: AssignmentKind) -> Result<()> {
+    let members = match kind {
+        AssignmentKind::Library => format!("[\"harness\", \"{id}\"]"),
+        AssignmentKind::Binary => format!("[\"{id}\"]"),
+    };
+    let manifest_path = out_dir.join("Cargo.toml");
+    std::fs::write(
+        &manifest_path,
+        format!("[workspace]\nmembers = {members}\n"),
+    )
+    .map_err(|source| Error::Io {
+        path: manifest_path,
+        source,
+    })
+}
+
 /// The thin GitHub Actions wrapper (design §11.2): downloads a
 /// version-pinned prebuilt `autograder` binary, verifies its checksum, and
-/// runs `autograder ci` against the public harness copied into
-/// `.autograder/public/`. No compile step, so student CI never needs a Rust
-/// toolchain of its own for the grader itself.
-fn autograde_workflow_yaml() -> String {
+/// runs `autograder ci` from inside the student's own crate (`<id>/`)
+/// against the public spec + harness one level up, at the repo root. No
+/// compile step, so student CI never needs a Rust toolchain of its own for
+/// the grader itself.
+fn autograde_workflow_yaml(id: &str) -> String {
     format!(
         r#"name: autograde
 on:
@@ -150,7 +227,7 @@ jobs:
           curl -fsSL https://github.com/{RELEASE_REPO}/releases/download/{RELEASE_VERSION}/autograder-x86_64-linux -o autograder
           echo "{RELEASE_SHA256_PLACEHOLDER}  autograder" | sha256sum -c -   # verify before exec
           chmod +x autograder
-      - run: ./autograder ci --harness .autograder/public
+      - run: cd {id} && ../autograder ci --harness ..
 "#
     )
 }
@@ -262,11 +339,18 @@ fn copy_file(src: &Path, dst: &Path) -> Result<()> {
 
 /// Copies the instructor's `harness/` into the public starter, then
 /// rewrites the two files that carry private-only content in place: the
-/// manifest's `[patch]` table (points at `../solution`, meaningless once
-/// copied out) and every `tests/*.rs` file (dropped down to just the
-/// public-visibility tests named in `public_test_names`, via
+/// manifest's dependency on `<id>` (a plain path dependency now, not the
+/// private `"*"` + checked-in `[patch]` -- see
+/// [`crate::publish::rewrite_harness_dependency_to_path`]) and every
+/// `tests/*.rs` file (dropped down to just the public-visibility tests
+/// named in `public_test_names`, via
 /// [`crate::publish::keep_only_named_tests`]).
-fn copy_public_harness(src: &Path, dst: &Path, public_test_names: &HashSet<String>) -> Result<()> {
+fn copy_public_harness(
+    src: &Path,
+    dst: &Path,
+    public_test_names: &HashSet<String>,
+    id: &str,
+) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
@@ -278,8 +362,8 @@ fn copy_public_harness(src: &Path, dst: &Path, public_test_names: &HashSet<Strin
             path: manifest_path.clone(),
             source,
         })?;
-        let stripped = publish::strip_toml_table(&manifest, "patch")?;
-        std::fs::write(&manifest_path, stripped).map_err(|source| Error::Io {
+        let rewritten = publish::rewrite_harness_dependency_to_path(&manifest, id)?;
+        std::fs::write(&manifest_path, rewritten).map_err(|source| Error::Io {
             path: manifest_path,
             source,
         })?;
@@ -445,9 +529,15 @@ visibility = "private"
     /// `PRIVATE_SPEC`'s `id = "hw3"`) -- a solution is required for
     /// `scaffold` to produce anything, so every test that isn't
     /// specifically about a missing/mismatched solution needs one.
+    /// `harness/src/main.rs` matters here in a way it didn't before this
+    /// module started emitting a `[workspace]`: with `harness` now a real
+    /// workspace member, a `cargo build`/`cargo test` from the starter
+    /// root needs it to actually be a buildable crate, not just a
+    /// manifest.
     fn write_instructor_package(package_dir: &Path) {
         write(&package_dir.join(spec::PRIVATE_SPEC_FILE), PRIVATE_SPEC);
         write(&package_dir.join("harness/Cargo.toml"), HARNESS_MANIFEST);
+        write(&package_dir.join("harness/src/main.rs"), "fn main() {}\n");
         write(&package_dir.join("harness/tests/judge.rs"), JUDGE_RS);
         write_solution_crate(&package_dir.join("hw3"), "hw3");
     }
@@ -460,27 +550,19 @@ visibility = "private"
         let out_dir = tempfile::tempdir().unwrap();
         let outcome = scaffold(package_dir.path(), out_dir.path()).unwrap();
 
-        assert!(
-            outcome
-                .out_dir
-                .join(".autograder/public")
-                .join(spec::PUBLIC_SPEC_FILE)
-                .is_file()
-        );
-        assert!(
-            outcome
-                .out_dir
-                .join(".autograder/public/harness/tests/judge.rs")
-                .is_file()
-        );
+        assert!(outcome.out_dir.join(spec::PUBLIC_SPEC_FILE).is_file());
+        assert!(outcome.out_dir.join("harness/tests/judge.rs").is_file());
         assert!(
             outcome
                 .out_dir
                 .join(".github/workflows/autograde.yml")
                 .is_file()
         );
+        // The root manifest is now the workspace, not the student's own
+        // package -- that lives at `<id>/`.
         assert!(outcome.out_dir.join("Cargo.toml").is_file());
-        assert!(outcome.out_dir.join("src/lib.rs").is_file());
+        assert!(outcome.out_dir.join("hw3/Cargo.toml").is_file());
+        assert!(outcome.out_dir.join("hw3/src/lib.rs").is_file());
     }
 
     #[test]
@@ -491,40 +573,32 @@ visibility = "private"
 
         scaffold(package_dir.path(), out_dir.path()).unwrap();
 
-        let public_spec = std::fs::read_to_string(
-            out_dir
-                .path()
-                .join(".autograder/public")
-                .join(spec::PUBLIC_SPEC_FILE),
-        )
-        .unwrap();
+        let public_spec =
+            std::fs::read_to_string(out_dir.path().join(spec::PUBLIC_SPEC_FILE)).unwrap();
         assert!(!public_spec.contains("points"));
         assert!(!public_spec.contains("balance_adversarial"));
         assert!(public_spec.contains("insert_basic"));
     }
 
     #[test]
-    fn scaffold_derives_a_public_harness_with_only_the_public_test_and_no_patch() {
+    fn scaffold_derives_a_public_harness_with_only_the_public_test_and_a_path_dependency() {
         let package_dir = tempfile::tempdir().unwrap();
         write_instructor_package(package_dir.path());
         let out_dir = tempfile::tempdir().unwrap();
 
         scaffold(package_dir.path(), out_dir.path()).unwrap();
 
-        let judge = std::fs::read_to_string(
-            out_dir
-                .path()
-                .join(".autograder/public/harness/tests/judge.rs"),
-        )
-        .unwrap();
+        let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
         assert!(judge.contains("fn insert_basic"));
         assert!(!judge.contains("balance_adversarial"));
 
-        let manifest =
-            std::fs::read_to_string(out_dir.path().join(".autograder/public/harness/Cargo.toml"))
-                .unwrap();
+        let manifest = std::fs::read_to_string(out_dir.path().join("harness/Cargo.toml")).unwrap();
         assert!(!manifest.contains("patch"));
-        assert!(!manifest.contains("solution"));
+        // `../hw3` now means something real: the student's own crate,
+        // a sibling of `harness/` at the starter root (see
+        // `write_workspace_manifest`) -- not a dangling reference to a
+        // solution directory that doesn't exist in the starter.
+        assert!(manifest.contains("path = \"../hw3\""));
     }
 
     #[test]
@@ -547,7 +621,7 @@ visibility = "private"
     }
 
     #[test]
-    fn emitted_workflow_matches_the_design_reference_wrapper() {
+    fn emitted_workflow_cds_into_the_student_crate_before_running_ci() {
         let package_dir = tempfile::tempdir().unwrap();
         write_instructor_package(package_dir.path());
         let out_dir = tempfile::tempdir().unwrap();
@@ -559,11 +633,27 @@ visibility = "private"
                 .unwrap();
         assert!(workflow.contains("on:\n  push:\n    branches: [main]"));
         assert!(workflow.contains("sha256sum -c -"));
-        assert!(workflow.contains("./autograder ci --harness .autograder/public"));
+        assert!(workflow.contains("cd hw3 && ../autograder ci --harness .."));
     }
 
     #[test]
-    fn emitted_manifest_matches_the_solutions_own_cargo_toml() {
+    fn emitted_workspace_manifest_lists_the_harness_and_student_crate() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_instructor_package(package_dir.path());
+        let out_dir = tempfile::tempdir().unwrap();
+
+        scaffold(package_dir.path(), out_dir.path()).unwrap();
+
+        let workspace_manifest =
+            std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap();
+        assert_eq!(
+            workspace_manifest,
+            "[workspace]\nmembers = [\"harness\", \"hw3\"]\n"
+        );
+    }
+
+    #[test]
+    fn emitted_student_manifest_matches_the_solutions_own_cargo_toml() {
         let package_dir = tempfile::tempdir().unwrap();
         write_instructor_package(package_dir.path());
         let out_dir = tempfile::tempdir().unwrap();
@@ -572,7 +662,8 @@ visibility = "private"
 
         let solution_manifest =
             std::fs::read_to_string(package_dir.path().join("hw3/Cargo.toml")).unwrap();
-        let starter_manifest = std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap();
+        let starter_manifest =
+            std::fs::read_to_string(out_dir.path().join("hw3/Cargo.toml")).unwrap();
         assert_eq!(starter_manifest, solution_manifest);
     }
 
@@ -586,10 +677,10 @@ visibility = "private"
     }
 
     /// End-to-end: given the real solution crate `write_instructor_package`
-    /// puts at `package_dir/<id>`, the emitted starter builds (implying
-    /// `cargo fix` left it in a compiling state), exposes the pub API,
-    /// stubs bodies to `todo!()`, and never leaks the private helper or its
-    /// now-unused import.
+    /// puts at `package_dir/<id>`, the emitted starter's `<id>/` crate
+    /// builds on its own (implying `cargo fix` left it in a compiling
+    /// state), exposes the pub API, stubs bodies to `todo!()`, and never
+    /// leaks the private helper or its now-unused import.
     #[test]
     fn scaffold_derives_a_building_stub_from_the_id_named_solution_dir() {
         let package_dir = tempfile::tempdir().unwrap();
@@ -598,7 +689,7 @@ visibility = "private"
         let out_dir = tempfile::tempdir().unwrap();
         scaffold(package_dir.path(), out_dir.path()).unwrap();
 
-        let src = std::fs::read_to_string(out_dir.path().join("src/lib.rs")).unwrap();
+        let src = std::fs::read_to_string(out_dir.path().join("hw3/src/lib.rs")).unwrap();
         assert!(src.contains("pub struct Stack"));
         assert!(src.contains("pub fn new"));
         assert!(src.contains("pub fn push"));
@@ -608,7 +699,7 @@ visibility = "private"
 
         let build = std::process::Command::new("cargo")
             .arg("build")
-            .current_dir(out_dir.path())
+            .current_dir(out_dir.path().join("hw3"))
             .output()
             .unwrap();
         assert!(
@@ -616,6 +707,35 @@ visibility = "private"
             "scaffolded starter failed to build: {}",
             String::from_utf8_lossy(&build.stderr)
         );
+    }
+
+    /// The whole point of the new layout: a plain `cargo test` run from
+    /// the starter's own root -- no `autograder` involvement, no `cd`,
+    /// no flags -- builds and runs the public harness's judge tests
+    /// (`insert_basic`, since `balance_adversarial` was filtered out as
+    /// hidden) against the student's stub, via the `[workspace]` manifest
+    /// and the harness's plain path dependency on `hw3`.
+    #[test]
+    fn cargo_test_at_the_starter_root_runs_the_public_harness() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_instructor_package(package_dir.path());
+
+        let out_dir = tempfile::tempdir().unwrap();
+        scaffold(package_dir.path(), out_dir.path()).unwrap();
+
+        let test = std::process::Command::new("cargo")
+            .arg("test")
+            .current_dir(out_dir.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&test.stdout);
+        assert!(
+            test.status.success(),
+            "cargo test at the starter root failed: {}{}",
+            stdout,
+            String::from_utf8_lossy(&test.stderr)
+        );
+        assert!(stdout.contains("insert_basic"));
     }
 
     #[test]

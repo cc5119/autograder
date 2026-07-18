@@ -65,17 +65,23 @@ $BIN grade examples/library-stack --submissions /tmp/ll-stack-submissions
 $BIN report library-stack-example --format csv
 
 # generate the starter repo a student would clone: derives the public spec
-# (no points/hidden tests) + public harness (only the public test, no
-# [patch]) + a starter src/lib.rs (solution's API shape, todo!() bodies --
-# picked up automatically from <id>/, no --solution flag) -- all from the
-# private package in one command
+# (no points/hidden tests) + public harness (only the public test, plain
+# path dependency instead of [patch]) + a starter src/lib.rs (solution's
+# API shape, todo!() bodies -- picked up automatically from <id>/, no
+# --solution flag) -- laid out as a structural mirror of the private
+# package, so it's genuinely just autograder.public.toml/harness/<id>/
+# side by side, no .autograder/ wrapper
 $BIN scaffold examples/library-stack --out /tmp/starter-stack
 
-# student-facing CI check, no Podman needed -- runs against the harness
-# scaffold just derived, from within a student's own checkout (here, the
-# reference solution again)
-(cd examples/library-stack/library-stack-example && \
-  $BIN ci --harness /tmp/starter-stack/.autograder/public)
+# a bare `cargo test` from the starter root already runs both the
+# student's own crate and the public harness's judge test -- the whole
+# point of the workspace + path-dependency layout, no autograder at all
+(cd /tmp/starter-stack && cargo test)
+
+# student-facing CI check, no Podman needed -- ci also always runs from
+# inside the student's own crate, one level under the spec/harness it's
+# handed via --harness
+(cd /tmp/starter-stack/library-stack-example && $BIN ci --harness ..)
 ```
 
 ### `binary`: [`examples/binary-fizzbuzz/`](examples/binary-fizzbuzz/)
@@ -99,9 +105,14 @@ cp -r examples/binary-fizzbuzz/fizzbuzz/. /tmp/fizzbuzz-submissions/alice/
 $BIN grade examples/binary-fizzbuzz --submissions /tmp/fizzbuzz-submissions
 $BIN report fizzbuzz --format csv
 
+# scaffold also statically copies the public harness tests straight into
+# fizzbuzz/tests/ (there's no crate to link in via the workspace the way
+# library's harness/ is), so `cargo test` from the starter root works here
+# too, no autograder involvement
 $BIN scaffold examples/binary-fizzbuzz --out /tmp/starter-fizzbuzz
-(cd examples/binary-fizzbuzz/fizzbuzz && \
-  $BIN ci --harness /tmp/starter-fizzbuzz/.autograder/public)
+(cd /tmp/starter-fizzbuzz && cargo test)
+
+(cd /tmp/starter-fizzbuzz/fizzbuzz && $BIN ci --harness ..)
 ```
 
 Use the already-built `$BIN` rather than `cargo run` once you `cd` into a
@@ -113,8 +124,15 @@ inside that directory would pick that config up too and try to resolve
 vendored set instead of the real registry.
 
 Generated artifacts (`vendor/`, `.cargo/`, `.autograder-store/`) are
-gitignored. `ci` never writes into the checkout it's run from — the driver
-it builds lives in a separate scratch directory under the system temp dir.
+gitignored. `ci` never writes into the student's own crate directory
+(`workspace`) — for `library` it builds `harness/` in place, a sibling
+directory in the same starter repo, never inside the crate actually being
+graded; for `binary` it builds directly in `workspace` (there's no
+separate harness crate to isolate). Real grading (`grade`, no
+`--local-sandbox`) is different again: there `harness/` is copied into a
+fresh scratch directory under the system temp dir for every job, since the
+checkout it needs to link against is a different, arbitrary location each
+time (see `prepare::prepare`'s doc comment).
 
 ## Setting up Podman
 

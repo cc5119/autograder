@@ -59,17 +59,34 @@ pub fn derive_public_spec_toml(private_toml: &str) -> Result<(String, HashSet<St
     Ok((rendered, public_names))
 }
 
-/// Strips a top-level table (e.g. `[patch.crates-io]`) out of a TOML
-/// document. Used to drop the instructor harness's default `[patch]`
-/// pointing at `../solution` — a path that doesn't exist in the public
-/// repo and would only reveal the solution directory's name.
-pub fn strip_toml_table(source: &str, key: &str) -> Result<String> {
-    let mut value: toml::Value = toml::from_str(source).map_err(|source| Error::Toml {
+/// Rewrites the harness manifest's `<id> = "*"` dependency (resolved
+/// privately via a checked-in `[patch.crates-io]` pointing at the
+/// reference solution) into a plain `<id> = { path = "../<id>" }` path
+/// dependency, and drops `[patch.crates-io]` entirely.
+///
+/// This is *not* the same transform as just stripping `[patch]` (what this
+/// function replaced): a bare `<id> = "*"` with no patch left behind
+/// doesn't resolve to anything at all -- `<id>` was never a real published
+/// crate. A plain path dependency does resolve, and correctly so, because
+/// `scaffold` lays the published starter out with the exact same shape as
+/// the private package: `harness/` and `<id>/` (the student's own crate,
+/// where the reference solution used to be) as siblings, so `../<id>`
+/// means the same thing in both. `Prepare`/`evaluator::library` rely on
+/// this: for `Tier::Ci` they build `harness/` in place with no `--config`
+/// override at all (see `prepare::prepare`'s doc comment) -- a patch
+/// wouldn't even apply to a path dependency if one were injected anyway.
+pub fn rewrite_harness_dependency_to_path(manifest: &str, id: &str) -> Result<String> {
+    let mut value: toml::Value = toml::from_str(manifest).map_err(|source| Error::Toml {
         path: PathBuf::from("<harness manifest>"),
         source: Box::new(source),
     })?;
     if let Some(table) = value.as_table_mut() {
-        table.remove(key);
+        table.remove("patch");
+        if let Some(deps) = table.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
+            let mut path_dep = toml::value::Table::new();
+            path_dep.insert("path".to_string(), toml::Value::String(format!("../{id}")));
+            deps.insert(id.to_string(), toml::Value::Table(path_dep));
+        }
     }
     toml::to_string_pretty(&value)
         .map_err(|e| Error::Other(format!("failed to render manifest: {e}")))
@@ -157,11 +174,20 @@ visibility = "private"
     }
 
     #[test]
-    fn strip_toml_table_removes_the_named_table() {
-        let manifest = "[package]\nname = \"driver\"\n\n[patch.crates-io]\nstack = { path = \"../solution\" }\n";
-        let stripped = strip_toml_table(manifest, "patch").unwrap();
-        assert!(!stripped.contains("patch"));
-        assert!(stripped.contains("name = \"driver\""));
+    fn rewrite_harness_dependency_to_path_drops_patch_and_resolves_the_star_dependency() {
+        let manifest = "[package]\nname = \"driver\"\n\n[dependencies]\nstack = \"*\"\n\n[patch.crates-io]\nstack = { path = \"../stack\" }\n";
+        let rewritten = rewrite_harness_dependency_to_path(manifest, "stack").unwrap();
+
+        assert!(!rewritten.contains("patch"));
+        assert!(rewritten.contains("name = \"driver\""));
+        assert!(rewritten.contains("path = \"../stack\""));
+        assert!(!rewritten.contains("stack = \"*\""));
+
+        // Must stay valid, resolvable TOML -- a downstream `cargo build`
+        // is the real check, but this catches a malformed rewrite early.
+        let reparsed: toml::Value = toml::from_str(&rewritten).unwrap();
+        let path = reparsed["dependencies"]["stack"]["path"].as_str().unwrap();
+        assert_eq!(path, "../stack");
     }
 
     #[test]

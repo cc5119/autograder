@@ -47,13 +47,20 @@ pub struct JobContext {
     pub tier: Tier,
     /// The student's checkout (fetch destination for `grade`; the current
     /// directory for `ci`). Never written into by an evaluator — only read,
-    /// as the target of a patched-in dependency.
+    /// as the target of a patched-in or path dependency.
     pub workspace: PathBuf,
-    /// A separate, fresh-per-job scratch directory where a `library`
-    /// driver crate is overlaid and built — a *sibling* of `workspace`, not
-    /// nested inside it, so nothing an evaluator builds ever lands inside
-    /// the student's own checkout. Unused by `binary`, which builds
-    /// the student's own binary directly in `workspace`.
+    /// Where a `library` driver crate is built — always a *sibling* of
+    /// `workspace`, not nested inside it, so nothing an evaluator builds
+    /// ever lands inside the student's own checkout. What that sibling
+    /// *is* differs by tier (see `prepare::prepare`'s doc comment for the
+    /// full reasoning): a fresh, per-job scratch copy for
+    /// `Tier::Authoritative` (an arbitrary checkout location, redirected
+    /// via a `--config` patch override); `package_dir/harness` itself,
+    /// built **in place** with no copy at all, for `Tier::Ci` (the starter
+    /// repo `scaffold` produces already has `harness/` positioned as a
+    /// real sibling of the checkout, wired via a plain path dependency).
+    /// Unused by `binary`, which builds the student's own binary directly
+    /// in `workspace`.
     pub driver_dir: PathBuf,
 }
 

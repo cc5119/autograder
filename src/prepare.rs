@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::manifest_check::{self, ManifestDiagnostic};
+use crate::model::Tier;
 use crate::spec::{AssignmentKind, Spec};
 use crate::vendor;
 
@@ -10,8 +11,12 @@ use crate::vendor;
 /// added in M2 (steps 12-13); this only identifies the wiring target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wiring {
-    /// `library`: a driver crate scaffold path-depends on the
-    /// student's package (named `[assignment].id`).
+    /// `library`: the driver crate builds against `driver_dir`, depending
+    /// on the student's package (named `[assignment].id`) via whatever
+    /// `harness/Cargo.toml` declares. For `Tier::Ci`, `driver_dir` is
+    /// `package_dir/harness` itself, built **in place** -- see `prepare`'s
+    /// doc comment for why. For `Tier::Authoritative`, it's a fresh
+    /// per-job scratch copy.
     Library { driver_dir: std::path::PathBuf },
     /// `binary`: the built binary target the judge will spawn.
     Binary { bin_name: String },
@@ -41,48 +46,73 @@ pub struct PrepareOutcome {
 }
 
 /// Assembles the workspace: the student checkout (already at `workspace`)
-/// plus the harness. `package_dir` is the instructor assignment package
-/// containing `harness/` and (once prefetched) `vendor/`.
+/// plus the harness. `package_dir` is the assignment package containing
+/// `harness/` and (once prefetched) `vendor/` -- the private instructor
+/// package for `Tier::Authoritative`, or a checked-out starter repo (see
+/// `scaffold`) for `Tier::Ci`.
 ///
-/// `library`'s `harness/` (the driver crate — no `driver/`
-/// subdirectory in the checked-in package, see `evaluator::library`)
-/// is copied into `driver_dir`: a *fresh, per-job* directory that is a
-/// **sibling** of `workspace`, not nested inside it, so nothing an evaluator
-/// builds ever lands inside the student's own checkout. It must still be
-/// fresh per job even though it's separate from `workspace`: sharing one
-/// `harness/` directory across jobs would race different students' builds
-/// against the same `Cargo.lock`/`target/` (`Cargo.lock` gets rewritten
-/// whenever the patched-in student package's version differs — verified
-/// empirically).
+/// For `library`, how `harness/` (the driver crate — no `driver/`
+/// subdirectory in the checked-in package, see `evaluator::library`) gets
+/// wired to the checkout depends on the tier, because the two tiers differ
+/// in exactly the way that matters for this:
+///
+/// - **`Authoritative`**: `workspace` is an arbitrary, per-job checkout
+///   location under the host's storage dir -- not something `harness/`'s
+///   own manifest can know ahead of time. So `harness/` is copied into
+///   `driver_dir`, a *fresh, per-job* directory that is a **sibling** of
+///   `workspace`, not nested inside it (nothing an evaluator builds ever
+///   lands inside the student's own checkout), and the evaluator
+///   redirects the dependency with a per-invocation `--config` override
+///   (`evaluator::library`). Freshness matters even though the two are
+///   separate: sharing one `harness/` directory across jobs would race
+///   different students' builds against the same `Cargo.lock`/`target/`.
+/// - **`Ci`**: `workspace` is wherever the student's own checkout already
+///   is, and (per `scaffold`'s starter layout) `harness/` is *already*
+///   sitting right there as a sibling of the student's crate, wired via a
+///   plain path dependency instead of a patch -- no per-job unpredictability
+///   to work around, since there's only ever one checkout `harness/` needs
+///   to see: the very repo it's part of. So `driver_dir` is `package_dir/
+///   harness` itself, built **in place**, no copy at all. This isn't just
+///   simpler: copying it elsewhere would actively break it, since a plain
+///   path dependency has no `--config`-patchable registry source to
+///   redirect (patches only apply to registry/git-sourced dependencies,
+///   never to ones already resolved via `path`) -- so a stale copy would
+///   silently resolve `../<id>` against whatever happens to be there
+///   instead of the student's actual crate.
 pub fn prepare(
     workspace: &Path,
     driver_dir: &Path,
     package_dir: &Path,
     spec: &Spec,
+    tier: Tier,
 ) -> Result<PrepareOutcome> {
+    let harness_dir = package_dir.join("harness");
     let wiring = match spec.assignment.kind {
         AssignmentKind::Library => {
-            std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
-                path: driver_dir.to_path_buf(),
-                source,
-            })?;
-            Wiring::Library {
-                driver_dir: driver_dir.to_path_buf(),
+            let driver_dir = match tier {
+                Tier::Ci => harness_dir.clone(),
+                Tier::Authoritative => {
+                    std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
+                        path: driver_dir.to_path_buf(),
+                        source,
+                    })?;
+                    if harness_dir.is_dir() {
+                        copy_dir_into(driver_dir, &harness_dir)?;
+                    }
+                    driver_dir.to_path_buf()
+                }
+            };
+            Wiring::Library { driver_dir }
+        }
+        AssignmentKind::Binary => {
+            if harness_dir.is_dir() {
+                copy_dir_into(workspace, &harness_dir)?;
+            }
+            Wiring::Binary {
+                bin_name: spec.assignment.id.clone(),
             }
         }
-        AssignmentKind::Binary => Wiring::Binary {
-            bin_name: spec.assignment.id.clone(),
-        },
     };
-
-    let harness_dir = package_dir.join("harness");
-    if harness_dir.is_dir() {
-        let harness_copy_target = match &wiring {
-            Wiring::Library { driver_dir } => driver_dir.clone(),
-            Wiring::Binary { .. } => workspace.to_path_buf(),
-        };
-        copy_dir_into(&harness_copy_target, &harness_dir)?;
-    }
 
     let offline_env = install_offline_env(workspace, package_dir)?;
     let manifest_diagnostics =
@@ -255,7 +285,14 @@ model = "weighted"
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
         let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(
+            workspace.path(),
+            driver_dir.path(),
+            package.path(),
+            &spec,
+            Tier::Authoritative,
+        )
+        .unwrap();
 
         assert!(outcome.manifest_diagnostics.is_empty());
         assert_eq!(
@@ -278,7 +315,14 @@ model = "weighted"
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
         let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(
+            workspace.path(),
+            driver_dir.path(),
+            package.path(),
+            &spec,
+            Tier::Authoritative,
+        )
+        .unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
         assert!(
@@ -296,10 +340,86 @@ model = "weighted"
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
         let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(
+            workspace.path(),
+            driver_dir.path(),
+            package.path(),
+            &spec,
+            Tier::Authoritative,
+        )
+        .unwrap();
 
         assert!(outcome.offline_env.vendor_dir.is_none());
         assert!(!workspace.path().join(".cargo/config.toml").exists());
+    }
+
+    #[test]
+    fn ci_tier_builds_the_library_harness_in_place_without_copying_it() {
+        let workspace = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        write(&workspace.path().join("src/lib.rs"), "// student code");
+        write(
+            &package.path().join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\n",
+        );
+        write(&package.path().join("harness/tests/judge.rs"), "// judge");
+
+        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        // A scratch dir that's never actually used for Ci -- confirms the
+        // harness stays in place rather than getting copied there.
+        let unused_driver_dir = tempfile::tempdir().unwrap();
+        let outcome = prepare(
+            workspace.path(),
+            unused_driver_dir.path(),
+            package.path(),
+            &spec,
+            Tier::Ci,
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.wiring,
+            Wiring::Library {
+                driver_dir: package.path().join("harness"),
+            }
+        );
+        assert!(
+            std::fs::read_dir(unused_driver_dir.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "Ci tier must not copy the harness into the scratch driver_dir hint"
+        );
+    }
+
+    #[test]
+    fn authoritative_tier_copies_the_library_harness_into_a_fresh_driver_dir() {
+        let workspace = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        write(&workspace.path().join("src/lib.rs"), "// student code");
+        write(
+            &package.path().join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\n",
+        );
+
+        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let driver_dir = tempfile::tempdir().unwrap();
+        let outcome = prepare(
+            workspace.path(),
+            driver_dir.path(),
+            package.path(),
+            &spec,
+            Tier::Authoritative,
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.wiring,
+            Wiring::Library {
+                driver_dir: driver_dir.path().to_path_buf(),
+            }
+        );
+        assert!(driver_dir.path().join("Cargo.toml").is_file());
     }
 
     #[test]

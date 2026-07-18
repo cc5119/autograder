@@ -125,7 +125,13 @@ pub fn grade_batch<F: Fetchable>(
                 fetch_outcome.message.clone(),
             )
         } else {
-            let prepared = crate::prepare::prepare(&workspace, &driver_dir, package_dir, spec)?;
+            let prepared = crate::prepare::prepare(
+                &workspace,
+                &driver_dir,
+                package_dir,
+                spec,
+                Tier::Authoritative,
+            )?;
             if !prepared.manifest_diagnostics.is_empty() {
                 let message = prepared
                     .manifest_diagnostics

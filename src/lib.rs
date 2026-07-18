@@ -153,12 +153,18 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
         source,
     })?;
     let run_id = pipeline::generate_run_id();
-    // Outside the student's own repo entirely -- never nested inside
-    // `workspace` (see `JobContext::driver_dir`'s doc comment), so `ci`
-    // never leaves build artifacts in the student's own checkout.
-    let driver_dir = std::env::temp_dir().join(format!("autograder-ci-{run_id}"));
+    // Only ever actually used for `binary` (where `driver_dir` goes
+    // unread) or if `Prepare` ever needs a scratch copy again -- for
+    // `library`, `Prepare` builds the harness in place instead (see its
+    // doc comment) and `prepared.wiring` below carries the real
+    // `driver_dir` to use, which is never this scratch path.
+    let scratch_driver_dir = std::env::temp_dir().join(format!("autograder-ci-{run_id}"));
 
-    let prepared = prepare::prepare(&workspace, &driver_dir, harness_dir, &spec)?;
+    let prepared = prepare::prepare(&workspace, &scratch_driver_dir, harness_dir, &spec, Tier::Ci)?;
+    let driver_dir = match &prepared.wiring {
+        prepare::Wiring::Library { driver_dir } => driver_dir.clone(),
+        prepare::Wiring::Binary { .. } => scratch_driver_dir,
+    };
 
     let eval = if prepared.manifest_diagnostics.is_empty() {
         let evaluator = build_local_evaluator(&spec, harness_dir)?;
@@ -316,6 +322,12 @@ visibility = "public"
     /// the ground rules describe for M2's podman dependency.
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
+        // Mirrors the real starter layout `scaffold` produces: `harness/`
+        // and the student's own crate (`hw3/`) as siblings under the repo
+        // root, with `harness/Cargo.toml` depending on it via a plain path
+        // dependency rather than a patch (see `publish::rewrite_harness_
+        // dependency_to_path`) -- so this exercises the actual production
+        // mechanism, not the old CLI-config-override shortcut.
         let harness_dir = tempfile::tempdir().unwrap();
         write(
             &harness_dir.path().join(spec::PUBLIC_SPEC_FILE),
@@ -323,30 +335,37 @@ visibility = "public"
         );
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n",
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
             &harness_dir.path().join("harness/src/main.rs"),
             "fn main() {}\n",
         );
 
-        let workspace = tempfile::tempdir().unwrap();
+        let workspace = harness_dir.path().join("hw3");
         write(
-            &workspace.path().join("Cargo.toml"),
+            &workspace.join("Cargo.toml"),
             "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         );
-        write(&workspace.path().join("src/lib.rs"), "pub fn noop() {}\n");
+        write(&workspace.join("src/lib.rs"), "pub fn noop() {}\n");
 
-        let driver_dir = tempfile::tempdir().unwrap();
         let spec = Spec::load(harness_dir.path()).unwrap();
+        let scratch_driver_dir = tempfile::tempdir().unwrap();
         let prepared = prepare::prepare(
-            workspace.path(),
-            driver_dir.path(),
+            &workspace,
+            scratch_driver_dir.path(),
             harness_dir.path(),
             &spec,
+            Tier::Ci,
         )
         .unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
+
+        let driver_dir = match &prepared.wiring {
+            prepare::Wiring::Library { driver_dir } => driver_dir.clone(),
+            prepare::Wiring::Binary { .. } => scratch_driver_dir.path().to_path_buf(),
+        };
+        assert_eq!(driver_dir, harness_dir.path().join("harness"));
 
         let evaluator = build_local_evaluator(&spec, harness_dir.path()).unwrap();
         let ctx = JobContext {
@@ -354,8 +373,8 @@ visibility = "public"
             student_id: "local".into(),
             run_id: "run-1".into(),
             tier: Tier::Ci,
-            workspace: workspace.path().to_path_buf(),
-            driver_dir: driver_dir.path().to_path_buf(),
+            workspace,
+            driver_dir,
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 

@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    StageStatus, TestResult, TestStatus, TestVisibility,
+    StageStatus, TestResult, TestStatus, TestVisibility, Tier,
 };
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::{ScoredTest, Spec};
@@ -138,16 +138,24 @@ impl<S: Sandbox> Library<S> {
     /// the offline vendored-source override (only when the package has been
     /// prefetched — mirrors `Prepare`'s own file-based version, see this
     /// module's doc comment for why this evaluator can't rely on that file),
-    /// then the dependency patch that redirects the driver's
-    /// `<assignment-id>` dependency at `workspace` (the checkout actually
-    /// being evaluated this job — a student's fetch, or the reference
-    /// solution), overriding whatever the checked-in `harness/Cargo.toml`
-    /// defaults to. Every path is absolutized: Cargo's config-path
-    /// resolution has already bitten this codebase once (see
-    /// `vendor::absolutize`'s doc comment), and a relative `ctx.workspace`
-    /// is a real possibility (it's derived from `Config::storage_dir`,
-    /// which defaults to a relative path).
-    fn config_args(&self, workspace: &Path) -> Vec<String> {
+    /// then, **for `Tier::Authoritative` only**, the dependency patch that
+    /// redirects the driver's `<assignment-id>` dependency at `workspace`
+    /// (the checkout actually being evaluated this job — a student's
+    /// fetch, or the reference solution), overriding whatever the
+    /// checked-in `harness/Cargo.toml` defaults to. Every path is
+    /// absolutized: Cargo's config-path resolution has already bitten this
+    /// codebase once (see `vendor::absolutize`'s doc comment), and a
+    /// relative `ctx.workspace` is a real possibility (it's derived from
+    /// `Config::storage_dir`, which defaults to a relative path).
+    ///
+    /// `Tier::Ci` never gets a patch override: `Prepare` builds the
+    /// `harness/` that ships in the starter repo **in place**, already
+    /// correctly path-dependency-wired to the checkout it's a sibling of
+    /// (see `prepare::prepare`'s doc comment) -- there's no arbitrary
+    /// per-job location to redirect to, and patches don't apply to path
+    /// dependencies anyway (they only override registry/git-sourced ones),
+    /// so injecting one here would be inert at best.
+    fn config_args(&self, workspace: &Path, tier: Tier) -> Vec<String> {
         let mut args = Vec::new();
         let vendor_dir = self.vendor_dir();
         if vendor_dir.is_dir() {
@@ -159,12 +167,14 @@ impl<S: Sandbox> Library<S> {
                 vendor::absolutize(&vendor_dir).display()
             ));
         }
-        args.push("--config".to_string());
-        args.push(format!(
-            "patch.crates-io.{}.path=\"{}\"",
-            self.student_package_name,
-            vendor::absolutize(workspace).display()
-        ));
+        if tier == Tier::Authoritative {
+            args.push("--config".to_string());
+            args.push(format!(
+                "patch.crates-io.{}.path=\"{}\"",
+                self.student_package_name,
+                vendor::absolutize(workspace).display()
+            ));
+        }
         args
     }
 }
@@ -172,7 +182,7 @@ impl<S: Sandbox> Library<S> {
 impl<S: Sandbox> Evaluator for Library<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let driver_dir = &ctx.driver_dir;
-        let config_args = self.config_args(&ctx.workspace);
+        let config_args = self.config_args(&ctx.workspace, ctx.tier);
 
         let env = self.offline_env();
         let mounts = self.mounts(&ctx.workspace, driver_dir);
@@ -564,7 +574,10 @@ visibility = "public"
         let evaluator =
             Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
-        let args = evaluator.config_args(std::path::Path::new("relative/workspace"));
+        let args = evaluator.config_args(
+            std::path::Path::new("relative/workspace"),
+            Tier::Authoritative,
+        );
         let arg = args
             .iter()
             .find(|a| a.starts_with("patch.crates-io"))
@@ -580,6 +593,18 @@ visibility = "public"
                     .unwrap()
             )
         );
+    }
+
+    #[test]
+    fn ci_tier_never_gets_a_patch_override() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let evaluator =
+            Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+
+        let args = evaluator.config_args(std::path::Path::new("relative/workspace"), Tier::Ci);
+
+        assert!(!args.iter().any(|a| a.starts_with("patch.crates-io")));
     }
 
     #[test]
