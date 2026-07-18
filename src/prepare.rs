@@ -11,7 +11,7 @@ use crate::vendor;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wiring {
     /// `linked-library`: a driver crate scaffold path-depends on the
-    /// student's package (by `[student].package-name`).
+    /// student's package (named `[assignment].id`).
     LinkedLibrary { driver_dir: std::path::PathBuf },
     /// `binary-harness`: the built binary target the judge will spawn.
     BinaryHarness { bin_name: String },
@@ -40,37 +40,49 @@ pub struct PrepareOutcome {
     pub manifest_diagnostics: Vec<ManifestDiagnostic>,
 }
 
-/// Assembles the workspace: student checkout (already at `workspace`) with
-/// the instructor `harness/` and `fixtures/` overlaid on top — instructor
-/// files win, and any student file at a matching path is replaced (design
-/// §7.2). `package_dir` is the instructor assignment package containing
-/// `harness/`, `fixtures/`, and (once prefetched) `vendor/`.
-pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<PrepareOutcome> {
-    let harness_dir = package_dir.join("harness");
-    if harness_dir.is_dir() {
-        overlay_dir(workspace, &harness_dir)?;
-    }
-    let fixtures_dir = package_dir.join("fixtures");
-    if fixtures_dir.is_dir() {
-        overlay_dir(&workspace.join("fixtures"), &fixtures_dir)?;
-    }
-
+/// Assembles the workspace: the student checkout (already at `workspace`)
+/// plus the harness. `package_dir` is the instructor assignment package
+/// containing `harness/` and (once prefetched) `vendor/`.
+///
+/// `linked-library`'s `harness/` (the driver crate — no `driver/`
+/// subdirectory in the checked-in package, see `evaluator::linked_library`)
+/// is copied into `driver_dir`: a *fresh, per-job* directory that is a
+/// **sibling** of `workspace`, not nested inside it, so nothing an evaluator
+/// builds ever lands inside the student's own checkout. It must still be
+/// fresh per job even though it's separate from `workspace`: sharing one
+/// `harness/` directory across jobs would race different students' builds
+/// against the same `Cargo.lock`/`target/` (`Cargo.lock` gets rewritten
+/// whenever the patched-in student package's version differs — verified
+/// empirically).
+pub fn prepare(
+    workspace: &Path,
+    driver_dir: &Path,
+    package_dir: &Path,
+    spec: &Spec,
+) -> Result<PrepareOutcome> {
     let wiring = match spec.assignment.kind {
         AssignmentKind::LinkedLibrary => {
-            let driver_dir = workspace.join("driver");
-            std::fs::create_dir_all(&driver_dir).map_err(|source| Error::Io {
-                path: driver_dir.clone(),
+            std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
+                path: driver_dir.to_path_buf(),
                 source,
             })?;
-            Wiring::LinkedLibrary { driver_dir }
+            Wiring::LinkedLibrary {
+                driver_dir: driver_dir.to_path_buf(),
+            }
         }
-        AssignmentKind::BinaryHarness => {
-            let bin_name = spec.student.bin_name.clone().ok_or_else(|| {
-                Error::InvalidSpec("binary-harness assignment missing [student].bin-name".into())
-            })?;
-            Wiring::BinaryHarness { bin_name }
-        }
+        AssignmentKind::BinaryHarness => Wiring::BinaryHarness {
+            bin_name: spec.assignment.id.clone(),
+        },
     };
+
+    let harness_dir = package_dir.join("harness");
+    if harness_dir.is_dir() {
+        let harness_copy_target = match &wiring {
+            Wiring::LinkedLibrary { driver_dir } => driver_dir.clone(),
+            Wiring::BinaryHarness { .. } => workspace.to_path_buf(),
+        };
+        copy_dir_into(&harness_copy_target, &harness_dir)?;
+    }
 
     let offline_env = install_offline_env(workspace, package_dir)?;
     let manifest_diagnostics = diagnose_manifest(workspace, spec, offline_env.vendor_dir.as_deref())?;
@@ -86,6 +98,16 @@ pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<Prep
 /// with the assignment's vendored crates, and returns the `CARGO_NET_OFFLINE`
 /// env var the build/run sandbox spec must set (design §8.2). A no-op when
 /// the package hasn't been prefetched (no `vendor/` dir yet).
+///
+/// `linked-library`'s actual build no longer discovers this file — its
+/// `driver_dir` is a sibling of `workspace`, not a descendant, so Cargo's
+/// directory-based config discovery never reaches it; `LinkedLibrary`
+/// passes the equivalent `[source]` override directly via `--config`
+/// instead (verified working with real vendored crates, offline). This
+/// function's return value is still consulted for `diagnose_manifest`
+/// below (a plain filesystem read, unrelated to Cargo's own config
+/// resolution) and still applies as-is to a future `binary-harness`
+/// evaluator, which builds directly in `workspace`.
 fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEnv> {
     let vendor_dir = package_dir.join("vendor");
     if !vendor_dir.is_dir() {
@@ -137,21 +159,25 @@ fn diagnose_manifest(
     manifest_check::check_manifest(&contents, &spec.allowed_crates, vendor_dir)
 }
 
-/// Copies `overlay_root`'s tree onto `dest`, path-for-path. Any existing
-/// file at a destination path is removed first, so instructor files always
-/// win over student files at the same path.
-fn overlay_dir(dest: &Path, overlay_root: &Path) -> Result<()> {
+/// Recursively copies `src`'s tree onto `dest`, path-for-path. `dest` is
+/// assumed to contain nothing at any of those paths — true by construction
+/// for both callers (a freshly-created `driver_dir` that's never reused
+/// across jobs; a `binary-harness` workspace where the harness paths are
+/// instructor-chosen to not collide with the student's own). If that
+/// invariant is ever violated, `std::fs::copy` simply overwrites the file —
+/// there's no separate collision-detection step to keep in sync.
+fn copy_dir_into(dest: &Path, src: &Path) -> Result<()> {
     std::fs::create_dir_all(dest).map_err(|source| Error::Io {
         path: dest.to_path_buf(),
         source,
     })?;
-    let entries = std::fs::read_dir(overlay_root).map_err(|source| Error::Io {
-        path: overlay_root.to_path_buf(),
+    let entries = std::fs::read_dir(src).map_err(|source| Error::Io {
+        path: src.to_path_buf(),
         source,
     })?;
     for entry in entries {
         let entry = entry.map_err(|source| Error::Io {
-            path: overlay_root.to_path_buf(),
+            path: src.to_path_buf(),
             source,
         })?;
         let file_type = entry.file_type().map_err(|source| Error::Io {
@@ -160,14 +186,8 @@ fn overlay_dir(dest: &Path, overlay_root: &Path) -> Result<()> {
         })?;
         let dest_path = dest.join(entry.file_name());
         if file_type.is_dir() {
-            overlay_dir(&dest_path, &entry.path())?;
+            copy_dir_into(&dest_path, &entry.path())?;
         } else if file_type.is_file() {
-            if dest_path.exists() {
-                std::fs::remove_file(&dest_path).map_err(|source| Error::Io {
-                    path: dest_path.clone(),
-                    source,
-                })?;
-            }
             std::fs::copy(entry.path(), &dest_path).map_err(|source| Error::Io {
                 path: dest_path.clone(),
                 source,
@@ -193,8 +213,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
 
 [toolchain]
 channel = "1.86.0"
@@ -235,7 +253,8 @@ model = "weighted"
         );
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let driver_dir = tempfile::tempdir().unwrap();
+        let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
 
         assert!(outcome.manifest_diagnostics.is_empty());
         assert_eq!(
@@ -257,7 +276,8 @@ model = "weighted"
         );
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let driver_dir = tempfile::tempdir().unwrap();
+        let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
         assert!(outcome.manifest_diagnostics[0].to_string().contains("tokio"));
@@ -270,46 +290,30 @@ model = "weighted"
         write(&workspace.path().join("src/lib.rs"), "// student code");
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let driver_dir = tempfile::tempdir().unwrap();
+        let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
 
         assert!(outcome.offline_env.vendor_dir.is_none());
         assert!(!workspace.path().join(".cargo/config.toml").exists());
     }
 
     #[test]
-    fn instructor_harness_replaces_student_file_at_same_path() {
-        let workspace = tempfile::tempdir().unwrap();
-        let package = tempfile::tempdir().unwrap();
+    fn copy_dir_into_recursively_copies_the_whole_tree() {
+        let dest = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
 
-        write(&workspace.path().join("tests/foo.rs"), "student version");
-        write(&package.path().join("harness/tests/foo.rs"), "instructor version");
-        write(&package.path().join("harness/tests/hidden.rs"), "hidden test");
+        write(&src.path().join("Cargo.toml"), "[package]\nname = \"driver\"\n");
+        write(&src.path().join("tests/judge.rs"), "// judge");
 
-        overlay_dir(workspace.path(), &package.path().join("harness")).unwrap();
+        copy_dir_into(dest.path(), src.path()).unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(workspace.path().join("tests/foo.rs")).unwrap(),
-            "instructor version"
+            std::fs::read_to_string(dest.path().join("Cargo.toml")).unwrap(),
+            "[package]\nname = \"driver\"\n"
         );
         assert_eq!(
-            std::fs::read_to_string(workspace.path().join("tests/hidden.rs")).unwrap(),
-            "hidden test"
-        );
-    }
-
-    #[test]
-    fn unrelated_student_files_are_left_alone() {
-        let workspace = tempfile::tempdir().unwrap();
-        let package = tempfile::tempdir().unwrap();
-
-        write(&workspace.path().join("src/lib.rs"), "student lib");
-        write(&package.path().join("harness/tests/foo.rs"), "instructor version");
-
-        overlay_dir(workspace.path(), &package.path().join("harness")).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(workspace.path().join("src/lib.rs")).unwrap(),
-            "student lib"
+            std::fs::read_to_string(dest.path().join("tests/judge.rs")).unwrap(),
+            "// judge"
         );
     }
 }

@@ -69,8 +69,7 @@ pub(crate) fn generate_run_id() -> String {
 }
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
-/// Fetch -> Prepare -> Evaluate -> persist -> Grade. Sequential for M1; an
-/// async worker pool lands in M4 (step 20).
+/// Fetch -> Prepare -> Evaluate -> persist -> Grade, one student at a time.
 ///
 /// Generic over the fetchable type `F: Fetchable`: `source` yields
 /// `Submission<F>`s and each one fetches itself, so the compiler rejects
@@ -91,13 +90,18 @@ pub fn grade_batch<F: Fetchable>(
 
     for submission in submissions {
         let run_id = generate_run_id();
-        let workspace = work_dir.join(&submission.student_id);
+        // `workspace` and `driver_dir` are siblings under one per-job root,
+        // never nested inside each other -- see `JobContext`'s doc comment.
+        let job_root = work_dir.join(&submission.student_id);
+        let workspace = job_root.join("student");
+        let driver_dir = job_root.join("driver");
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: submission.student_id.clone(),
             run_id: run_id.clone(),
             tier: Tier::Authoritative,
             workspace: workspace.clone(),
+            driver_dir: driver_dir.clone(),
         };
 
         let fetch_outcome = submission.fetch(&workspace)?;
@@ -105,7 +109,7 @@ pub fn grade_batch<F: Fetchable>(
         let eval = if fetch_outcome.status != StageStatus::Ok {
             terminal_eval(&ctx, StageStatus::FetchFailed, fetch_outcome.message.clone())
         } else {
-            let prepared = crate::prepare::prepare(&workspace, package_dir, spec)?;
+            let prepared = crate::prepare::prepare(&workspace, &driver_dir, package_dir, spec)?;
             if !prepared.manifest_diagnostics.is_empty() {
                 let message = prepared
                     .manifest_diagnostics
@@ -154,8 +158,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
 
 [toolchain]
 channel = "1.86.0"

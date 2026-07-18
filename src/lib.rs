@@ -8,12 +8,14 @@ pub mod manifest_check;
 pub mod model;
 pub mod pipeline;
 pub mod prepare;
+pub mod publish;
 pub mod report;
 pub mod sandbox;
 pub mod scaffold;
 pub mod source;
 pub mod spec;
 pub mod store;
+pub mod stub;
 pub mod vendor;
 
 use cli::{Command, ReportFormat};
@@ -36,7 +38,6 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
         Command::Grade {
             assignment,
             submissions,
-            jobs: _,
             as_of: _,
             local_sandbox,
         } => run_grade(&assignment, &submissions, local_sandbox, config),
@@ -150,17 +151,23 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
         path: std::path::PathBuf::from("."),
         source,
     })?;
+    let run_id = pipeline::generate_run_id();
+    // Outside the student's own repo entirely -- never nested inside
+    // `workspace` (see `JobContext::driver_dir`'s doc comment), so `ci`
+    // never leaves build artifacts in the student's own checkout.
+    let driver_dir = std::env::temp_dir().join(format!("autograder-ci-{run_id}"));
 
-    let prepared = prepare::prepare(&workspace, harness_dir, &spec)?;
+    let prepared = prepare::prepare(&workspace, &driver_dir, harness_dir, &spec)?;
 
     let eval = if prepared.manifest_diagnostics.is_empty() {
         let evaluator = build_local_evaluator(&spec, harness_dir)?;
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: "local".into(),
-            run_id: pipeline::generate_run_id(),
+            run_id,
             tier: Tier::Ci,
             workspace,
+            driver_dir,
         };
         Some(evaluator.evaluate(&ctx)?)
     } else {
@@ -266,9 +273,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
-
 [toolchain]
 channel = "1.86.0"
 
@@ -309,16 +313,31 @@ visibility = "public"
             &harness_dir.path().join(spec::PUBLIC_SPEC_FILE),
             PUBLIC_SPEC,
         );
+        write(
+            &harness_dir.path().join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n",
+        );
+        write(
+            &harness_dir.path().join("harness/src/main.rs"),
+            "fn main() {}\n",
+        );
 
         let workspace = tempfile::tempdir().unwrap();
         write(
             &workspace.path().join("Cargo.toml"),
-            "[package]\nname = \"bst\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         );
         write(&workspace.path().join("src/lib.rs"), "pub fn noop() {}\n");
 
+        let driver_dir = tempfile::tempdir().unwrap();
         let spec = Spec::load(harness_dir.path()).unwrap();
-        let prepared = prepare::prepare(workspace.path(), harness_dir.path(), &spec).unwrap();
+        let prepared = prepare::prepare(
+            workspace.path(),
+            driver_dir.path(),
+            harness_dir.path(),
+            &spec,
+        )
+        .unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
 
         let evaluator = build_local_evaluator(&spec, harness_dir.path()).unwrap();
@@ -328,6 +347,7 @@ visibility = "public"
             run_id: "run-1".into(),
             tier: Tier::Ci,
             workspace: workspace.path().to_path_buf(),
+            driver_dir: driver_dir.path().to_path_buf(),
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 
@@ -343,12 +363,7 @@ visibility = "public"
 
     #[test]
     fn ci_evaluator_selection_rejects_binary_harness_until_m4() {
-        let mut toml =
-            PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
-        toml = toml.replace(
-            "[student]\npackage-name = \"bst\"",
-            "[student]\nbin-name = \"solver\"",
-        );
+        let toml = PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
@@ -371,11 +386,19 @@ visibility = "public"
             &assignment_dir.path().join(spec::PUBLIC_SPEC_FILE),
             PUBLIC_SPEC,
         );
+        write(
+            &assignment_dir.path().join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n",
+        );
+        write(
+            &assignment_dir.path().join("harness/src/main.rs"),
+            "fn main() {}\n",
+        );
 
         let submissions_dir = tempfile::tempdir().unwrap();
         write(
             &submissions_dir.path().join("alice/Cargo.toml"),
-            "[package]\nname = \"bst\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         );
         write(
             &submissions_dir.path().join("alice/src/lib.rs"),

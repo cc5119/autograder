@@ -9,7 +9,7 @@ Author: Nico Lehmann
 The autograder clones students' private Rust repositories, builds and runs an
 instructor-provided test suite against each submission inside a resource-limited
 sandbox, and produces per-student grades. It is designed to run **untrusted
-student code on a single Linux machine**, safely and in parallel.
+student code on a single Linux machine**, safely.
 
 It also provides a **student-facing CI tier**: a limited, advisory run that
 executes only *public* tests inside the student's own CI, giving fast feedback
@@ -25,7 +25,7 @@ submission *source* behind an abstraction so other sources can be added later.
 | Where it runs | Instructor's single Linux machine | Student's own CI runner |
 | Tests | Public **+ hidden** | **Public only** |
 | Trust | Source of truth | **Advisory only** — never trusted, re-computed authoritatively |
-| Isolation | Full sandbox (containers, offline, limits) | Relies on the CI runner for host isolation; still enforces allowlist + limits for parity |
+| Isolation | Full sandbox (containers, offline, limits) | Relies on the CI runner for host isolation; enforces the same resource limits for parity (not the offline dependency allowlist) |
 | Entry point | `autograder grade …` | `autograder ci` (platform-agnostic) |
 | Purpose | Grading | Fast student feedback |
 
@@ -40,7 +40,6 @@ submission *source* behind an abstraction so other sources can be added later.
   package (its spec + harness + tests) that lives in a private instructor repo.
 - **Restricted dependencies** — an assignment declares exactly which crates
   students may use; anything else fails to compile.
-- **Parallel grading** — many students graded concurrently.
 - **Reproducibility** — grading is deterministic and records the exact commit
   graded; re-grading does not require re-running student code.
 - **Fast student feedback** — the same grader, in a reduced `ci` mode, gives
@@ -72,7 +71,7 @@ Key risks and mitigations (authoritative tier):
 | Network exfiltration / calling home / dependency confusion | Grading containers run with `--network=none`. All dependencies are vendored offline (§8). |
 | Reading/exfiltrating the hidden test suite | Grading is offline, so even though tests are present on the container FS during evaluation, results can only leave via the controlled, captured output channel. The **CI tier never receives hidden tests at all** (§11). |
 | Escaping the sandbox to the host | Containers run unprivileged (rootless Podman recommended), read-only root FS, dropped capabilities, `no-new-privileges`, seccomp default profile. |
-| Tampering with the grader / instructor tests | Instructor harness + tests come from a trusted private repo and are overlaid on top of the (untrusted) student checkout; student-provided test files are ignored. |
+| Tampering with the grader / instructor tests | Instructor harness + tests come from a trusted private repo, materialized fresh per job and kept out of the (untrusted) student checkout entirely for `linked-library` (§7.2, §9.1); student-provided test files are ignored. |
 | **Forging the verdict at runtime** — in an in-process test run, student code shares an address space with the assertions and can `exit(0)` (from a `Drop`, thread, or ctor), swallow assertion panics, or print fake result JSON | The pass/fail verdict is **always computed by a trusted judge process that contains no student code** (§9). Student code is driven across a process boundary and graded only on its observable outputs; the judge defaults every test to *fail* and records a pass only on a positive, judge-observed signal. Enforced in **both tiers**. |
 
 **CI tier trust:** students fully control their CI environment and could fake
@@ -105,7 +104,7 @@ Two inputs feed a per-student pipeline:
    │ clone   │   │ overlay  │   │ Docker/Podman, offline, │   │ score    │   │ JSON / │
    │ @commit │   │ harness  │   │ vendored, limited       │   │ from raw │   │  CSV   │
    └─────────┘   └──────────┘   └────────────────────────┘   └──────────┘   └────────┘
-        └───────────────── run in parallel across students ─────────────┘
+        └────────────────── run once per student, in turn ──────────────┘
                                      │                              ▲
                           raw evaluation results (JSON) ───────────┘
 
@@ -173,53 +172,66 @@ report outputs — are abstracted behind the traits above.
 
 ## 5. Assignment package format
 
-An assignment is two **independent, self-contained** units:
+There is only **one** assignment repo: the **private instructor package**. It
+is self-contained: it defines its **own complete authoritative harness** (the
+public-equivalent tests *and* the hidden tests) and its own full spec.
 
-- A **public repo** — the **public harness** (public spec subset + public tests +
-  fixtures + a reference CI wrapper), vendored into the starter template students
-  clone. It is the only assignment artifact students ever see.
-- A **private instructor repo** — self-contained: it defines its **own complete
-  authoritative harness** (the public-equivalent tests *and* the hidden tests)
-  and its own full spec. It does **not** `extends`, submodule, or otherwise
-  materialize the public harness; the authoritative tier depends on nothing from
-  the public repo at grade time.
+There is no separate, hand-maintained "public repo" to keep in sync. Instead,
+`autograder scaffold` copies everything real out of the private package and
+strips the sensitive parts in place (`src/publish.rs`, `src/stub.rs`), rather
+than reassembling each output from spec fields in code: the starter's whole
+`Cargo.toml`/`src/` is a straight recursive copy of the reference solution
+directory, with every `.rs` file then stripped in place (pub signatures
+survive, bodies become `todo!()`, private items and `#[cfg(test)]` modules
+dropped) and `cargo fix` run once directly in the output to prune imports the
+stripping left unused. The public spec (`points`/non-public
+`[[scoring.tests]]` entries stripped) and public harness (only the
+public-visibility tests, matched by name against the spec) are produced the
+same way: copy, then rewrite the couple of sensitive spots in place. Because
+these are derived fresh from the private package on every `scaffold` run
+rather than hand-copied once, points/hidden-tests/API drift between what the
+instructor authored and what ships to students is structurally impossible
+for the parts `scaffold` derives (open question §18.6 revisited).
 
-The two specs must agree on the student-visible contract (public API, toolchain,
-limits, and the names of public tests). That agreement is the instructor's
-responsibility; validating it to catch drift is an open question (§18).
+There is no `[student]` spec section either: `[assignment].id` is the single
+identifier for everything student-facing — the crate name the harness
+depends on (§9.1), the binary target name for `binary-harness`, and the
+directory name the reference solution must live in
+(`<instructor-repo>/<id>/`). That solution directory is **required** —
+`scaffold` has nothing to copy the starter's `Cargo.toml`/`src/` from without
+it, so a missing directory is a clear error, not a placeholder. `scaffold`
+also validates that the directory it finds is actually the right one: if its
+own `Cargo.toml` `[package].name` doesn't match `id`, that's treated as a
+misconfigured assignment and `scaffold` refuses to guess.
 
-### 5.1 Public harness (public repo → vendored into starter template)
+The one remaining thing this derivation depends on by convention rather than
+validation: a judge `#[test]` fn's name must match its `[[scoring.tests]]`
+entry's `name` in `autograder.toml` for `keep_only_named_tests` to keep it in
+the public harness.
+
+### 5.1 Private instructor package
 
 ```
-hw3-public/                     (public repo; source of the public harness)
-  autograder.public.toml        # public spec subset (below)
-  harness/                      # public harness crate (public tests + sample)
-  fixtures/                     # public inputs / expected outputs
-  ci/
-    github-actions.yml          # reference CI wrapper (thin)
-```
-
-Delivered to students by **vendoring into the assignment's starter/template
-repo** (what they clone/fork):
-
-```
-starter-hw3/                    (what the student works in)
-  src/                          # student writes their solution here
-  .github/workflows/autograde.yml   # thin wrapper -> `autograder ci`
-  .autograder/public/          # vendored public harness + public spec + fixtures
-  Cargo.toml                    # student manifest (deps constrained to allowlist)
-```
-
-### 5.2 Private instructor package (private repo)
-
-```
-hw3-instructor/                 (private repo — self-contained)
-  autograder.toml               # full standalone spec: all tests + points
+hw3-instructor/                 (the only repo — self-contained)
+  autograder.toml               # full standalone spec: all tests + points; id = "hw3"
   harness/                      # complete authoritative harness (public-equivalent + hidden)
+  hw3/                          # reference solution, named after [assignment].id (required --
+                                 # scaffold copies this directory to produce the starter)
   fixtures/                     # all inputs / expected outputs
 ```
 
-### 5.3 Spec schema
+`scaffold <hw3-instructor> --out starter-hw3/` produces the starter/template
+repo (what a student clones/forks):
+
+```
+starter-hw3/                    (what the student works in)
+  src/                           # copy of hw3/'s src/, stripped: solution's API shape, todo!() bodies
+  .github/workflows/autograde.yml   # thin wrapper -> `autograder ci`
+  .autograder/public/            # derived public spec + harness + fixtures
+  Cargo.toml                     # copy of hw3/'s own Cargo.toml
+```
+
+### 5.2 Spec schema
 
 `autograder.public.toml` (shipped) holds only what students may see — public
 test *names* and visibility, but **no point values**. `autograder.toml` (private)
@@ -227,17 +239,18 @@ is a standalone full spec that defines every test and its points. The autograder
 reads whatever spec it is given and computes no score for a test that carries no
 `points`, so the shipped spec never reveals weighting.
 
+`id` also doubles as the student-facing crate name — the expected Cargo
+package name (`linked-library`) or binary target name (`binary-harness`).
+No separate `[student]` section: one identifier, nothing to keep in sync
+with it by hand.
+
 ```toml
 # --- autograder.public.toml (public) ---
 [assignment]
-id = "hw3"
+id = "hw3"                       # also the expected package/binary name
 name = "Binary search tree"
 kind = "linked-library"          # or "binary-harness"; extensible
 deadline = "2026-02-14T23:59:59-08:00"
-
-[student]
-package-name = "bst"             # expected Cargo package/lib name (linked-library)
-# bin-name = "solver"            # expected binary target (binary-harness)
 
 [toolchain]
 channel = "1.86.0"
@@ -326,12 +339,16 @@ the same trait.
 
 ### 7.2 Prepare
 
-- Materialize a clean workspace: student checkout at the chosen SHA + the
-  instructor harness/tests **overlaid on top** (instructor files win; any
-  student files at those paths are removed). Student-provided test files are
-  ignored.
+- Materialize a clean student checkout at the chosen SHA. For `linked-library`,
+  the instructor harness/judge is copied into a **separate, fresh, per-job
+  directory** rather than onto the student's own checkout (§9.1) — nothing an
+  evaluator builds ever lands inside the student's tree. `binary-harness`
+  (unimplemented) copies the harness directly onto the student's checkout,
+  since it needs to wire against the student's own build output there.
 - Assemble the offline Cargo environment: mount the prevendored crate directory
-  and write the `.cargo/config.toml` source replacement (§8).
+  and write the `.cargo/config.toml` source replacement (§8) — `linked-library`
+  additionally passes the equivalent override as `--config` flags directly, see
+  §9.1.
 - Wire the student code to the harness according to `kind` (§9).
 - Nothing untrusted is executed in this stage.
 
@@ -388,9 +405,12 @@ used in **both tiers**.
    external path deps in the student `Cargo.toml` during Prepare for clearer
    errors.
 
-For the CI tier, the vendored public deps ship inside the starter template (or
-are fetched by the pinned `autograder` binary at CI start), so the CI build is
-also offline and allowlist-enforced.
+The CI tier does **not** carry `vendor/`/`.cargo/` into the starter template —
+offline vendoring is grading-only infrastructure. A student's own `autograder
+ci` run resolves dependencies normally (real network access on their CI
+runner), so it isn't offline or allowlist-enforced the way the authoritative
+tier is; it's advisory feedback on the tests, not a dependency-restriction
+check (§11.3).
 
 ## 9. Assignment types (v1)
 
@@ -411,11 +431,37 @@ judge-observed signal (timeout, crash, early exit, wrong/no output → fail).
 ### 9.1 `linked-library`
 
 - The student repo is a **library crate** exposing a predefined public API.
-- Instructor ships a **thin, trusted driver binary** that path-depends on the
-  student crate (`bst = { path = "../student" }`, package name from
-  `[student].package-name`). Its only job: read an operation from the judge, call
-  the corresponding student API, serialize the *return value*, write it back. The
-  driver contains **no assertions**.
+- Instructor ships a **thin, trusted driver binary**, checked in permanently at
+  `harness/` (no `driver/` subdirectory — the harness *is* the driver crate).
+  Its `Cargo.toml` declares a wildcard dependency on the student package
+  (`<id> = "*"`, `[assignment].id` doubling as the package name) plus a
+  checked-in `[patch.crates-io]` pointing at a reference solution kept
+  alongside it in a directory named after that same `id` (`../<id>`), so
+  the harness is independently testable — `cd harness && cargo nextest
+  run`, no autograder involvement. At grade/CI time, the
+  autograder overrides that default via a per-invocation `--config
+  'patch.crates-io.<pkg>.path="<checkout>"'` flag pointing at whichever
+  checkout is actually being evaluated; a config-sourced `[patch]` entry
+  takes precedence over one declared in the manifest, so this always wins.
+  `"*"` as the version requirement means the patch applies regardless of
+  whatever version the student's own `Cargo.toml` happens to declare —
+  nothing student-controlled can affect whether it takes effect. The driver's
+  only job: read an operation from the judge, call the corresponding student
+  API, serialize the *return value*, write it back. It contains **no
+  assertions**.
+- Each job builds against a *fresh, per-job* copy of `harness/`, overlaid
+  during Prepare into a directory that is a **sibling** of the student's own
+  freshly-fetched workspace, never nested inside it and never built in
+  place: this way nothing an evaluator writes (build output, `Cargo.lock`)
+  ever lands inside the student's own checkout tree. Freshness is still
+  required despite the two being separate: Cargo rewrites `Cargo.lock`
+  whenever the patched-in package's version differs from what's currently
+  locked, so sharing one `harness/` directory across jobs would race
+  different students' builds against the same `Cargo.lock`/`target/`. Since
+  the driver's build directory and the student's checkout no longer share
+  an ancestor directory, the offline vendored-source override (§8.2) is
+  passed to `cargo`/`cargo nextest` as `--config` flags directly rather than
+  relying on Cargo's directory-based config-file discovery.
 - A separate **judge process** (no student code) sends the operation sequence —
   including hidden adversarial sequences — and asserts on the serialized results.
   Even though the driver is linked with student code, corrupting it can only yield
@@ -428,7 +474,7 @@ judge-observed signal (timeout, crash, early exit, wrong/no output → fail).
 
 ### 9.2 `binary-harness`
 
-- The student repo builds a **binary** (target from `[student].bin-name`).
+- The student repo builds a **binary** (target named `[assignment].id`).
 - The trusted judge/harness spawns the built binary as a child — possibly
   multiple times, with a protocol, timing, stdin/args — and asserts on
   **stdout / files / behavior it defines**. Each interaction maps to a named
@@ -471,9 +517,8 @@ podman run --rm \
   disk-backed volume with a size quota** — *not* a container `tmpfs`. tmpfs dies
   with the container (it can't carry build artifacts from the build invocation to
   the run invocation, which are separate — see below) and is RAM-backed (a Rust
-  `target/` is easily 1–2 GiB, so N concurrent jobs would exhaust host RAM). The
-  volume is per-job and never shared across students (no cross-submission cache
-  poisoning).
+  `target/` is easily 1–2 GiB). The volume is per-job and never shared across
+  students (no cross-submission cache poisoning).
 - **Results egress** is a dedicated small quota'd `rw` mount (`/out`). The trusted
   judge writes the `EvaluationResult` there. Student stdout/stderr is captured
   separately (byte-capped, `max-output-bytes`) for **diagnostics only** and is
@@ -483,9 +528,9 @@ podman run --rm \
   `[limits.run]` profiles, sharing the same `<job-workdir>` volume so artifacts
   persist between them.
 - **CPU-time is the scored bound.** Pass/fail uses a CPU-time limit so results are
-  independent of host load under parallelism; the **wall-clock timeout is only a
-  runaway safety net** (deadlock/spin), enforced by the grader killing the
-  container on top of the cgroup limits. Optionally pin CPU sets per job.
+  independent of host load; the **wall-clock timeout is only a runaway safety
+  net** (deadlock/spin), enforced by the grader killing the container on top of
+  the cgroup limits.
 - **Rootless Podman recommended** over Docker; the `Sandbox` trait keeps this
   swappable.
 - **Base image** carries the pinned Rust toolchain and (optionally) a
@@ -533,10 +578,12 @@ jobs:
 
 ### 11.3 Parity & isolation
 
-- **Parity:** enforces the same offline vendored crate allowlist and the same
-  resource limits (§8, `[limits]`), so students discover forbidden-crate,
-  timeout, and OOM problems early — same pass/fail semantics as the real run,
-  minus hidden tests.
+- **Parity:** enforces the same resource limits (§10, `[limits]`) and runs the
+  same tests/judge as the authoritative tier (minus hidden tests), so students
+  see the same pass/fail semantics early. **Not** parity on dependency
+  restriction: the CI tier doesn't carry the vendored allowlist (§8) into the
+  starter, so a disallowed-crate problem surfaces only at real grading time,
+  not in the student's own CI run.
 - **Isolation:** relies on the CI runner for host isolation (it is the student's
   own code in their own runner). Resource limits are applied by `autograder ci`
   itself: wall-clock timeouts and output caps are always enforced; memory/pids
@@ -549,7 +596,7 @@ jobs:
 Per the `CiReporter`: **per-test pass/fail plus diagnostics** (compiler errors,
 timeouts, disallowed-crate errors), and the job's overall pass/fail check —
 **no point scores**. This isn't just a display choice: the shipped public spec
-carries no `points` (§5.3), so the CI tier structurally cannot compute scores and
+carries no `points` (§5.2), so the CI tier structurally cannot compute scores and
 weighting is never revealed.
 
 ```
@@ -603,13 +650,10 @@ Terminal states: `ok`, `build_failed`, `timeout`, `oom`, `disallowed_dependency`
 `build_failed` and `harness_error` score zero, never better than a normal fail
 (§7.4).
 
-## 13. Parallelism, caching & performance
+## 13. Caching & performance
 
-- **Execution:** an async (`tokio`) worker pool grades up to *N* students
-  concurrently (a semaphore bounds concurrent containers). *N* is derived from a
-  **host memory + disk budget** — Σ(per-job `memory` + workspace-volume quota) —
-  not an arbitrary count, since each job holds a disk-backed target volume and a
-  memory cgroup.
+- **Execution:** students are graded one at a time, in turn — a straightforward
+  sequential loop over the batch, not a worker pool.
 - **Failure isolation:** each student's pipeline is independent; one failure
   never aborts the batch.
 - **Caching (simple for a small course, designed in):**
@@ -646,7 +690,7 @@ Terminal states: `ok`, `build_failed`, `timeout`, `oom`, `disallowed_dependency`
 
 ```
 autograder prefetch <assignment-repo>      # build the offline vendor dir + base image
-autograder grade   <assignment-repo> --roster roster.csv [--jobs N] [--as-of <ts>]
+autograder grade   <assignment-repo> --roster roster.csv [--as-of <ts>]
 autograder ci      --harness <public-dir>  # student-facing: public tests, advisory
 autograder regrade <assignment-id>         # re-run Grade stage from persisted results
 autograder report  <assignment-id> --format {json,csv}
@@ -656,8 +700,9 @@ autograder scaffold <assignment-repo> --out starter-<id>/   # emit starter templ
 - `grade` runs Fetch→…→Report end to end.
 - `ci` runs Prepare+Build+Evaluate on the public harness and prints feedback;
   exit code reflects public pass/fail.
-- `scaffold` produces the starter/template repo (vendored public harness +
-  workflow) for distribution to students.
+- `scaffold` derives the starter/template repo (public spec + harness +
+  starter `src/` + workflow) straight from `<assignment-repo>`, the private
+  instructor package, for distribution to students (§5).
 - `--as-of` overrides the deadline used for commit selection (dry runs).
 - Config file for host-wide settings (credentials location, storage dir,
   default limits, container runtime choice).
@@ -698,10 +743,13 @@ autograder scaffold <assignment-repo> --out starter-<id>/   # emit starter templ
    re-pull the workflow file (or the instructor re-scaffolds). Additional
    targets (macOS, Windows) are a matrix-row addition to the same workflow
    when needed, not a design change.
-6. **Public/private spec drift** — the instructor repo is now fully self-contained
-   (§5, no `extends`/materialization), which *raises* drift risk: how strictly to
-   validate that the standalone `autograder.toml` and the shipped
-   `autograder.public.toml` agree on API, toolchain, limits, and public-test names.
+6. **Public/private spec drift** — resolved for the parts `scaffold` mechanically
+   derives (§5): the shipped `autograder.public.toml` and public harness are
+   generated fresh from `autograder.toml`/`harness/` on every run, so points,
+   hidden-test visibility, and API shape (via `src/stub.rs`) can't drift out of
+   sync by hand-editing mistake. What's still unvalidated: a judge `#[test]` fn
+   whose name doesn't match any `[[scoring.tests]]` entry silently vanishes from
+   the public harness rather than erroring — worth a lint pass at some point.
 7. **Instructor credentials** — token vs SSH deploy key vs GitHub App; now also
    load-bearing for the **GitHub push-time API** used in deadline enforcement
    (§7.1), not just host-side cloning.
@@ -717,8 +765,8 @@ autograder scaffold <assignment-repo> --out starter-<id>/   # emit starter templ
 3. **M3 — CI tier:** `autograder ci` entrypoint + `LocalSandbox` + `CiReporter`,
    public-harness format, `scaffold` command, GitHub Actions wrapper, release
    pipeline for the pinned binary.
-4. **M4 — Parallelism + robustness:** worker pool, failure isolation, base-image
-   caching, `binary-harness` evaluator.
+4. **M4 — Robustness:** failure isolation, base-image caching, `binary-harness`
+   evaluator.
 5. **M5 — Grading/regrading:** decoupled Grade stage, scoring policies, manual
    overrides, late penalties.
 6. **M6 — Extensibility polish:** additional sources / assignment types / CI

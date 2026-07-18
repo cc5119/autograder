@@ -25,9 +25,6 @@ pub enum Command {
         /// whether the path is a file or a directory.
         #[arg(long)]
         submissions: PathBuf,
-        /// Number of concurrent grading jobs.
-        #[arg(long)]
-        jobs: Option<usize>,
         /// Override the deadline used for commit selection (RFC3339).
         #[arg(long)]
         as_of: Option<String>,
@@ -67,7 +64,9 @@ pub enum Command {
     },
     /// Emit the starter/template repo for distribution to students.
     Scaffold {
-        /// Path to the assignment repo.
+        /// Path to the private instructor package (autograder.toml,
+        /// harness/, and a reference solution directory named after
+        /// [assignment].id).
         assignment: PathBuf,
         /// Output directory for the starter template.
         #[arg(long)]

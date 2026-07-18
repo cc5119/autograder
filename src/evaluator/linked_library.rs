@@ -1,17 +1,53 @@
 //! The `linked-library` `Evaluator` (design §9.1): builds the trusted
-//! **driver** crate (path-depends on the student library) and runs the
-//! instructor-authored **judge** — process-per-session under `cargo
-//! nextest` — under a `Sandbox`. Both build and run stages happen inside
-//! the sandbox with `[limits.build]` / `[limits.run]` respectively.
+//! **driver** crate (depends on the student library via a patched-in path)
+//! and runs the instructor-authored **judge** — process-per-session under
+//! `cargo nextest` — under a `Sandbox`. Both build and run stages happen
+//! inside the sandbox with `[limits.build]` / `[limits.run]` respectively.
 //!
 //! This module is deliberately agnostic to the op-sequence protocol a given
 //! assignment's judge speaks to its driver: that's instructor-authored test
-//! code overlaid from `harness/driver` and `harness/tests` (or wherever the
-//! instructor puts their `#[test]` functions) during Prepare. This module's
-//! job is mechanical: (1) make sure the driver crate has a working path
-//! dependency on the student package, (2) drive `cargo build` then `cargo
-//! nextest run` through the sandbox with the right limits/offline env, (3)
-//! turn nextest's JUnit report into `TestResult`s.
+//! code living permanently at `harness/` (Cargo.toml, `src/`, `tests/`) —
+//! no `driver/` subdirectory, and never generated or rewritten by this
+//! tool. This module's job is mechanical: (1) inject the student package's
+//! path via a per-invocation `[patch.crates-io]` `--config` override, (2)
+//! drive `cargo build` then `cargo nextest run` through the sandbox with the
+//! right limits/offline env, (3) turn nextest's JUnit report into
+//! `TestResult`s.
+//!
+//! `harness/Cargo.toml` declares `<assignment-id> = "*"` plus a checked-in
+//! `[patch.crates-io]` entry pointing at the reference solution kept
+//! alongside the harness (named after `[assignment].id`, see
+//! `crate::scaffold`) — so `cd harness && cargo
+//! nextest run` "just works" standalone with no tooling involved, letting an
+//! instructor sanity-check their own harness at any time. At grade/CI time,
+//! a `--config` override always wins over that checked-in default (verified:
+//! Cargo's config-sourced `[patch]` entries take precedence over ones
+//! declared in the manifest itself), redirecting the dependency to whichever
+//! checkout is actually being evaluated. `"*"` as the version requirement
+//! means the patch applies regardless of whatever version the student
+//! happens to have put in their own `Cargo.toml` — nothing student-supplied
+//! can affect whether the patch takes effect.
+//!
+//! Before Prepare runs, `harness/` is overlaid into `ctx.driver_dir`: a
+//! *fresh, per-job* directory that is a **sibling** of `ctx.workspace`, not
+//! nested inside it (never built in place either) — see `JobContext`'s doc
+//! comment. Freshness is still required even though the two are separate:
+//! Cargo needs to rewrite `Cargo.lock` whenever the patched-in package's
+//! version changes (verified empirically — this happens even though the
+//! path is patched, not a plain dependency), so sharing one `harness/`
+//! directory across concurrent or sequential jobs would race different
+//! students' builds against the same `Cargo.lock`/`target/`. The per-job
+//! copy is what the design's "fresh, disk-backed, per-job target volume"
+//! (§10/§13) already calls for.
+//!
+//! Because `driver_dir` and `workspace` no longer share an ancestor
+//! directory, Cargo's directory-based config discovery can't find
+//! `workspace`'s offline-vendoring `.cargo/config.toml` (written by
+//! `Prepare` for a future `binary-harness` evaluator, which builds directly
+//! in `workspace`) from `driver_dir`. This evaluator instead passes the
+//! equivalent `[source]` override as `--config` flags directly, alongside
+//! the dependency patch — verified working together, fully offline, with a
+//! real (non-empty) vendored crate.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +59,7 @@ use crate::model::{
 };
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::{BuildLimits, RunLimits, ScoredTest, Spec};
+use crate::vendor;
 
 use super::Evaluator;
 
@@ -41,12 +78,19 @@ pub struct LinkedLibrary<S> {
 
 impl<S: Sandbox> LinkedLibrary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
-        let student_package_name = spec.student.package_name.clone().ok_or_else(|| {
-            Error::InvalidSpec("linked-library assignment missing [student].package-name".into())
-        })?;
+        let student_package_name = spec.assignment.id.clone();
+        let package_dir = package_dir.into();
+        let harness_manifest = package_dir.join("harness/Cargo.toml");
+        if !harness_manifest.is_file() {
+            return Err(Error::InvalidSpec(format!(
+                "linked-library assignment missing {} -- the harness must be a real, \
+                 instructor-authored crate (no default is generated)",
+                harness_manifest.display()
+            )));
+        }
         Ok(Self {
             sandbox,
-            package_dir: package_dir.into(),
+            package_dir,
             student_package_name,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
@@ -66,12 +110,19 @@ impl<S: Sandbox> LinkedLibrary<S> {
         env
     }
 
-    fn mounts(&self, workspace: &Path) -> Vec<Mount> {
-        let mut mounts = vec![Mount {
-            host_path: workspace.to_path_buf(),
-            container_path: workspace.to_path_buf(),
-            mode: MountMode::ReadWrite,
-        }];
+    fn mounts(&self, workspace: &Path, driver_dir: &Path) -> Vec<Mount> {
+        let mut mounts = vec![
+            Mount {
+                host_path: workspace.to_path_buf(),
+                container_path: workspace.to_path_buf(),
+                mode: MountMode::ReadOnly,
+            },
+            Mount {
+                host_path: driver_dir.to_path_buf(),
+                container_path: driver_dir.to_path_buf(),
+                mode: MountMode::ReadWrite,
+            },
+        ];
         let vendor_dir = self.vendor_dir();
         if vendor_dir.is_dir() {
             mounts.push(Mount {
@@ -82,18 +133,53 @@ impl<S: Sandbox> LinkedLibrary<S> {
         }
         mounts
     }
+
+    /// The `--config` arguments for one `cargo`/`cargo nextest` invocation:
+    /// the offline vendored-source override (only when the package has been
+    /// prefetched — mirrors `Prepare`'s own file-based version, see this
+    /// module's doc comment for why this evaluator can't rely on that file),
+    /// then the dependency patch that redirects the driver's
+    /// `<assignment-id>` dependency at `workspace` (the checkout actually
+    /// being evaluated this job — a student's fetch, or the reference
+    /// solution), overriding whatever the checked-in `harness/Cargo.toml`
+    /// defaults to. Every path is absolutized: Cargo's config-path
+    /// resolution has already bitten this codebase once (see
+    /// `vendor::absolutize`'s doc comment), and a relative `ctx.workspace`
+    /// is a real possibility (it's derived from `Config::storage_dir`,
+    /// which defaults to a relative path).
+    fn config_args(&self, workspace: &Path) -> Vec<String> {
+        let mut args = Vec::new();
+        let vendor_dir = self.vendor_dir();
+        if vendor_dir.is_dir() {
+            args.push("--config".to_string());
+            args.push("source.crates-io.replace-with=\"vendored-sources\"".to_string());
+            args.push("--config".to_string());
+            args.push(format!(
+                "source.vendored-sources.directory=\"{}\"",
+                vendor::absolutize(&vendor_dir).display()
+            ));
+        }
+        args.push("--config".to_string());
+        args.push(format!(
+            "patch.crates-io.{}.path=\"{}\"",
+            self.student_package_name,
+            vendor::absolutize(workspace).display()
+        ));
+        args
+    }
 }
 
 impl<S: Sandbox> Evaluator for LinkedLibrary<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
-        let driver_dir = ctx.workspace.join("driver");
-        assemble_driver(&driver_dir, &self.student_package_name)?;
+        let driver_dir = &ctx.driver_dir;
+        let config_args = self.config_args(&ctx.workspace);
 
         let env = self.offline_env();
-        let mounts = self.mounts(&ctx.workspace);
+        let mounts = self.mounts(&ctx.workspace, driver_dir);
 
         let mut build_spec = SandboxSpec::new("cargo", self.build_limits.clone());
         build_spec.args = vec!["build".into(), "--offline".into()];
+        build_spec.args.extend(config_args.iter().cloned());
         build_spec.workdir = Some(driver_dir.clone());
         build_spec.env = env.clone();
         build_spec.mounts = mounts.clone();
@@ -113,6 +199,7 @@ impl<S: Sandbox> Evaluator for LinkedLibrary<S> {
 
         let mut run_spec = SandboxSpec::new("cargo", self.run_limits.clone());
         run_spec.args = vec!["nextest".into(), "run".into(), "--offline".into()];
+        run_spec.args.extend(config_args);
         run_spec.workdir = Some(driver_dir.clone());
         run_spec.env = env;
         run_spec.mounts = mounts;
@@ -260,44 +347,6 @@ fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
     }
 }
 
-/// Ensures `driver_dir` is a buildable crate that path-depends on the
-/// student package. A harness overlay may already have written
-/// `driver/Cargo.toml` (and driver/judge source) during Prepare — that
-/// instructor-authored content always wins; this only fills in what's
-/// missing so authoring a harness never requires hand-computing relative
-/// paths.
-pub fn assemble_driver(driver_dir: &Path, student_package_name: &str) -> Result<()> {
-    std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
-        path: driver_dir.to_path_buf(),
-        source,
-    })?;
-
-    let manifest_path = driver_dir.join("Cargo.toml");
-    if !manifest_path.exists() {
-        let manifest = format!(
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\n{student_package_name} = {{ path = \"..\" }}\n"
-        );
-        std::fs::write(&manifest_path, manifest).map_err(|source| Error::Io {
-            path: manifest_path.clone(),
-            source,
-        })?;
-    }
-
-    let main_path = driver_dir.join("src/main.rs");
-    if !main_path.exists() {
-        std::fs::create_dir_all(driver_dir.join("src")).map_err(|source| Error::Io {
-            path: driver_dir.join("src"),
-            source,
-        })?;
-        std::fs::write(&main_path, "fn main() {}\n").map_err(|source| Error::Io {
-            path: main_path.clone(),
-            source,
-        })?;
-    }
-
-    Ok(())
-}
-
 /// Parses `cargo nextest`'s JUnit XML report into `TestResult`s. `tests` is
 /// the spec's scored-test list, consulted only to recover each test's
 /// `visibility` (JUnit doesn't carry it) — matched by exact name first,
@@ -318,9 +367,15 @@ pub fn parse_junit_report(xml: &str, tests: &[ScoredTest]) -> Result<Vec<TestRes
         let failure = node.children().find(|c| c.has_tag_name("failure"));
         let error = node.children().find(|c| c.has_tag_name("error"));
         let (status, message) = if let Some(node) = error {
-            (TestStatus::Error, node.attribute("message").map(String::from))
+            (
+                TestStatus::Error,
+                node.attribute("message").map(String::from),
+            )
         } else if let Some(node) = failure {
-            (TestStatus::Fail, node.attribute("message").map(String::from))
+            (
+                TestStatus::Fail,
+                node.attribute("message").map(String::from),
+            )
         } else {
             (TestStatus::Pass, None)
         };
@@ -363,31 +418,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn assemble_driver_writes_a_manifest_with_the_student_path_dependency() {
-        let workspace = tempfile::tempdir().unwrap();
-        let driver_dir = workspace.path().join("driver");
-
-        assemble_driver(&driver_dir, "bst").unwrap();
-
-        let manifest = std::fs::read_to_string(driver_dir.join("Cargo.toml")).unwrap();
-        assert!(manifest.contains("bst = { path = \"..\" }"));
-        assert!(driver_dir.join("src/main.rs").exists());
-    }
-
-    #[test]
-    fn assemble_driver_never_overwrites_an_instructor_supplied_manifest() {
-        let workspace = tempfile::tempdir().unwrap();
-        let driver_dir = workspace.path().join("driver");
-        std::fs::create_dir_all(&driver_dir).unwrap();
-        std::fs::write(driver_dir.join("Cargo.toml"), "# custom").unwrap();
-
-        assemble_driver(&driver_dir, "bst").unwrap();
-
-        let manifest = std::fs::read_to_string(driver_dir.join("Cargo.toml")).unwrap();
-        assert_eq!(manifest, "# custom");
-    }
-
     const SAMPLE_JUNIT: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <testsuites>
   <testsuite name="driver" tests="3" failures="1" errors="1">
@@ -427,7 +457,11 @@ mod tests {
     #[test]
     fn unknown_test_name_defaults_to_public_visibility() {
         let results = parse_junit_report(SAMPLE_JUNIT, &[]).unwrap();
-        assert!(results.iter().all(|t| t.visibility == TestVisibility::Public));
+        assert!(
+            results
+                .iter()
+                .all(|t| t.visibility == TestVisibility::Public)
+        );
     }
 
     /// A `Sandbox` double that returns canned outcomes for the build then
@@ -482,8 +516,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
 
 [toolchain]
 channel = "1.86.0"
@@ -515,25 +547,80 @@ visibility = "public"
         toml::from_str(toml).unwrap()
     }
 
-    fn ctx(workspace: PathBuf) -> JobContext {
+    fn ctx(workspace: PathBuf, driver_dir: PathBuf) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "run-1".into(),
             tier: Tier::Authoritative,
             workspace,
+            driver_dir,
         }
+    }
+
+    /// A minimal but real `harness/Cargo.toml` -- `LinkedLibrary::new` now
+    /// requires this to exist (no generated fallback), even for tests that
+    /// never actually invoke real cargo (`ScriptedSandbox` ignores the
+    /// `SandboxSpec` content).
+    fn write_harness_manifest(package_dir: &std::path::Path) {
+        std::fs::create_dir_all(package_dir.join("harness")).unwrap();
+        std::fs::write(
+            package_dir.join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn new_errors_clearly_when_the_harness_is_missing() {
+        let package_dir = tempfile::tempdir().unwrap();
+
+        let result = LinkedLibrary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+
+        assert!(matches!(result, Err(Error::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn patch_config_arg_names_the_student_package_and_an_absolute_path() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let evaluator =
+            LinkedLibrary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+
+        let args = evaluator.config_args(std::path::Path::new("relative/workspace"));
+        let arg = args
+            .iter()
+            .find(|a| a.starts_with("patch.crates-io"))
+            .unwrap();
+
+        assert!(arg.starts_with("patch.crates-io.hw3.path="));
+        assert!(
+            arg.contains(
+                std::env::current_dir()
+                    .unwrap()
+                    .join("relative/workspace")
+                    .to_str()
+                    .unwrap()
+            )
+        );
     }
 
     #[test]
     fn build_failure_short_circuits_before_running_nextest() {
         let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
         let workspace = tempfile::tempdir().unwrap();
+        let driver_dir = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
         let evaluator = LinkedLibrary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(
+                workspace.path().to_path_buf(),
+                driver_dir.path().to_path_buf(),
+            ))
+            .unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
         assert!(eval.diagnostics.compiler_errors.unwrap().contains("E0433"));
@@ -543,12 +630,19 @@ visibility = "public"
     #[test]
     fn missing_junit_report_after_a_successful_run_is_a_harness_error() {
         let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
         let workspace = tempfile::tempdir().unwrap();
+        let driver_dir = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
         let evaluator = LinkedLibrary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(
+                workspace.path().to_path_buf(),
+                driver_dir.path().to_path_buf(),
+            ))
+            .unwrap();
 
         assert_eq!(eval.stages.run.status, StageStatus::HarnessError);
     }
@@ -556,17 +650,22 @@ visibility = "public"
     #[test]
     fn a_junit_report_on_disk_is_parsed_into_the_eval_result() {
         let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
         let workspace = tempfile::tempdir().unwrap();
-        let junit_path = workspace
-            .path()
-            .join("driver/target/nextest/default/junit.xml");
+        let driver_dir = tempfile::tempdir().unwrap();
+        let junit_path = driver_dir.path().join("target/nextest/default/junit.xml");
         std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
         let evaluator = LinkedLibrary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(
+                workspace.path().to_path_buf(),
+                driver_dir.path().to_path_buf(),
+            ))
+            .unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::Ok);
         assert_eq!(eval.stages.run.status, StageStatus::Ok);

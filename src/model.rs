@@ -45,8 +45,16 @@ pub struct JobContext {
     pub student_id: String,
     pub run_id: String,
     pub tier: Tier,
-    /// Workspace directory for this job (checkout + overlay + build artifacts).
+    /// The student's checkout (fetch destination for `grade`; the current
+    /// directory for `ci`). Never written into by an evaluator — only read,
+    /// as the target of a patched-in dependency.
     pub workspace: PathBuf,
+    /// A separate, fresh-per-job scratch directory where a `linked-library`
+    /// driver crate is overlaid and built — a *sibling* of `workspace`, not
+    /// nested inside it, so nothing an evaluator builds ever lands inside
+    /// the student's own checkout. Unused by `binary-harness`, which builds
+    /// the student's own binary directly in `workspace`.
+    pub driver_dir: PathBuf,
 }
 
 /// Visibility of a test: public tests also run in the CI tier.

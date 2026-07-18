@@ -1,0 +1,17 @@
+[package]
+name = "driver"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+linked-library-stack-example = "*"
+
+# Default target for standalone testing (`cd harness && cargo nextest run`,
+# no autograder involvement): the reference solution kept alongside this
+# harness, in a directory named after [assignment].id (see ../autograder.toml
+# and ../linked-library-stack-example/). Grading always overrides this via a
+# --config CLI flag pointing at the actual checkout being evaluated -- a
+# config-sourced [patch] entry takes precedence over this manifest-declared
+# one (verified).
+[patch.crates-io]
+linked-library-stack-example = { path = "../linked-library-stack-example" }

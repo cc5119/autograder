@@ -19,20 +19,16 @@ pub enum AssignmentKind {
     BinaryHarness,
 }
 
+/// `id` doubles as the student-facing crate name: for `linked-library` it's
+/// the dependency name the harness links against, for `binary-harness` it's
+/// the expected binary target name. One identifier, no separate
+/// `[student]` config section to keep in sync with it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
     pub id: String,
     pub name: String,
     pub kind: AssignmentKind,
     pub deadline: DateTime<FixedOffset>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Student {
-    #[serde(default, rename = "package-name")]
-    pub package_name: Option<String>,
-    #[serde(default, rename = "bin-name")]
-    pub bin_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,8 +158,6 @@ pub struct Scoring {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Spec {
     pub assignment: Assignment,
-    #[serde(default)]
-    pub student: Student,
     pub toolchain: Toolchain,
     #[serde(default, rename = "allowed-crates")]
     pub allowed_crates: BTreeMap<String, String>,
@@ -210,8 +204,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
 
 [toolchain]
 channel = "1.86.0"
@@ -248,8 +240,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
 
 [toolchain]
 channel = "1.86.0"

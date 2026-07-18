@@ -1,15 +1,18 @@
 # Private, standalone full spec for the `linked-library-stack` example
-# (design §5.2). Self-contained: defines every test (public + hidden) and
-# its point value. Never shipped to students — see ../public/ for that.
+# (design §5.1). Self-contained: defines every test (public + hidden) and
+# its point value; `autograder scaffold` derives the public/starter view
+# straight from this file, no separate hand-maintained repo.
+#
+# `id` doubles as the student-facing crate name (no [student] section): the
+# harness's Cargo.toml depends on `linked-library-stack-example`, and the
+# reference solution lives in ./linked-library-stack-example/, named to
+# match.
 
 [assignment]
 id = "linked-library-stack-example"
 name = "Stack (linked-library example)"
 kind = "linked-library"
 deadline = "2099-01-01T00:00:00-00:00"
-
-[student]
-package-name = "stack"
 
 [toolchain]
 channel = "1.86.0"

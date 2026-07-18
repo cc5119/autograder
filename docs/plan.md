@@ -71,8 +71,10 @@ src/
     json.rs
     csv.rs
     ci.rs
-  pipeline.rs     # stage orchestration + (later) async worker pool
+  pipeline.rs     # stage orchestration (sequential batch loop)
   scaffold.rs     # starter-template generation
+  publish.rs      # private -> public spec/harness derivation (added post-M3, step 18)
+  stub.rs         # private solution -> starter src/ derivation (added post-M3, step 18)
   store.rs        # EvaluationResult persistence ({assignment}/{student}/{run_id})
 ```
 
@@ -100,6 +102,9 @@ Grade → Report + result persistence. No untrusted-code isolation yet.
     `--roster`/`--submissions` flags (revised post-M1): the kind is inferred
     from the path shape (directory vs file) instead of a second flag — see
     step 4/5.
+  - `--jobs` removed (revised post-M3, alongside dropping M4's async worker
+    pool below): grading is sequential, one student at a time, so there's no
+    concurrency knob to expose.
 - **Compiles because:** handlers are real functions returning `Err(...)`.
 - **Verify:** `cargo run -- --help`, `cargo run -- grade --help`.
 
@@ -186,6 +191,19 @@ Grade → Report + result persistence. No untrusted-code isolation yet.
   `binary-harness`). Offline cargo env + manifest allowlist diff come in M2.
 - **Verify:** unit test that overlay precedence is correct and a student file at
   an instructor path is replaced.
+- Revised post-M3: `fixtures/` overlaying was removed — nothing ever read it
+  (dead plumbing since it was first added), and it had the same
+  workspace-pollution issue described below for `harness/`; it can be
+  reintroduced, correctly scoped, once an evaluator actually needs fixture
+  data. `linked-library`'s `harness/` copy target moved from the student's
+  own `workspace` to a separate, fresh, per-job `driver_dir` (a sibling, not
+  nested inside `workspace`) — see step 14's revision note and design §9.1.
+  Because the destination is now always guaranteed empty by construction
+  (never a directory the student has touched), the copy helper
+  (`copy_dir_into`, renamed from `overlay_dir`) dropped its "remove any
+  pre-existing file first" collision handling — that behavior is only still
+  relevant for `binary-harness`'s copy onto the student's own workspace,
+  which remains unimplemented.
 
 ### Step 7 — Grade stage (pure) + scoring policies
 - `grade.rs`: `Grader` trait (`grade(&EvaluationResult, &ScoringPolicy) -> Grade`)
@@ -289,6 +307,30 @@ instructor-authored test code overlaid from `harness/`).
   assertions**. The **judge** (no student code) drives op sequences and asserts on
   serialized outputs; defaults every test to *fail*, records pass only on a
   positive judge-observed signal; crash/timeout/early-exit/wrong-output → fail.
+  - Revised post-M3: the driver no longer path-depends on a generated
+    manifest (`assemble_driver` is gone). `harness/` *is* the driver crate
+    now (no `driver/` subdirectory in the checked-in package), declaring a
+    wildcard `<package-name> = "*"` dependency plus a checked-in
+    `[patch.crates-io]` pointing at a reference `solution/` kept alongside
+    it — so the harness is independently testable with plain `cargo
+    nextest run`, no autograder involvement. Grading/CI inject the actual
+    checkout via a per-invocation `--config 'patch.crates-io.<pkg>.path=...'`
+    override, which always wins over the checked-in default (verified:
+    config-sourced `[patch]` takes precedence over one in the manifest).
+    Each job still builds against a fresh, per-job overlay of `harness/`,
+    but as a **sibling** of the student's checkout (`JobContext` now
+    carries `driver_dir` alongside `workspace`), not nested inside it —
+    `Prepare` no longer touches the student's own tree at all. Two reasons
+    it must still be fresh per job even though it's separate: `Cargo.lock`
+    gets rewritten whenever the patched-in package's version changes, and
+    the offline vendored-source override (previously a file `Prepare` wrote
+    into `workspace/.cargo/config.toml`, relying on an ancestor-directory
+    relationship with the driver's build dir) is now passed as `--config`
+    flags directly by `LinkedLibrary` itself, since sibling directories
+    don't share that ancestry for Cargo's config discovery to walk up
+    through — verified working, fully offline, with a real vendored crate.
+    `ci` puts its driver scratch dir under the system temp dir, never inside
+    the student's own checkout. See design §9.1.
 - Run **process-per-session under `cargo nextest`**; parse nextest's machine
   output into `TestResult`s. Build first (build failure → `build_failed`), then
   run, both under the sandbox with `[limits.build]` / `[limits.run]`.
@@ -346,6 +388,50 @@ unit/integration tests added (65 total, up from 53 at M2 close).
   constrained to the allowlist.
 - **Verify:** `cargo run -- scaffold <fixture> --out starter-hw3/` produces the
   documented tree; the emitted workflow matches design §11.2.
+- Revised post-M3: `scaffold` no longer reads a hand-maintained `public/`
+  repo — there isn't one anymore. It takes the **private instructor package**
+  directly and mechanically derives the public spec (`src/publish.rs`:
+  `derive_public_spec_toml` strips `points`/non-public tests via a generic
+  `toml::Value` edit) and public harness (`keep_only_named_tests` parses
+  `tests/*.rs` with `syn` and drops any `#[test]` fn not named in that spec's
+  public tests; the harness `Cargo.toml`'s `[patch]` table, meaningless once
+  copied out of the instructor repo, is dropped the same way). It also now
+  derives the starter's `src/` from `<assignment-repo>/solution` (or an
+  explicit `--solution` override) via `src/stub.rs`: `syn`-strip the reference
+  solution down to `pub` signatures with `todo!()` bodies, then run real
+  `cargo fix` in a scratch copy of the solution crate so the compiler — not
+  hand-rolled name resolution — prunes now-unused imports. See design §5 and
+  §18.6 (resolved).
+- Revised again post-M3: removed `[student]` (`spec::Student` — `package-name`,
+  `bin-name`) and the `--solution` flag entirely. `[assignment].id` is now the
+  single identifier used everywhere those two fields used to be read
+  (`evaluator::linked_library`'s patch arg, `prepare::Wiring::BinaryHarness`'s
+  bin name, the generated starter's `Cargo.toml` package name) — one name, no
+  separate section to keep in sync with it, no flag to override where the
+  solution lives. The reference solution directory is now
+  `<assignment-repo>/<id>` (not a fixed `solution/`), and `scaffold` validates
+  it: if the directory exists but its `Cargo.toml` `[package].name` doesn't
+  equal `id`, that's a misconfigured assignment and scaffold errors out
+  (`check_solution_package_name`) rather than silently deriving a stub with
+  the wrong shape. Renamed the example's `instructor/solution/` to
+  `instructor/linked-library-stack-example/` to match.
+- Revised a third time post-M3: simplified `scaffold` from "assemble each
+  output separately" to "copy real files, then strip in place" —
+  `student_manifest_toml` (a hand-built `Cargo.toml` from
+  `spec.allowed_crates`), `placeholder_source` (the no-solution fallback),
+  `build_stub_source`, and `copy_crate_for_fix` (a second, separate scratch
+  copy of the solution just to run `cargo fix` in) are all gone. `scaffold`
+  now: (1) recursively copies `package_dir/<id>/` straight onto `out_dir` —
+  `Cargo.toml` included, no separate manifest generation; (2) walks every
+  `.rs` file now under `out_dir` and strips it in place via
+  `stub::strip_to_stub`; (3) runs `cargo fix --allow-dirty --allow-staged
+  --allow-no-vcs` **directly in `out_dir`** (no scratch tempdir — `out_dir`
+  is already a real, disposable copy of the solution crate by this point)
+  and deletes the `target/` directory it leaves behind. A missing solution
+  directory is now a hard error (`Error::InvalidSpec`) rather than an empty
+  placeholder, since there's no longer anything to build one from. The
+  harness/spec derivation (`publish.rs`) already matched this copy-then-strip
+  shape and needed no changes.
 
 ### Step 19 — Release/download pipeline (infra + docs)
 - Add a GitHub Actions release workflow (repo infra, not crate code) that
@@ -360,18 +446,9 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 
 ---
 
-## M4 — Parallelism, caching, binary-harness
+## M4 — Caching, binary-harness
 
-### Step 20 — Async worker pool
-- Add `tokio`. Make `pipeline.rs` an async worker pool grading up to *N* students
-  concurrently, *N* derived from a host memory + disk budget (Σ per-job memory +
-  target-volume quota), not an arbitrary count (design §13). A semaphore bounds
-  concurrent sandboxes. Per-student failure isolation — one failure never aborts
-  the batch.
-- **Verify:** run a batch of many fixture submissions; assert bounded concurrency
-  and that an injected per-student failure doesn't abort peers.
-
-### Step 21 — Caching: base image + bare clones + quota'd target volumes
+### Step 20 — Caching: base image + bare clones + quota'd target volumes
 - Build a per-assignment base image (toolchain + pre-warmed vendored deps).
   Cache bare clones on the host (`git fetch` to update — used by the M6 GitHub
   fetcher). Give each job a **fresh, disk-backed, size-quota'd** target volume
@@ -379,9 +456,9 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 - **Compiles/tested:** volume/quota provisioning + image-build command
   construction unit-tested; **[deferred: needs podman]** live image build.
 
-### Step 22 — `binary-harness` evaluator
+### Step 21 — `binary-harness` evaluator
 - `evaluator/binary_harness.rs`: the trusted judge spawns the built student
-  **binary** (target from `[student].bin-name`) as a child — protocol / timing /
+  **binary** (target named `[assignment].id`) as a child — protocol / timing /
   stdin / args — and asserts on stdout/files/observable behavior, each interaction
   → a named `TestResult`. Exit code is only one input to the verdict, never "pass"
   alone. Always under `[limits.run]`.
@@ -442,8 +519,8 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 
 - **Errors:** one crate error type (`thiserror`) with `anyhow` at the CLI edge;
   stage failures become structured non-fatal outcomes, never batch-aborting panics.
-- **Tracing:** `tracing` spans per student/stage from step 1; `--jobs` and batch
-  progress observable.
+- **Tracing:** `tracing` spans per student/stage from step 1; batch progress
+  observable.
 - **Config:** `config.rs` (credentials location, storage dir, default limits,
   container-runtime choice) grows as milestones need it; runtime choice stays
   behind the `Sandbox` trait (open question §18.8).

@@ -1,8 +1,11 @@
 //! A correct reference solution for the `linked-library-stack` example
 //! assignment (see the top-level README's "Try it" section): a plain LIFO
-//! stack of `i64`s. Kept alongside `../harness/driver/` so it can be graded
-//! against the real judge as a harness regression check, not just handed to
-//! students.
+//! stack of `i64`s. This directory is named after `[assignment].id` in
+//! `../autograder.toml` (`linked-library-stack-example`) -- `autograder
+//! scaffold` requires that to derive the starter's src/ from it, and
+//! `../harness/Cargo.toml` depends on + patches this same name by default,
+//! so `cd ../harness && cargo nextest run` works standalone, no autograder
+//! involvement.
 
 pub struct Stack {
     items: Vec<i64>,

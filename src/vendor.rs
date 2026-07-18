@@ -46,14 +46,23 @@ pub fn vendor_config_toml(vendor_dir: &Path) -> String {
     )
 }
 
-/// `package_dir.join("vendor")`, absolutized against the current directory
-/// if `package_dir` is relative — see `vendor_config_toml`'s doc comment.
-/// Falls back to the relative path only if absolutizing itself fails
-/// (`std::path::absolute` fails only on pathological input, e.g. an empty
-/// path).
+/// `package_dir.join("vendor")`, absolutized — see `vendor_config_toml`'s
+/// doc comment.
 pub fn absolute_vendor_dir(package_dir: &Path) -> PathBuf {
-    let vendor_dir = package_dir.join("vendor");
-    std::path::absolute(&vendor_dir).unwrap_or(vendor_dir)
+    absolutize(&package_dir.join("vendor"))
+}
+
+/// Absolutizes `path` against the current directory if it's relative;
+/// returns it unchanged if absolutizing fails (`std::path::absolute` only
+/// fails on pathological input, e.g. an empty path). Any path handed to
+/// Cargo through `--config`/a config file's `directory`/`path` value should
+/// go through this first — Cargo resolves a relative one relative to the
+/// config file's own directory (or, for `--config`, has its own resolution
+/// quirks), not the process's cwd, so a relative path built from a relative
+/// CLI argument (the common case for assignment/workspace paths) can
+/// silently resolve to the wrong place.
+pub fn absolutize(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Runs `cargo vendor` against a synthetic manifest built from
@@ -142,8 +151,6 @@ name = "Binary search tree"
 kind = "linked-library"
 deadline = "2026-02-14T23:59:59-08:00"
 
-[student]
-package-name = "bst"
 
 [toolchain]
 channel = "1.86.0"

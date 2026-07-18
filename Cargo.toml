@@ -16,6 +16,8 @@ chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
 semver = "1"
 roxmltree = "0.20"
-
-[dev-dependencies]
+quote = "1.0.46"
+proc-macro2 = "1.0.106"
+prettyplease = "0.2.37"
+syn = { version = "2.0.119", features = ["full", "printing", "parsing", "clone-impls"] }
 tempfile = "3"
