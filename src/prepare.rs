@@ -98,11 +98,13 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
         source,
     })?;
     let config_path = cargo_dir.join("config.toml");
-    std::fs::write(&config_path, vendor::vendor_config_toml(&vendor_dir)).map_err(|source| {
-        Error::Io {
-            path: config_path.clone(),
-            source,
-        }
+    std::fs::write(
+        &config_path,
+        vendor::vendor_config_toml(&vendor::absolute_vendor_dir(package_dir)),
+    )
+    .map_err(|source| Error::Io {
+        path: config_path.clone(),
+        source,
     })?;
 
     let mut env = std::collections::BTreeMap::new();

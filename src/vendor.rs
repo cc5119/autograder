@@ -32,11 +32,28 @@ pub fn synthetic_manifest_toml(spec: &Spec) -> String {
 /// only the vendored crates (design §8.2). Deterministic from `vendor_dir`
 /// alone — doesn't depend on `cargo vendor`'s stdout, so it's unit-testable
 /// without network access.
+///
+/// Callers must pass an absolute `vendor_dir`. Cargo resolves a relative
+/// `[source.X].directory` relative to the config file's own directory, not
+/// the process's cwd, so a relative path built from a relative
+/// `package_dir` (the common case — assignment paths are usually given
+/// relative to the shell) gets that directory prepended a second time by
+/// Cargo, silently pointing at a directory that doesn't exist.
 pub fn vendor_config_toml(vendor_dir: &Path) -> String {
     format!(
         "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.vendored-sources]\ndirectory = \"{}\"\n",
         vendor_dir.display()
     )
+}
+
+/// `package_dir.join("vendor")`, absolutized against the current directory
+/// if `package_dir` is relative — see `vendor_config_toml`'s doc comment.
+/// Falls back to the relative path only if absolutizing itself fails
+/// (`std::path::absolute` fails only on pathological input, e.g. an empty
+/// path).
+pub fn absolute_vendor_dir(package_dir: &Path) -> PathBuf {
+    let vendor_dir = package_dir.join("vendor");
+    std::path::absolute(&vendor_dir).unwrap_or(vendor_dir)
 }
 
 /// Runs `cargo vendor` against a synthetic manifest built from
@@ -97,11 +114,13 @@ pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
         source,
     })?;
     let cargo_config_path = cargo_dir.join("config.toml");
-    std::fs::write(&cargo_config_path, vendor_config_toml(&vendor_dir)).map_err(|source| {
-        Error::Io {
-            path: cargo_config_path.clone(),
-            source,
-        }
+    std::fs::write(
+        &cargo_config_path,
+        vendor_config_toml(&absolute_vendor_dir(package_dir)),
+    )
+    .map_err(|source| Error::Io {
+        path: cargo_config_path.clone(),
+        source,
     })?;
 
     Ok(VendorOutcome {
@@ -171,6 +190,33 @@ model = "weighted"
         let config = vendor_config_toml(Path::new("/pkg/vendor"));
         assert!(config.contains("replace-with = \"vendored-sources\""));
         assert!(config.contains("directory = \"/pkg/vendor\""));
+    }
+
+    /// Regression test for a real bug: Cargo resolves a relative
+    /// `[source.X].directory` relative to the config file's own directory,
+    /// not the process's cwd. Assignment paths are normally passed relative
+    /// (e.g. `examples/hw3/instructor`), so a naive `package_dir.join("vendor")`
+    /// written verbatim gets `package_dir` prepended a second time by Cargo,
+    /// silently pointing at a directory that doesn't exist -- this only
+    /// surfaced once a real dependency actually needed resolving through it.
+    #[test]
+    fn absolute_vendor_dir_absolutizes_a_relative_package_dir() {
+        let relative = Path::new("examples/hw3/instructor");
+        let absolutized = absolute_vendor_dir(relative);
+
+        assert!(absolutized.is_absolute());
+        assert_eq!(
+            absolutized,
+            std::env::current_dir().unwrap().join(relative).join("vendor")
+        );
+    }
+
+    #[test]
+    fn absolute_vendor_dir_leaves_an_already_absolute_package_dir_alone() {
+        assert_eq!(
+            absolute_vendor_dir(Path::new("/pkg")),
+            PathBuf::from("/pkg/vendor")
+        );
     }
 
     #[test]

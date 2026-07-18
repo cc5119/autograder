@@ -20,11 +20,11 @@ use cli::{Command, ReportFormat};
 pub use config::Config;
 pub use error::{Error, Result};
 
-use evaluator::linked_library::LinkedLibrary;
 use evaluator::Evaluator;
+use evaluator::linked_library::LinkedLibrary;
 use grade::{DefaultGrader, Grader};
 use model::{JobContext, Tier};
-use report::{ci::CiReport, Reporter, csv::CsvReporter, json::JsonReporter};
+use report::{Reporter, ci::CiReport, csv::CsvReporter, json::JsonReporter};
 use sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
 use source::Submissions;
 use spec::{AssignmentKind, Spec};
@@ -75,7 +75,7 @@ fn run_grade(
     let evaluator = if local_sandbox {
         tracing::warn!(
             "grading with --local-sandbox: skipping Podman entirely, running student code as a \
-             host process with no container isolation (design §10) -- for local development/ \
+             host process with no container isolation -- for local development/ \
              testing only, never for grading real submissions"
         );
         build_local_evaluator(&spec, assignment)?
@@ -187,9 +187,11 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
 /// the authoritative tier.
 fn build_local_evaluator(spec: &Spec, package_dir: &std::path::Path) -> Result<Box<dyn Evaluator>> {
     match spec.assignment.kind {
-        AssignmentKind::LinkedLibrary => {
-            Ok(Box::new(LinkedLibrary::new(spec, package_dir, LocalSandbox)?))
-        }
+        AssignmentKind::LinkedLibrary => Ok(Box::new(LinkedLibrary::new(
+            spec,
+            package_dir,
+            LocalSandbox,
+        )?)),
         AssignmentKind::BinaryHarness => Err(Error::NotImplemented(
             "binary-harness evaluator (lands in M4)",
         )),
@@ -341,7 +343,8 @@ visibility = "public"
 
     #[test]
     fn ci_evaluator_selection_rejects_binary_harness_until_m4() {
-        let mut toml = PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
+        let mut toml =
+            PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
         toml = toml.replace(
             "[student]\npackage-name = \"bst\"",
             "[student]\nbin-name = \"solver\"",
