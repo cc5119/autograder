@@ -56,11 +56,14 @@ BIN=$PWD/target/debug/autograder
 $BIN prefetch examples/library-stack
 
 # authoritative grading, needs Podman (add --local-sandbox if you don't have it)
-# -- grade wants a --submissions dir with one subdirectory per student, so
-# stage the reference solution as a scratch "alice" submission
+# -- grade wants a --submissions dir with one subdirectory per student, and
+# each student's own subdirectory is a whole checkout (the crate lives
+# under a directory named after [assignment].id, same shape scaffold's
+# starter has) -- so stage the reference solution as a scratch "alice"
+# submission that way, not flattened directly into alice/
 rm -rf /tmp/ll-stack-submissions
 mkdir -p /tmp/ll-stack-submissions/alice
-cp -r examples/library-stack/library-stack-example/. /tmp/ll-stack-submissions/alice/
+cp -r examples/library-stack/library-stack-example /tmp/ll-stack-submissions/alice/library-stack-example
 $BIN grade examples/library-stack --submissions /tmp/ll-stack-submissions
 $BIN report library-stack-example --format csv
 
@@ -91,7 +94,7 @@ $BIN scaffold examples/library-stack --out /tmp/starter-stack
 FizzBuzz as a CLI: the student binary (target name `fizzbuzz`) takes `n` as
 its one argument and prints lines `1..=n`. Unlike `library`, there's no
 separate driver/harness crate — `harness/tests/judge.rs` is copied directly
-onto the student's own checkout (`prepare::Wiring::Binary`), and its judge
+onto the student's own checkout, and its judge
 spawns the built binary via `env!("CARGO_BIN_EXE_fizzbuzz")` (Cargo sets
 that automatically for an integration test in the same package as the bin
 target) and asserts purely on its stdout. Same commands as `library`, just
@@ -103,7 +106,7 @@ $BIN prefetch examples/binary-fizzbuzz
 
 rm -rf /tmp/fizzbuzz-submissions
 mkdir -p /tmp/fizzbuzz-submissions/alice
-cp -r examples/binary-fizzbuzz/fizzbuzz/. /tmp/fizzbuzz-submissions/alice/
+cp -r examples/binary-fizzbuzz/fizzbuzz /tmp/fizzbuzz-submissions/alice/fizzbuzz
 $BIN grade examples/binary-fizzbuzz --submissions /tmp/fizzbuzz-submissions
 $BIN report fizzbuzz --format csv
 

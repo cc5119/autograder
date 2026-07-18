@@ -2,8 +2,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::manifest_check::{self, ManifestDiagnostic};
-use crate::model::Tier;
-use crate::spec::{AssignmentKind, Spec};
+use crate::spec::Spec;
 use crate::vendor;
 
 /// The offline cargo environment installed into the workspace so the build
@@ -19,14 +18,6 @@ pub struct OfflineEnv {
 
 #[derive(Debug, Clone)]
 pub struct PrepareOutcome {
-    /// Where the `library` driver crate was built (`package_dir/harness`
-    /// itself, in place, for `Tier::Ci`; the passed-in `driver_dir`, copied
-    /// into, for `Tier::Authoritative` -- see `prepare`'s doc comment).
-    /// Unused by `binary`, which builds the student's own binary directly
-    /// in `workspace` -- the value is still filled in (mirroring the
-    /// passed-in `driver_dir` hint) so callers don't need a `kind`-specific
-    /// case to construct a `JobContext`.
-    pub driver_dir: std::path::PathBuf,
     pub offline_env: OfflineEnv,
     /// Allowlist/`[patch]`/git/path violations found in the student
     /// `Cargo.toml`, in the order found (design §8.3, §8.4). Non-empty means
@@ -36,76 +27,35 @@ pub struct PrepareOutcome {
     pub manifest_diagnostics: Vec<ManifestDiagnostic>,
 }
 
-/// Assembles the workspace: the student checkout (already at `workspace`)
-/// plus the harness. `package_dir` is the assignment package containing
-/// `harness/` and (once prefetched) `vendor/` -- the private instructor
-/// package for `Tier::Authoritative`, or a checked-out starter repo (see
-/// `scaffold`) for `Tier::Ci`.
+/// Installs the offline cargo env (if the package has been prefetched) and
+/// diagnoses the student's `Cargo.toml` against the allowlist. Nothing
+/// else: this function has no involvement in wiring the judge/harness to
+/// `workspace` at all, for either `AssignmentKind` --
 ///
-/// For `library`, how `harness/` (the driver crate — no `driver/`
-/// subdirectory in the checked-in package, see `evaluator::library`) gets
-/// wired to the checkout depends on the tier, because the two tiers differ
-/// in exactly the way that matters for this:
+/// - **`library`**: the harness is a separate crate, wired to `workspace`
+///   entirely through a checked-in path dependency. The caller positions
+///   it correctly *before* calling this (copying `package_dir/harness` to
+///   a fresh per-job `driver_dir` next to a copied submission, for
+///   `Authoritative`; pointing at `package_dir/harness` in place, for
+///   `Ci`, since the starter repo already has it positioned correctly --
+///   see `evaluator::library`'s module doc comment for why a plain path
+///   dependency resolves correctly either way with no patch or `--config`
+///   override).
+/// - **`binary`**: the judge tests live directly inside `workspace`'s own
+///   `tests/` -- for `Ci` they're already there (`scaffold` baked the
+///   public subset into the starter), for `Authoritative` the caller
+///   overlays the private set onto the copied submission before calling
+///   this (see `evaluator::binary`'s module doc comment).
 ///
-/// - **`Authoritative`**: `workspace` is an arbitrary, per-job checkout
-///   location under the host's storage dir -- not something `harness/`'s
-///   own manifest can know ahead of time. So `harness/` is copied into
-///   `driver_dir`, a *fresh, per-job* directory that is a **sibling** of
-///   `workspace`, not nested inside it (nothing an evaluator builds ever
-///   lands inside the student's own checkout), and the evaluator
-///   redirects the dependency with a per-invocation `--config` override
-///   (`evaluator::library`). Freshness matters even though the two are
-///   separate: sharing one `harness/` directory across jobs would race
-///   different students' builds against the same `Cargo.lock`/`target/`.
-/// - **`Ci`**: `workspace` is wherever the student's own checkout already
-///   is, and (per `scaffold`'s starter layout) `harness/` is *already*
-///   sitting right there as a sibling of the student's crate, wired via a
-///   plain path dependency instead of a patch -- no per-job unpredictability
-///   to work around, since there's only ever one checkout `harness/` needs
-///   to see: the very repo it's part of. So `driver_dir` is `package_dir/
-///   harness` itself, built **in place**, no copy at all. This isn't just
-///   simpler: copying it elsewhere would actively break it, since a plain
-///   path dependency has no `--config`-patchable registry source to
-///   redirect (patches only apply to registry/git-sourced dependencies,
-///   never to ones already resolved via `path`) -- so a stale copy would
-///   silently resolve `../<id>` against whatever happens to be there
-///   instead of the student's actual crate.
-pub fn prepare(
-    workspace: &Path,
-    driver_dir: &Path,
-    package_dir: &Path,
-    spec: &Spec,
-    tier: Tier,
-) -> Result<PrepareOutcome> {
-    let harness_dir = package_dir.join("harness");
-    let resolved_driver_dir = match spec.assignment.kind {
-        AssignmentKind::Library => match tier {
-            Tier::Ci => harness_dir.clone(),
-            Tier::Authoritative => {
-                std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
-                    path: driver_dir.to_path_buf(),
-                    source,
-                })?;
-                if harness_dir.is_dir() {
-                    copy_dir_into(driver_dir, &harness_dir)?;
-                }
-                driver_dir.to_path_buf()
-            }
-        },
-        AssignmentKind::Binary => {
-            if harness_dir.is_dir() {
-                copy_dir_into(workspace, &harness_dir)?;
-            }
-            driver_dir.to_path_buf()
-        }
-    };
-
+/// Both of those are tier-dependent decisions the caller has already made
+/// by the time this runs, so this function doesn't need to know the tier,
+/// the assignment kind, or anything about the harness at all.
+pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<PrepareOutcome> {
     let offline_env = install_offline_env(workspace, package_dir)?;
     let manifest_diagnostics =
         diagnose_manifest(workspace, spec, offline_env.vendor_dir.as_deref())?;
 
     Ok(PrepareOutcome {
-        driver_dir: resolved_driver_dir,
         offline_env,
         manifest_diagnostics,
     })
@@ -176,14 +126,21 @@ fn diagnose_manifest(
     manifest_check::check_manifest(&contents, &spec.allowed_crates, vendor_dir)
 }
 
-/// Recursively copies `src`'s tree onto `dest`, path-for-path. `dest` is
-/// assumed to contain nothing at any of those paths — true by construction
-/// for both callers (a freshly-created `driver_dir` that's never reused
-/// across jobs; a `binary` workspace where the harness paths are
-/// instructor-chosen to not collide with the student's own). If that
-/// invariant is ever violated, `std::fs::copy` simply overwrites the file —
-/// there's no separate collision-detection step to keep in sync.
-fn copy_dir_into(dest: &Path, src: &Path) -> Result<()> {
+/// Recursively copies `src`'s tree onto `dest`, path-for-path, overwriting
+/// any file already at a given path but never removing one that isn't
+/// present in `src`. `dest` is assumed to contain nothing at all for most
+/// callers -- a freshly-created `driver_dir` that's never reused across
+/// jobs; `pipeline`'s freshly-created scratch `build/<id>/`, extracted
+/// fresh from `checkout/` on every run -- so the overwrite behavior never
+/// actually matters there. The one caller that *relies* on the overwrite
+/// (rather than just tolerating it) is `pipeline::grade_batch`'s `binary`
+/// judge overlay onto `workspace/tests/`, which the caller wipes with
+/// `remove_dir_all` immediately beforehand precisely so this function's
+/// "leaves unrelated files alone" behavior can't leave a stray
+/// student-supplied file sitting there uncleared (see that call site's
+/// comment for why that matters for grading integrity, not just
+/// tidiness).
+pub(crate) fn copy_dir_into(dest: &Path, src: &Path) -> Result<()> {
     std::fs::create_dir_all(dest).map_err(|source| Error::Io {
         path: dest.to_path_buf(),
         source,
@@ -270,15 +227,7 @@ model = "weighted"
         );
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(
-            workspace.path(),
-            driver_dir.path(),
-            package.path(),
-            &spec,
-            Tier::Authoritative,
-        )
-        .unwrap();
+        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert!(outcome.manifest_diagnostics.is_empty());
         assert_eq!(
@@ -300,15 +249,7 @@ model = "weighted"
         );
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(
-            workspace.path(),
-            driver_dir.path(),
-            package.path(),
-            &spec,
-            Tier::Authoritative,
-        )
-        .unwrap();
+        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
         assert!(
@@ -325,22 +266,21 @@ model = "weighted"
         write(&workspace.path().join("src/lib.rs"), "// student code");
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(
-            workspace.path(),
-            driver_dir.path(),
-            package.path(),
-            &spec,
-            Tier::Authoritative,
-        )
-        .unwrap();
+        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert!(outcome.offline_env.vendor_dir.is_none());
         assert!(!workspace.path().join(".cargo/config.toml").exists());
     }
 
+    /// `prepare` makes no decision about wiring the judge/harness to
+    /// `workspace` at all, for either `AssignmentKind` -- the *caller*
+    /// positions it correctly before calling this (see
+    /// `pipeline::grade_batch` for `Authoritative`, `run_ci` for `Ci`).
+    /// This confirms `prepare` stays out of the way entirely: it never
+    /// touches `package_dir/harness` or `package_dir/<id>/tests`,
+    /// regardless of kind or whether either even exists.
     #[test]
-    fn ci_tier_builds_the_library_harness_in_place_without_copying_it() {
+    fn prepare_never_touches_the_harness_for_either_kind() {
         let workspace = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
         write(&workspace.path().join("src/lib.rs"), "// student code");
@@ -349,53 +289,22 @@ model = "weighted"
             "[package]\nname = \"driver\"\n",
         );
         write(&package.path().join("harness/tests/judge.rs"), "// judge");
+        write(&package.path().join("hw3/tests/judge.rs"), "// judge");
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        // A scratch dir that's never actually used for Ci -- confirms the
-        // harness stays in place rather than getting copied there.
-        let unused_driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(
-            workspace.path(),
-            unused_driver_dir.path(),
-            package.path(),
-            &spec,
-            Tier::Ci,
-        )
-        .unwrap();
+        for kind in ["library", "binary"] {
+            let toml = SPEC_TOML.replace("kind = \"library\"", &format!("kind = \"{kind}\""));
+            let spec: Spec = toml::from_str(&toml).unwrap();
+            prepare(workspace.path(), package.path(), &spec).unwrap();
+        }
 
-        assert_eq!(outcome.driver_dir, package.path().join("harness"));
-        assert!(
-            std::fs::read_dir(unused_driver_dir.path())
-                .unwrap()
-                .next()
-                .is_none(),
-            "Ci tier must not copy the harness into the scratch driver_dir hint"
+        // Untouched: still exactly what was written above, nothing copied
+        // out of it or into it, for either kind.
+        assert_eq!(
+            std::fs::read_to_string(package.path().join("harness/Cargo.toml")).unwrap(),
+            "[package]\nname = \"driver\"\n"
         );
-    }
-
-    #[test]
-    fn authoritative_tier_copies_the_library_harness_into_a_fresh_driver_dir() {
-        let workspace = tempfile::tempdir().unwrap();
-        let package = tempfile::tempdir().unwrap();
-        write(&workspace.path().join("src/lib.rs"), "// student code");
-        write(
-            &package.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\n",
-        );
-
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
-        let outcome = prepare(
-            workspace.path(),
-            driver_dir.path(),
-            package.path(),
-            &spec,
-            Tier::Authoritative,
-        )
-        .unwrap();
-
-        assert_eq!(outcome.driver_dir, driver_dir.path().to_path_buf());
-        assert!(driver_dir.path().join("Cargo.toml").is_file());
+        assert!(!workspace.path().join("harness").exists());
+        assert!(!workspace.path().join("tests").exists());
     }
 
     #[test]

@@ -4,8 +4,8 @@
 //! is named after `[assignment].id` in `../autograder.toml` (`fizzbuzz`) --
 //! `autograder scaffold` requires that to derive the starter's `src/` from
 //! it, and the built binary target must be named `fizzbuzz` to match, since
-//! the judge (`../harness/tests/judge.rs`) spawns it via
-//! `env!("CARGO_BIN_EXE_fizzbuzz")`.
+//! the judge (`tests/judge.rs`, right alongside this file -- see its own
+//! doc comment) spawns it via `env!("CARGO_BIN_EXE_fizzbuzz")`.
 
 use std::env;
 

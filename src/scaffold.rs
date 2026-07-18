@@ -4,15 +4,15 @@
 //! hand-maintained `public/` sibling repo, and no separately-assembled
 //! `Cargo.toml`/`src/` built up from spec fields in Rust code.
 //!
-//! `package_dir` is the instructor package (`autograder.toml`, `harness/`,
-//! `<assignment-id>/` — the required reference solution). `[assignment].id`
-//! is the single identifier for everything student-facing (design §5): the
-//! crate name the harness's `Cargo.toml` depends on (`evaluator::library`),
-//! the binary target name for `binary`-kind assignments, *and* the
-//! directory name the reference
-//! solution (privately) / the student's own crate (once published) must
-//! live in. No `[student]` section to keep in sync with it, no `--solution`
-//! flag.
+//! `package_dir` is the instructor package (`autograder.toml`,
+//! `<assignment-id>/` — the required reference solution — and, for
+//! `library`-kind only, `harness/`; see below). `[assignment].id` is the
+//! single identifier for everything student-facing (design §5): the crate
+//! name the harness's `Cargo.toml` depends on (`evaluator::library`), the
+//! binary target name for `binary`-kind assignments, *and* the directory
+//! name the reference solution (privately) / the student's own crate (once
+//! published) must live in. No `[student]` section to keep in sync with
+//! it, no `--solution` flag.
 //!
 //! The published starter is laid out as a **structural mirror** of the
 //! private package: `autograder.public.toml`/`harness/`/`<id>/` sit at
@@ -46,17 +46,18 @@
 //! - `autograder.public.toml` — `points` and non-public
 //!   `[[scoring.tests]]` entries stripped
 //!   ([`crate::publish::derive_public_spec_toml`]).
-//! - `harness/` — a copy of the private `harness/`, with test files
-//!   filtered down to the public-visibility tests named in that same spec
-//!   transform ([`crate::publish::keep_only_named_tests`]); its manifest is
-//!   copied verbatim, no rewrite needed (see `publish`'s module doc
-//!   comment). `binary`-kind
-//!   has no `harness/Cargo.toml` at all (its harness is just loose
-//!   `tests/*.rs`, merged onto whatever crate `Prepare` targets at grading
-//!   time), so for that kind those same public-only test files are
-//!   *additionally* copied straight into `<id>/tests/` — the only way a
+//! - `harness/` (`library`-kind only) — a copy of the private `harness/`,
+//!   with test files filtered down to the public-visibility tests named in
+//!   that same spec transform ([`crate::publish::keep_only_named_tests`]);
+//!   its manifest is copied verbatim, no rewrite needed (see `publish`'s
+//!   module doc comment). `binary`-kind has no separate harness crate at
+//!   all — its judge tests live directly inside the reference solution's
+//!   own `<id>/tests/` (see `evaluator::binary`'s module doc comment), so
+//!   for that kind the same filtering instead lands those public-only
+//!   tests straight in the student's own `<id>/tests/` — the only way a
 //!   plain `cargo test` finds them there, since there's no crate-linking
-//!   trick available without a `Cargo.toml` to attach a path dependency to.
+//!   trick available without a separate `Cargo.toml` to attach a path
+//!   dependency to.
 //!   Deliberately *not* copied here: `vendor/`/`.cargo/` (`prefetch`'s
 //!   offline-vendoring output). Those aren't grading-only anymore — the
 //!   generated workflow below runs `autograder prefetch` itself on the
@@ -70,9 +71,9 @@
 //!   correctly scoped, once an evaluator actually needs fixture data.
 //! - `Cargo.toml` — the root `[workspace]` manifest (see above).
 //! - `.github/workflows/autograde.yml` — a thin wrapper around `autograder
-//!   ci`, run from inside `<id>/` (the student's own crate) with
-//!   `--harness ..` pointing back at the repo root. The one file with no
-//!   private-repo counterpart to copy, so it's still generated.
+//!   ci`, run from the repo root (`ci` takes no `--harness` flag, see its
+//!   own doc comment). The one file with no private-repo counterpart to
+//!   copy, so it's still generated.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -130,6 +131,23 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
 
     let student_dir = out_dir.join(id);
     copy_dir_if_exists(&solution_dir, &student_dir)?;
+    // For `binary`-kind, the reference solution's own `tests/` is the
+    // private judge itself (see `evaluator::binary`'s module doc comment),
+    // not solution code -- remove the raw copy before stripping so
+    // `strip_rust_files_in_place` (which walks every `.rs` file, meant for
+    // *implementation* code) never mangles real `#[test]` assertions into
+    // `todo!()` stubs. The starter's public-only tests get derived fresh,
+    // below, once `public_test_names` is known. `library` never has this
+    // problem: its judge lives in a separate `harness/` crate entirely.
+    if spec.assignment.kind == AssignmentKind::Binary {
+        let raw_tests_dir = student_dir.join("tests");
+        if raw_tests_dir.is_dir() {
+            std::fs::remove_dir_all(&raw_tests_dir).map_err(|source| Error::Io {
+                path: raw_tests_dir,
+                source,
+            })?;
+        }
+    }
     strip_rust_files_in_place(&student_dir)?;
     run_cargo_fix(&student_dir)?;
 
@@ -145,18 +163,29 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         source,
     })?;
 
-    let harness_dir = out_dir.join("harness");
-    copy_public_harness(&package_dir.join("harness"), &harness_dir, &public_test_names)?;
-
-    // `binary`-kind has no harness crate to link in via the workspace
-    // (`harness/` there is just loose `tests/*.rs`, merged onto whatever
-    // crate `Prepare` targets at grading time -- see `prepare::prepare`'s
-    // doc comment), so the only way a plain `cargo test` finds those tests
-    // is if they're statically sitting in the student's own `tests/` already.
-    // `library` doesn't need this: the workspace path dependency links the
-    // harness in place, no duplication required.
-    if spec.assignment.kind == AssignmentKind::Binary {
-        copy_dir_if_exists(&harness_dir.join("tests"), &student_dir.join("tests"))?;
+    // Deriving the public judge differs in shape by kind (see
+    // `evaluator::library`'s and `evaluator::binary`'s module doc
+    // comments): `library`'s lives in a separate `harness/` crate;
+    // `binary` has none, so its (filtered) judge tests go straight into
+    // the student's own `<id>/tests/` -- the only way a plain `cargo test`
+    // finds them there, since there's no crate-linking trick available
+    // without a `Cargo.toml` to attach a path dependency to.
+    match spec.assignment.kind {
+        AssignmentKind::Library => {
+            let harness_dir = out_dir.join("harness");
+            copy_public_harness(
+                &package_dir.join("harness"),
+                &harness_dir,
+                &public_test_names,
+            )?;
+        }
+        AssignmentKind::Binary => {
+            copy_public_tests(
+                &solution_dir.join("tests"),
+                &student_dir.join("tests"),
+                &public_test_names,
+            )?;
+        }
     }
 
     let workflow_dir = out_dir.join(".github/workflows");
@@ -354,23 +383,42 @@ fn copy_file(src: &Path, dst: &Path) -> Result<()> {
 /// its `Cargo.toml` needs no rewriting (see `publish`'s module doc comment:
 /// the checked-in dependency is already a plain path onto the sibling
 /// directory named after `[assignment].id`, which means the same thing in
-/// both the private package and the published starter) -- then filters
-/// every `tests/*.rs` file down to just the public-visibility tests named
-/// in `public_test_names`, via [`crate::publish::keep_only_named_tests`].
+/// both the private package and the published starter) -- then filters its
+/// `tests/*.rs` down to just the public-visibility tests, via
+/// [`filter_tests_dir_in_place`].
 fn copy_public_harness(src: &Path, dst: &Path, public_test_names: &HashSet<String>) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
     copy_dir_if_exists(src, dst)?;
+    filter_tests_dir_in_place(&dst.join("tests"), public_test_names)
+}
 
-    let tests_dir = dst.join("tests");
+/// `binary`-kind analogue of [`copy_public_harness`]: there's no separate
+/// harness crate to copy (see `evaluator::binary`'s module doc comment) --
+/// `src` is the reference solution's own `tests/` (its private judge),
+/// copied straight into the student's own `<id>/tests/` and filtered down
+/// to just the public-visibility tests.
+fn copy_public_tests(src: &Path, dst: &Path, public_test_names: &HashSet<String>) -> Result<()> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    copy_dir_if_exists(src, dst)?;
+    filter_tests_dir_in_place(dst, public_test_names)
+}
+
+/// Filters every `.rs` file directly inside `tests_dir` down to just the
+/// `#[test]` fns named in `public_test_names`, in place, via
+/// [`crate::publish::keep_only_named_tests`]. A no-op if `tests_dir`
+/// doesn't exist.
+fn filter_tests_dir_in_place(tests_dir: &Path, public_test_names: &HashSet<String>) -> Result<()> {
     if tests_dir.is_dir() {
-        for entry in std::fs::read_dir(&tests_dir).map_err(|source| Error::Io {
-            path: tests_dir.clone(),
+        for entry in std::fs::read_dir(tests_dir).map_err(|source| Error::Io {
+            path: tests_dir.to_path_buf(),
             source,
         })? {
             let entry = entry.map_err(|source| Error::Io {
-                path: tests_dir.clone(),
+                path: tests_dir.to_path_buf(),
                 source,
             })?;
             let path = entry.path();
@@ -745,5 +793,136 @@ visibility = "private"
         let out_dir = tempfile::tempdir().unwrap();
         let err = scaffold(package_dir.path(), out_dir.path()).unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
+    }
+
+    const BINARY_PRIVATE_SPEC: &str = r#"
+[assignment]
+id = "wc"
+name = "Word count"
+kind = "binary"
+deadline = "2026-02-14T23:59:59-08:00"
+
+[sandbox]
+image = "autograder-base:1.86.0"
+
+[allowed-crates]
+
+[limits.build]
+wall-clock = "60s"
+cpus = 2
+memory = "1GiB"
+pids = 128
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "256MiB"
+pids = 64
+max-output-bytes = "64KiB"
+
+[scoring]
+model = "weighted"
+
+[[scoring.tests]]
+name = "counts_words"
+points = 10
+visibility = "public"
+
+[[scoring.tests]]
+name = "counts_zero_for_empty_input"
+points = 20
+visibility = "private"
+"#;
+
+    const BINARY_JUDGE_RS: &str = r#"
+        #[test]
+        fn counts_words() {
+            assert!(true);
+        }
+
+        #[test]
+        fn counts_zero_for_empty_input() {
+            assert!(true);
+        }
+    "#;
+
+    /// `binary`-kind has no separate `harness/` crate at all -- the private
+    /// judge lives directly inside the reference solution's own `tests/`
+    /// (see `evaluator::binary`'s module doc comment).
+    fn write_binary_instructor_package(package_dir: &Path) {
+        write(
+            &package_dir.join(spec::PRIVATE_SPEC_FILE),
+            BINARY_PRIVATE_SPEC,
+        );
+        write(
+            &package_dir.join("wc/Cargo.toml"),
+            "[package]\nname = \"wc\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            &package_dir.join("wc/src/main.rs"),
+            "pub fn count(s: &str) -> usize { s.split_whitespace().count() }\nfn main() {}\n",
+        );
+        write(&package_dir.join("wc/tests/judge.rs"), BINARY_JUDGE_RS);
+    }
+
+    #[test]
+    fn scaffold_derives_a_public_binary_judge_with_no_separate_harness_dir() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_binary_instructor_package(package_dir.path());
+        let out_dir = tempfile::tempdir().unwrap();
+
+        scaffold(package_dir.path(), out_dir.path()).unwrap();
+
+        let judge = std::fs::read_to_string(out_dir.path().join("wc/tests/judge.rs")).unwrap();
+        assert!(judge.contains("fn counts_words"));
+        assert!(!judge.contains("counts_zero_for_empty_input"));
+
+        assert!(!out_dir.path().join("harness").exists());
+        assert_eq!(
+            std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap(),
+            "[workspace]\nmembers = [\"wc\"]\n"
+        );
+    }
+
+    /// The reference solution's own private judge tests must never get
+    /// mangled by the stub-stripping pass meant for implementation code --
+    /// confirms the public test's real assertion survives, not a `todo!()`.
+    #[test]
+    fn scaffold_never_stubs_the_binary_judges_test_bodies() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_binary_instructor_package(package_dir.path());
+        let out_dir = tempfile::tempdir().unwrap();
+
+        scaffold(package_dir.path(), out_dir.path()).unwrap();
+
+        let judge = std::fs::read_to_string(out_dir.path().join("wc/tests/judge.rs")).unwrap();
+        assert!(judge.contains("assert!(true)"));
+        assert!(!judge.contains("todo!"));
+    }
+
+    /// Mirrors `cargo_test_at_the_starter_root_runs_the_public_harness` for
+    /// `binary`-kind: no `autograder` involvement, just the workspace
+    /// manifest plus the judge tests already sitting in `wc/tests/`.
+    #[test]
+    fn cargo_test_at_the_binary_starter_root_runs_the_public_judge() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_binary_instructor_package(package_dir.path());
+        let out_dir = tempfile::tempdir().unwrap();
+        scaffold(package_dir.path(), out_dir.path()).unwrap();
+
+        let test = std::process::Command::new("cargo")
+            .arg("test")
+            .current_dir(out_dir.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&test.stdout);
+        assert!(
+            test.status.success(),
+            "cargo test at the binary starter root failed: {}{}",
+            stdout,
+            String::from_utf8_lossy(&test.stderr)
+        );
+        assert!(stdout.contains("counts_words"));
     }
 }

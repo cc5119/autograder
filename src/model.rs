@@ -45,14 +45,20 @@ pub struct JobContext {
     pub student_id: String,
     pub run_id: String,
     pub tier: Tier,
-    /// The student's checkout (fetch destination for `grade`; the current
-    /// directory for `ci`). Named after `[assignment].id`, not e.g.
-    /// "student" -- the `library` driver crate's checked-in `Cargo.toml`
-    /// depends on that exact sibling name (see `evaluator::library`'s
-    /// module doc comment), so this naming is what lets that dependency
-    /// resolve correctly with no patch/`--config` override needed, for
-    /// every tier. Never written into by an evaluator — only read, as the
-    /// target of that path dependency.
+    /// Where the code being evaluated actually is. For `grade`, this is
+    /// **not** the raw fetch destination -- `pipeline::grade_batch` fetches
+    /// the whole submitted checkout into a `checkout/` directory that's
+    /// never touched again, then extracts just the `<id>/` crate into this
+    /// (ephemeral, scratch) location, so nothing ever gets written into
+    /// the student's actual submitted checkout. For `ci`, this is the
+    /// current directory's `<id>/` subdirectory, the real live checkout
+    /// (no separate fetch stage at all). Named after `[assignment].id`,
+    /// not e.g. "student" -- the `library` driver crate's checked-in
+    /// `Cargo.toml` depends on that exact sibling name (see
+    /// `evaluator::library`'s module doc comment), so this naming is what
+    /// lets that dependency resolve correctly with no patch/`--config`
+    /// override needed, for every tier. Never written into by an
+    /// evaluator — only read, as the target of that path dependency.
     pub workspace: PathBuf,
     /// Where a `library` driver crate is built — always a *sibling* of
     /// `workspace`, not nested inside it, so nothing an evaluator builds

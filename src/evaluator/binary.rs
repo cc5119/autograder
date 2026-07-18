@@ -1,25 +1,33 @@
 //! The `binary` `Evaluator` (design §9.2): the student repo builds a
 //! **binary** (target named `[assignment].id`); the trusted judge —
-//! instructor-authored integration tests overlaid from `harness/` directly
-//! onto the student's own workspace by `Prepare` (unlike `library`'s
-//! separate `driver_dir`) — spawns that binary as a child and asserts on
-//! its observable behavior
-//! (stdout/files/exit code), never on anything the student's own process
-//! self-reports.
+//! instructor-authored integration tests — spawns that binary as a child
+//! and asserts on its observable behavior (stdout/files/exit code), never
+//! on anything the student's own process self-reports.
 //!
-//! Unlike `library`, there is no separate driver crate and no `[patch]`
-//! injection: the harness's `tests/*.rs` files land in the student's own
-//! crate, so a plain `cargo build` produces the binary and `cargo nextest
-//! run` builds+runs the harness's integration tests in the same package —
-//! which can locate the built binary via Cargo's standard
-//! `env!("CARGO_BIN_EXE_<name>")` mechanism with no extra wiring from this
-//! module. Because build and run both happen directly in `ctx.workspace`
-//! (not a sibling scratch dir), `Prepare`'s own `.cargo/config.toml` (written
-//! into `workspace` when the package has been prefetched) is discovered by
-//! Cargo's ordinary directory-based config lookup, so this evaluator only
-//! needs to set `CARGO_NET_OFFLINE` -- no `--config` flags to reproduce it,
-//! unlike `library` (see that module's doc comment for why *it* can't rely
-//! on the file).
+//! Unlike `library`, there is no separate driver crate at all: the judge
+//! tests live directly inside `[assignment].id`'s own package, both in the
+//! private repo (the reference solution's `tests/*.rs`, containing every
+//! test, public and hidden) and in the published starter (`scaffold`
+//! derives just the public-visibility subset into the student's own
+//! `tests/`, the same way it derives `library`'s public harness). At
+//! grading time, the caller (`pipeline::grade_batch`, `Authoritative` only
+//! -- `Ci` needs nothing, the starter already has the public tests baked
+//! in) overlays the private set onto the submission's `tests/` before this
+//! evaluator ever runs; this module has no involvement in that and doesn't
+//! need to. A plain `cargo build` produces the binary and `cargo nextest
+//! run` builds+runs whatever's sitting in `tests/` as part of the *same*
+//! package, which is what lets it locate the built binary via Cargo's
+//! standard `env!("CARGO_BIN_EXE_<name>")` mechanism with no extra wiring
+//! from this module -- that env var is only ever populated for a package's
+//! own binaries, never across a dependency edge, which is exactly why
+//! there's no separate harness crate for `binary`-kind the way there is
+//! for `library`. Because build and run both happen directly in
+//! `ctx.workspace` (not a sibling scratch dir), `Prepare`'s own
+//! `.cargo/config.toml` (written into `workspace` when the package has
+//! been prefetched) is discovered by Cargo's ordinary directory-based
+//! config lookup, so this evaluator only needs to set `CARGO_NET_OFFLINE`
+//! -- no `--config` flags to reproduce it, unlike `library` (see that
+//! module's doc comment for why *it* can't rely on the file).
 //!
 //! Run **process-per-session under `cargo nextest`**, exactly like
 //! `library`: verdicts come from parsing nextest's JUnit report, not from
@@ -52,12 +60,19 @@ pub struct Binary<S> {
 impl<S: Sandbox> Binary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
-        let harness_dir = package_dir.join("harness");
-        if !harness_dir.is_dir() {
+        // For `Authoritative`, `package_dir` is the private repo, so this
+        // is the reference solution's own (private, unfiltered) judge
+        // tests -- the source `grade_batch` copies from. For `Ci`,
+        // `package_dir` is the student's own checkout, so this is
+        // `workspace/tests` itself, which `scaffold` already populated
+        // with the public subset -- nothing to copy, just confirming it's
+        // there.
+        let tests_dir = package_dir.join(&spec.assignment.id).join("tests");
+        if !tests_dir.is_dir() {
             return Err(Error::InvalidSpec(format!(
-                "binary assignment missing {} -- the harness must be real, \
+                "binary assignment missing {} -- the judge must be real, \
                  instructor-authored integration tests (no default is generated)",
-                harness_dir.display()
+                tests_dir.display()
             )));
         }
         Ok(Self {
@@ -353,17 +368,19 @@ visibility = "public"
         }
     }
 
-    fn write_harness_dir(package_dir: &std::path::Path) {
-        std::fs::create_dir_all(package_dir.join("harness/tests")).unwrap();
+    /// Writes the judge tests directly into `<id>/tests/`, matching the
+    /// current layout: no separate `harness/` for `binary`-kind.
+    fn write_judge_tests(package_dir: &std::path::Path) {
+        std::fs::create_dir_all(package_dir.join("wc/tests")).unwrap();
         std::fs::write(
-            package_dir.join("harness/tests/judge.rs"),
+            package_dir.join("wc/tests/judge.rs"),
             "#[test]\nfn echoes_input() {}\n",
         )
         .unwrap();
     }
 
     #[test]
-    fn new_errors_clearly_when_the_harness_is_missing() {
+    fn new_errors_clearly_when_the_judge_tests_are_missing() {
         let package_dir = tempfile::tempdir().unwrap();
 
         let result = Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
@@ -374,7 +391,7 @@ visibility = "public"
     #[test]
     fn build_failure_short_circuits_before_running_nextest() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_harness_dir(package_dir.path());
+        write_judge_tests(package_dir.path());
         let workspace = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
@@ -392,7 +409,7 @@ visibility = "public"
     #[test]
     fn missing_junit_report_after_a_successful_run_is_a_harness_error() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_harness_dir(package_dir.path());
+        write_judge_tests(package_dir.path());
         let workspace = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
@@ -408,7 +425,7 @@ visibility = "public"
     #[test]
     fn a_junit_report_on_disk_is_parsed_into_the_eval_result() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_harness_dir(package_dir.path());
+        write_judge_tests(package_dir.path());
         let workspace = tempfile::tempdir().unwrap();
         let junit_path = workspace.path().join("target/nextest/default/junit.xml");
         std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
@@ -430,7 +447,7 @@ visibility = "public"
     #[test]
     fn build_and_run_mount_the_workspace_read_write_not_read_only() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_harness_dir(package_dir.path());
+        write_judge_tests(package_dir.path());
         let evaluator =
             Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 

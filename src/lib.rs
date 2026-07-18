@@ -160,31 +160,30 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
     let spec = Spec::load(&harness_dir)?;
     let workspace = harness_dir.join(&spec.assignment.id);
     let run_id = pipeline::generate_run_id();
-    // Only ever actually used for `binary` (where `driver_dir` goes
-    // unread) or if `Prepare` ever needs a scratch copy again -- for
-    // `library`, `Prepare` builds the harness in place instead (see its
-    // doc comment) and `prepared.driver_dir` below carries the real
-    // `driver_dir` to use, which is never this scratch path.
-    let scratch_driver_dir = std::env::temp_dir().join(format!("autograder-ci-{run_id}"));
+    // `library`'s harness is already positioned correctly by `scaffold`:
+    // `harness_dir.join("harness")` is a real, on-disk sibling of
+    // `workspace`, so there's nothing to copy or redirect (see
+    // `evaluator::library`'s module doc comment) -- `prepare` doesn't make
+    // this decision anymore, so it's made here directly. `binary` has no
+    // separate driver crate at all, so `driver_dir` is never read for it;
+    // any placeholder path satisfies `JobContext`.
+    let driver_dir = match spec.assignment.kind {
+        AssignmentKind::Library => harness_dir.join("harness"),
+        AssignmentKind::Binary => std::env::temp_dir().join(format!("autograder-ci-{run_id}")),
+    };
+    let ctx = JobContext {
+        assignment_id: spec.assignment.id.clone(),
+        student_id: "local".into(),
+        run_id,
+        tier: Tier::Ci,
+        workspace: workspace.clone(),
+        driver_dir,
+    };
 
-    let prepared = prepare::prepare(
-        &workspace,
-        &scratch_driver_dir,
-        &harness_dir,
-        &spec,
-        Tier::Ci,
-    )?;
+    let prepared = prepare::prepare(&workspace, &harness_dir, &spec)?;
 
     let eval = if prepared.manifest_diagnostics.is_empty() {
         let evaluator = build_evaluator(&spec, &harness_dir, local_sandbox)?;
-        let ctx = JobContext {
-            assignment_id: spec.assignment.id.clone(),
-            student_id: "local".into(),
-            run_id,
-            tier: Tier::Ci,
-            workspace,
-            driver_dir: prepared.driver_dir.clone(),
-        };
         Some(evaluator.evaluate(&ctx)?)
     } else {
         None
@@ -347,17 +346,13 @@ visibility = "public"
         write(&workspace.join("src/lib.rs"), "pub fn noop() {}\n");
 
         let spec = Spec::load(harness_dir.path()).unwrap();
-        let scratch_driver_dir = tempfile::tempdir().unwrap();
-        let prepared = prepare::prepare(
-            &workspace,
-            scratch_driver_dir.path(),
-            harness_dir.path(),
-            &spec,
-            Tier::Ci,
-        )
-        .unwrap();
+        // `library`'s harness is already positioned correctly by the
+        // starter layout above -- `harness_dir.join("harness")` is a real
+        // sibling of `workspace`, so `driver_dir` is that, directly, with
+        // no scratch copy involved (mirrors `run_ci`).
+        let driver_dir = harness_dir.path().join("harness");
+        let prepared = prepare::prepare(&workspace, harness_dir.path(), &spec).unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
-        assert_eq!(prepared.driver_dir, harness_dir.path().join("harness"));
 
         let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
@@ -366,7 +361,7 @@ visibility = "public"
             run_id: "run-1".into(),
             tier: Tier::Ci,
             workspace,
-            driver_dir: prepared.driver_dir,
+            driver_dir,
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 
@@ -386,7 +381,7 @@ visibility = "public"
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
-        write(&harness_dir.path().join("harness/tests/judge.rs"), "");
+        write(&harness_dir.path().join("hw3/tests/judge.rs"), "");
         let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
         assert!(result.is_ok());
     }
@@ -427,11 +422,11 @@ visibility = "public"
 
         let submissions_dir = tempfile::tempdir().unwrap();
         write(
-            &submissions_dir.path().join("alice/Cargo.toml"),
+            &submissions_dir.path().join("alice/hw3/Cargo.toml"),
             "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         );
         write(
-            &submissions_dir.path().join("alice/src/lib.rs"),
+            &submissions_dir.path().join("alice/hw3/src/lib.rs"),
             "pub fn noop() {}\n",
         );
 
