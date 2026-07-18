@@ -83,7 +83,11 @@ fn todo_block() -> syn::Block {
 fn strip_item(item: Item, pub_type_names: &HashSet<String>) -> Option<Item> {
     match item {
         Item::Use(_) => Some(item),
-        Item::Fn(mut f) if is_pub(&f.vis) => {
+        // `fn main` is kept even though it's never `pub` -- for a
+        // `binary`-kind assignment it's the crate's mandatory entry point;
+        // dropping it (as a plain private fn would be) leaves a starter
+        // that doesn't compile at all (`E0601: main function not found`).
+        Item::Fn(mut f) if is_pub(&f.vis) || f.sig.ident == "main" => {
             f.block = Box::new(todo_block());
             Some(Item::Fn(f))
         }
@@ -199,6 +203,25 @@ mod tests {
         assert!(!stub.contains("private_helper"));
         assert!(!stub.contains("Internal"));
         assert!(!stub.contains("secret"));
+    }
+
+    #[test]
+    fn keeps_main_even_though_it_is_never_pub() {
+        let source = r#"
+            use std::env;
+
+            fn helper() -> i32 { 42 }
+
+            fn main() {
+                println!("{}", helper());
+            }
+        "#;
+
+        let stub = strip_to_stub(source).unwrap();
+        assert!(stub.contains("fn main"));
+        assert!(stub.contains("todo!()"));
+        assert!(!stub.contains("fn helper"));
+        assert!(!stub.contains("println"));
     }
 
     #[test]

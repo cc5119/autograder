@@ -1,21 +1,12 @@
 /target
 /.autograder-store
 
-# Generated in place by running the example (see README.md):
-# `prefetch`'s vendor dir + offline cargo config, `ci`'s overlaid driver
-# crate + build output when run against the reference solution, and
-# standalone `cd harness && cargo test` runs against the solution.
-examples/*/instructor/vendor/
-examples/*/instructor/.cargo/
-examples/*/instructor/.vendor-manifest/
-examples/*/instructor/harness/target/
-examples/*/instructor/harness/Cargo.lock
-examples/*/instructor/solution/driver/
-examples/*/instructor/solution/target/
-examples/*/instructor/solution/.cargo/
-examples/*/instructor/solution/Cargo.lock
-examples/*/public/vendor/
-examples/*/public/.cargo/
-examples/*/public/.vendor-manifest/
-examples/*/public/harness/target/
-examples/*/public/harness/Cargo.lock
+# Generated in place by running the examples (see README.md): `prefetch`'s
+# vendor dir + offline cargo config, `ci`'s overlaid driver crate + build
+# output, and standalone `cargo test`/`cargo nextest run` runs against a
+# reference solution or harness.
+examples/*/vendor/
+examples/*/.cargo/
+examples/*/.vendor-manifest/
+examples/*/*/target/
+examples/*/*/Cargo.lock
