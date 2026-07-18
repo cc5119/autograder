@@ -37,11 +37,17 @@ pub enum Command {
         #[arg(long)]
         local_sandbox: bool,
     },
-    /// Student-facing: run public tests only, advisory.
+    /// Student-facing: run public tests only, advisory. Run from the repo
+    /// root produced by `scaffold` (where `autograder.public.toml` and
+    /// `harness/` live) -- the student's own crate is found at
+    /// `<[assignment].id>/`, a sibling directory named after the spec's id.
     Ci {
-        /// Path to the vendored public harness dir.
+        /// Run using the host-process `LocalSandbox` instead of the
+        /// `ContainerSandbox` (skips Podman entirely). Same tradeoff as
+        /// `grade --local-sandbox` -- only for local development/testing on
+        /// a host without a working Podman, never for real CI runs.
         #[arg(long)]
-        harness: PathBuf,
+        local_sandbox: bool,
     },
     /// Re-run only the Grade stage from persisted results.
     Regrade {

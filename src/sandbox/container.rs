@@ -12,6 +12,10 @@ use super::{MountMode, Sandbox, SandboxOutcome, SandboxSpec};
 /// was exceeded (design §10).
 const OOM_LIKELY_EXIT_CODE: i32 = 137;
 
+/// Default path an operator can drop a hardened seccomp profile at for
+/// `ContainerSandbox::new` to pick up -- see `discover_seccomp_profile`.
+const DEFAULT_SECCOMP_PROFILE: &str = "/etc/autograder/seccomp.json";
+
 /// Rootless-podman shell-out (design §10). Builds a `podman run` argv from a
 /// `SandboxSpec` and runs it as a host child process, reusing the same
 /// timeout/output-cap machinery as `LocalSandbox` — the isolation itself
@@ -23,16 +27,28 @@ pub struct ContainerSandbox {
     pub base_image: String,
     /// `--user` value, e.g. `"65534:65534"` for a non-root sandbox user.
     pub user: String,
-    pub seccomp_profile: std::path::PathBuf,
+    /// A custom seccomp profile to pass via `--security-opt seccomp=...`.
+    /// `None` means podman's own bundled default profile applies instead
+    /// (still denies `mount`, `ptrace`, `unshare`, `keyctl`, etc.) -- a
+    /// custom profile only matters where a motivated adversary is worth
+    /// defending against (grading untrusted student code against an
+    /// authoritative score), not for advisory `ci` runs a student invokes
+    /// against their own code. `new` discovers one automatically if the
+    /// operator has provided it; a caller with no use for one (`ci`) should
+    /// overwrite this field with `None` after construction.
+    pub seccomp_profile: Option<std::path::PathBuf>,
 }
 
 impl ContainerSandbox {
-    pub fn new(base_image: impl Into<String>, seccomp_profile: impl Into<std::path::PathBuf>) -> Self {
+    /// `seccomp_profile` is populated via `discover_seccomp_profile` -- see
+    /// that field's doc comment for why, and how a caller that doesn't want
+    /// one (`ci`) should override it.
+    pub fn new(base_image: impl Into<String>) -> Self {
         Self {
             podman_bin: "podman".into(),
             base_image: base_image.into(),
             user: "65534:65534".into(),
-            seccomp_profile: seccomp_profile.into(),
+            seccomp_profile: discover_seccomp_profile(),
         }
     }
 
@@ -56,8 +72,10 @@ impl ContainerSandbox {
         argv.push("--cap-drop=ALL".to_string());
         argv.push("--security-opt".to_string());
         argv.push("no-new-privileges".to_string());
-        argv.push("--security-opt".to_string());
-        argv.push(format!("seccomp={}", self.seccomp_profile.display()));
+        if let Some(profile) = &self.seccomp_profile {
+            argv.push("--security-opt".to_string());
+            argv.push(format!("seccomp={}", profile.display()));
+        }
         argv.push("--user".to_string());
         argv.push(self.user.clone());
 
@@ -178,6 +196,29 @@ impl Sandbox for ContainerSandbox {
     }
 }
 
+/// Looks for an operator-provided seccomp profile at
+/// `DEFAULT_SECCOMP_PROFILE`, warning (not failing) when it's absent —
+/// worthwhile defense-in-depth against a motivated adversary (a student
+/// trying to escape the sandbox during authoritative grading) but not a
+/// hard requirement: podman's own bundled default profile already denies
+/// the dangerous syscalls (`mount`, `ptrace`, `unshare`, `keyctl`, etc.).
+/// Called from `ContainerSandbox::new` -- a caller with no use for the
+/// result (e.g. `ci`) should overwrite `seccomp_profile` with `None`
+/// afterward rather than trying to avoid triggering this.
+fn discover_seccomp_profile() -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(DEFAULT_SECCOMP_PROFILE);
+    if path.is_file() {
+        Some(path)
+    } else {
+        tracing::warn!(
+            path = DEFAULT_SECCOMP_PROFILE,
+            "no seccomp profile found; falling back to podman's built-in default profile \
+             instead of a custom hardened one"
+        );
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,7 +254,9 @@ mod tests {
     }
 
     fn sandbox() -> ContainerSandbox {
-        ContainerSandbox::new("autograder-base:hw3", "/etc/autograder/seccomp.json")
+        let mut sandbox = ContainerSandbox::new("autograder-base:hw3");
+        sandbox.seccomp_profile = Some(PathBuf::from("/etc/autograder/seccomp.json"));
+        sandbox
     }
 
     #[test]
@@ -234,6 +277,16 @@ mod tests {
         assert!(joined.contains("-v /host/vendor:/vendor:ro"));
         assert!(joined.contains("-v /host/work/target:/work/target:rw"));
         assert!(argv.contains(&"autograder-base:hw3".to_string()));
+    }
+
+    #[test]
+    fn no_seccomp_flag_when_profile_is_none() {
+        let mut sandbox = sandbox();
+        sandbox.seccomp_profile = None;
+        let argv = sandbox.build_argv(&spec());
+        assert!(!argv.iter().any(|a| a.starts_with("seccomp=")));
+        // no-new-privileges is unaffected -- it's a separate --security-opt.
+        assert!(argv.contains(&"no-new-privileges".to_string()));
     }
 
     #[test]

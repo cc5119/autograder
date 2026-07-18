@@ -9,17 +9,12 @@ use serde::Deserialize;
 pub struct Config {
     /// Directory where persisted `EvaluationResult`s and other run state live.
     pub storage_dir: PathBuf,
-    /// Seccomp profile passed to `podman run --security-opt seccomp=...`.
-    /// Must already exist on the podman host -- provisioning it is an
-    /// operator concern, same as the base image (`spec::Sandbox::image`).
-    pub seccomp_profile: PathBuf,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             storage_dir: PathBuf::from(".autograder-store"),
-            seccomp_profile: PathBuf::from("/etc/autograder/seccomp.json"),
         }
     }
 }

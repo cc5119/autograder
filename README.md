@@ -78,10 +78,12 @@ $BIN scaffold examples/library-stack --out /tmp/starter-stack
 # point of the workspace + path-dependency layout, no autograder at all
 (cd /tmp/starter-stack && cargo test)
 
-# student-facing CI check, no Podman needed -- ci also always runs from
-# inside the student's own crate, one level under the spec/harness it's
-# handed via --harness
-(cd /tmp/starter-stack/library-stack-example && $BIN ci --harness ..)
+# student-facing CI check: ci always runs from the starter repo root (no
+# --harness flag -- it finds the student's own crate at the sibling
+# directory named after [assignment].id automatically). In real CI this
+# runs inside the same ContainerSandbox `grade` uses; --local-sandbox here
+# skips Podman for this local demo.
+(cd /tmp/starter-stack && $BIN ci --local-sandbox)
 ```
 
 ### `binary`: [`examples/binary-fizzbuzz/`](examples/binary-fizzbuzz/)
@@ -112,7 +114,7 @@ $BIN report fizzbuzz --format csv
 $BIN scaffold examples/binary-fizzbuzz --out /tmp/starter-fizzbuzz
 (cd /tmp/starter-fizzbuzz && cargo test)
 
-(cd /tmp/starter-fizzbuzz/fizzbuzz && $BIN ci --harness ..)
+(cd /tmp/starter-fizzbuzz && $BIN ci --local-sandbox)
 ```
 
 Use the already-built `$BIN` rather than `cargo run` once you `cd` into a

@@ -45,7 +45,7 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
             as_of: _,
             local_sandbox,
         } => run_grade(&assignment, &submissions, local_sandbox, config),
-        Command::Ci { harness } => run_ci(&harness),
+        Command::Ci { local_sandbox } => run_ci(local_sandbox),
         Command::Regrade {
             assignment_id,
             assignment,
@@ -77,16 +77,7 @@ fn run_grade(
     config: &Config,
 ) -> Result<()> {
     let spec = Spec::load(assignment)?;
-    let evaluator = if local_sandbox {
-        tracing::warn!(
-            "grading with --local-sandbox: skipping Podman entirely, running student code as a \
-             host process with no container isolation -- for local development/ \
-             testing only, never for grading real submissions"
-        );
-        build_local_evaluator(&spec, assignment)?
-    } else {
-        build_evaluator(&spec, assignment, config)?
-    };
+    let evaluator = build_evaluator(&spec, assignment, local_sandbox)?;
     let store = Store::new(&config.storage_dir);
     let work_dir = config.storage_dir.join(".work");
     let overrides = overrides::Overrides::load_from_package(assignment)?;
@@ -119,18 +110,30 @@ fn run_grade(
     write_reports(&spec.assignment.id, &grades, config)
 }
 
-/// Picks the `Evaluator` for `spec.assignment.kind` (design §9), wired over
-/// a `ContainerSandbox` (design §10). Runs `ContainerSandbox::preflight`
-/// once up front so a broken Podman setup fails the whole `grade`
-/// invocation with one clear error instead of silently scoring every
-/// student `build_failed` — see its doc comment.
 fn build_evaluator(
     spec: &Spec,
     package_dir: &std::path::Path,
-    config: &Config,
+    local_sandbox: bool,
 ) -> Result<Box<dyn Evaluator>> {
-    let sandbox = ContainerSandbox::new(spec.sandbox.image.clone(), config.seccomp_profile.clone());
-    sandbox.preflight()?;
+    if local_sandbox {
+        tracing::warn!(
+            "grading with --local-sandbox: skipping Podman entirely, running student code as a \
+             host process with no container isolation -- for local development/ \
+             testing only, never for grading real submissions"
+        );
+        build_evaluator_for(spec, package_dir, LocalSandbox)
+    } else {
+        let sandbox = ContainerSandbox::new(spec.sandbox.image.clone());
+        sandbox.preflight()?;
+        build_evaluator_for(spec, package_dir, sandbox)
+    }
+}
+
+fn build_evaluator_for(
+    spec: &Spec,
+    package_dir: &std::path::Path,
+    sandbox: impl Sandbox + 'static,
+) -> Result<Box<dyn Evaluator>> {
     match spec.assignment.kind {
         AssignmentKind::Library => Ok(Box::new(Library::new(spec, package_dir, sandbox)?)),
         AssignmentKind::Binary => Ok(Box::new(Binary::new(spec, package_dir, sandbox)?)),
@@ -138,20 +141,24 @@ fn build_evaluator(
 }
 
 /// Student-facing `ci` entrypoint (design §11): Prepare + Build + Evaluate
-/// against the public harness at `harness_dir` (an `.autograder/public/`
-/// vendored into the student's own repo), over `LocalSandbox` rather than
-/// `ContainerSandbox` — no podman needed, and this is the same reason
-/// `LocalSandbox` exists at all (design §11.3). Runs against the current
-/// directory: `ci` executes inside the student's own checkout, there is no
-/// separate fetch stage. Prints per-test feedback via `CiReport` and exits
-/// non-zero when any public test fails, mirroring `autograder ci`'s exit
-/// code contract (design §11.1).
-fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
-    let spec = Spec::load(harness_dir)?;
-    let workspace = std::env::current_dir().map_err(|source| Error::Io {
+/// against the public harness, over the same `ContainerSandbox` grading
+/// uses (`build_container_evaluator`, no custom seccomp profile — see its
+/// doc comment) unless `local_sandbox` opts out, mirroring `grade
+/// --local-sandbox`. No `--harness` flag or separate fetch stage: `ci`
+/// always runs from the repo root `scaffold` produces (current directory —
+/// where `autograder.public.toml`/`harness/` live), with the student's own
+/// crate found at the sibling directory named after the spec's
+/// `[assignment].id` (see `scaffold`'s doc comment on that layout). Prints
+/// per-test feedback via `CiReport` and exits non-zero when any public test
+/// fails, mirroring `autograder ci`'s exit code contract (design §11.1).
+/// Never touches `Grader`/`Scoring` — evaluation only.
+fn run_ci(local_sandbox: bool) -> Result<()> {
+    let harness_dir = std::env::current_dir().map_err(|source| Error::Io {
         path: std::path::PathBuf::from("."),
         source,
     })?;
+    let spec = Spec::load(&harness_dir)?;
+    let workspace = harness_dir.join(&spec.assignment.id);
     let run_id = pipeline::generate_run_id();
     // Only ever actually used for `binary` (where `driver_dir` goes
     // unread) or if `Prepare` ever needs a scratch copy again -- for
@@ -160,14 +167,20 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
     // `driver_dir` to use, which is never this scratch path.
     let scratch_driver_dir = std::env::temp_dir().join(format!("autograder-ci-{run_id}"));
 
-    let prepared = prepare::prepare(&workspace, &scratch_driver_dir, harness_dir, &spec, Tier::Ci)?;
+    let prepared = prepare::prepare(
+        &workspace,
+        &scratch_driver_dir,
+        &harness_dir,
+        &spec,
+        Tier::Ci,
+    )?;
     let driver_dir = match &prepared.wiring {
         prepare::Wiring::Library { driver_dir } => driver_dir.clone(),
         prepare::Wiring::Binary { .. } => scratch_driver_dir,
     };
 
     let eval = if prepared.manifest_diagnostics.is_empty() {
-        let evaluator = build_local_evaluator(&spec, harness_dir)?;
+        let evaluator = build_evaluator(&spec, &harness_dir, local_sandbox)?;
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: "local".into(),
@@ -191,18 +204,6 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
-}
-
-/// Picks the `Evaluator` for `spec.assignment.kind`, same construction as
-/// `build_evaluator` but over `LocalSandbox` instead of `ContainerSandbox` —
-/// no Podman needed. Used both by the CI tier (design §11.3, always) and by
-/// `grade --local-sandbox` (never for real submissions — see that flag's
-/// doc comment in `cli.rs`).
-fn build_local_evaluator(spec: &Spec, package_dir: &std::path::Path) -> Result<Box<dyn Evaluator>> {
-    match spec.assignment.kind {
-        AssignmentKind::Library => Ok(Box::new(Library::new(spec, package_dir, LocalSandbox)?)),
-        AssignmentKind::Binary => Ok(Box::new(Binary::new(spec, package_dir, LocalSandbox)?)),
-    }
 }
 
 fn run_scaffold(assignment: &std::path::Path, out: &std::path::Path) -> Result<()> {
@@ -367,7 +368,7 @@ visibility = "public"
         };
         assert_eq!(driver_dir, harness_dir.path().join("harness"));
 
-        let evaluator = build_local_evaluator(&spec, harness_dir.path()).unwrap();
+        let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: "local".into(),
@@ -395,7 +396,7 @@ visibility = "public"
 
         let harness_dir = tempfile::tempdir().unwrap();
         write(&harness_dir.path().join("harness/tests/judge.rs"), "");
-        let result = build_local_evaluator(&spec, harness_dir.path());
+        let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
         assert!(result.is_ok());
     }
 
@@ -405,7 +406,7 @@ visibility = "public"
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
-        let result = build_local_evaluator(&spec, harness_dir.path());
+        let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
@@ -445,7 +446,6 @@ visibility = "public"
 
         let config = Config {
             storage_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
-            ..Config::default()
         };
 
         run_grade(assignment_dir.path(), submissions_dir.path(), true, &config).unwrap();
@@ -559,7 +559,6 @@ visibility = "private"
         let store_dir = tempfile::tempdir().unwrap();
         let config = Config {
             storage_dir: store_dir.path().to_path_buf(),
-            ..Config::default()
         };
 
         write(
@@ -594,7 +593,6 @@ visibility = "private"
         let store_dir = tempfile::tempdir().unwrap();
         let config = Config {
             storage_dir: store_dir.path().to_path_buf(),
-            ..Config::default()
         };
 
         write(

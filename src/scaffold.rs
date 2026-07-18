@@ -59,10 +59,13 @@
 //!   plain `cargo test` finds them there, since there's no crate-linking
 //!   trick available without a `Cargo.toml` to attach a path dependency to.
 //!   Deliberately *not* copied here: `vendor/`/`.cargo/` (`prefetch`'s
-//!   offline-vendoring output) — that's grading-only infrastructure (design
-//!   §8), not something the published starter carries; a student's own
-//!   `autograder ci` run resolves dependencies normally rather than
-//!   against the vendored allowlist. `fixtures/` isn't copied either —
+//!   offline-vendoring output). Those aren't grading-only anymore — the
+//!   generated workflow below runs `autograder prefetch` itself on the
+//!   runner (network enabled, before the sandboxed `ci` step) to produce
+//!   them fresh each run, so there's nothing to check into the starter
+//!   repo; a student's local (non-CI) `cargo test`/`autograder ci
+//!   --local-sandbox` still resolves dependencies normally. `fixtures/`
+//!   isn't copied either —
 //!   nothing in this codebase currently reads it (same reasoning as the
 //!   `fixtures/` overlay removed from `prepare.rs`); reintroduce it,
 //!   correctly scoped, once an evaluator actually needs fixture data.
@@ -168,7 +171,8 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         source,
     })?;
     let workflow_path = workflow_dir.join("autograde.yml");
-    std::fs::write(&workflow_path, autograde_workflow_yaml(id)).map_err(|source| Error::Io {
+    let workflow_yaml = autograde_workflow_yaml(&spec.sandbox.image);
+    std::fs::write(&workflow_path, workflow_yaml).map_err(|source| Error::Io {
         path: workflow_path.clone(),
         source,
     })?;
@@ -208,11 +212,23 @@ fn write_workspace_manifest(out_dir: &Path, id: &str, kind: AssignmentKind) -> R
 
 /// The thin GitHub Actions wrapper (design §11.2): downloads a
 /// version-pinned prebuilt `autograder` binary, verifies its checksum, and
-/// runs `autograder ci` from inside the student's own crate (`<id>/`)
-/// against the public spec + harness one level up, at the repo root. No
-/// compile step, so student CI never needs a Rust toolchain of its own for
-/// the grader itself.
-fn autograde_workflow_yaml(id: &str) -> String {
+/// runs `autograder ci` from the repo root (`ci` takes no `--harness` flag
+/// -- it always runs from the checkout root where `autograder.public.toml`/
+/// `harness/` live, finding the student's own crate at the sibling
+/// directory named after `[assignment].id`). No compile step, so student CI
+/// never needs a Rust toolchain of its own for the grader itself.
+///
+/// `ci` now runs inside the same `ContainerSandbox` grading uses (design
+/// §10/§11 unified), so before that step the workflow also has to: make
+/// sure Podman is on the runner (`ubuntu-latest` doesn't ship it by
+/// default), vendor dependencies offline via `autograder prefetch` (reusing
+/// `vendor::prefetch` unchanged -- runs on the bare runner with network
+/// access, *before* the sandboxed, network-disabled `ci` step, from the
+/// public spec's `[allowed-crates]`), and `podman pull` the same base
+/// image (`base_image`, from `[sandbox].image`) grading uses -- the
+/// instructor is responsible for having pushed that image somewhere this
+/// runner can pull it from.
+fn autograde_workflow_yaml(base_image: &str) -> String {
     format!(
         r#"name: autograde
 on:
@@ -227,7 +243,10 @@ jobs:
           curl -fsSL https://github.com/{RELEASE_REPO}/releases/download/{RELEASE_VERSION}/autograder-x86_64-linux -o autograder
           echo "{RELEASE_SHA256_PLACEHOLDER}  autograder" | sha256sum -c -   # verify before exec
           chmod +x autograder
-      - run: cd {id} && ../autograder ci --harness ..
+      - run: command -v podman || (sudo apt-get update && sudo apt-get install -y podman)
+      - run: ./autograder prefetch .
+      - run: podman pull {base_image}
+      - run: ./autograder ci
 "#
     )
 }
@@ -621,7 +640,7 @@ visibility = "private"
     }
 
     #[test]
-    fn emitted_workflow_cds_into_the_student_crate_before_running_ci() {
+    fn emitted_workflow_runs_ci_from_the_repo_root_inside_podman() {
         let package_dir = tempfile::tempdir().unwrap();
         write_instructor_package(package_dir.path());
         let out_dir = tempfile::tempdir().unwrap();
@@ -633,7 +652,11 @@ visibility = "private"
                 .unwrap();
         assert!(workflow.contains("on:\n  push:\n    branches: [main]"));
         assert!(workflow.contains("sha256sum -c -"));
-        assert!(workflow.contains("cd hw3 && ../autograder ci --harness .."));
+        assert!(workflow.contains("command -v podman"));
+        assert!(workflow.contains("./autograder prefetch ."));
+        assert!(workflow.contains("podman pull autograder-base:1.86.0"));
+        assert!(workflow.contains("./autograder ci"));
+        assert!(!workflow.contains("--harness"));
     }
 
     #[test]
