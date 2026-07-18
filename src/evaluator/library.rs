@@ -1,53 +1,49 @@
 //! The `library` `Evaluator` (design §9.1): builds the trusted
-//! **driver** crate (depends on the student library via a patched-in path)
-//! and runs the instructor-authored **judge** — process-per-session under
-//! `cargo nextest` — under a `Sandbox`. Both build and run stages happen
-//! inside the sandbox with `[limits.build]` / `[limits.run]` respectively.
+//! **driver** crate (depends on the student library via a plain path
+//! dependency) and runs the instructor-authored **judge** —
+//! process-per-session under `cargo nextest` — under a `Sandbox`. Both
+//! build and run stages happen inside the sandbox with `[limits.build]` /
+//! `[limits.run]` respectively.
 //!
 //! This module is deliberately agnostic to the op-sequence protocol a given
 //! assignment's judge speaks to its driver: that's instructor-authored test
 //! code living permanently at `harness/` (Cargo.toml, `src/`, `tests/`) —
 //! no `driver/` subdirectory, and never generated or rewritten by this
-//! tool. This module's job is mechanical: (1) inject the student package's
-//! path via a per-invocation `[patch.crates-io]` `--config` override, (2)
-//! drive `cargo build` then `cargo nextest run` through the sandbox with the
-//! right limits/offline env, (3) turn nextest's JUnit report into
-//! `TestResult`s.
+//! tool. This module's job is mechanical: (1) drive `cargo build` then
+//! `cargo nextest run` through the sandbox with the right limits/offline
+//! env, (2) turn nextest's JUnit report into `TestResult`s. No dependency
+//! redirection to do at evaluate-time at all (see below).
 //!
-//! `harness/Cargo.toml` declares `<assignment-id> = "*"` plus a checked-in
-//! `[patch.crates-io]` entry pointing at the reference solution kept
-//! alongside the harness (named after `[assignment].id`, see
-//! `crate::scaffold`) — so `cd harness && cargo
-//! nextest run` "just works" standalone with no tooling involved, letting an
-//! instructor sanity-check their own harness at any time. At grade/CI time,
-//! a `--config` override always wins over that checked-in default (verified:
-//! Cargo's config-sourced `[patch]` entries take precedence over ones
-//! declared in the manifest itself), redirecting the dependency to whichever
-//! checkout is actually being evaluated. `"*"` as the version requirement
-//! means the patch applies regardless of whatever version the student
-//! happens to have put in their own `Cargo.toml` — nothing student-supplied
-//! can affect whether the patch takes effect.
+//! `harness/Cargo.toml` declares a plain `<assignment-id> = { path =
+//! "../<assignment-id>" }` dependency — no `"*"` placeholder, no
+//! `[patch.crates-io]`. That works unmodified in every context this crate
+//! runs the harness in, because whoever assembles the job (this crate's
+//! `pipeline`/`Prepare`, or an instructor invoking Cargo directly) always
+//! positions the code being tested at that exact sibling location: the
+//! reference solution for standalone testing (`cd harness && cargo nextest
+//! run`, no autograder involvement), a fresh per-job copy of the submission
+//! for authoritative grading, or the student's own checkout for `ci` (see
+//! `crate::scaffold`). Same manifest, no per-tier rewriting, no
+//! `--config`-injected override to keep in sync with it.
 //!
 //! Before Prepare runs, `harness/` is overlaid into `ctx.driver_dir`: a
 //! *fresh, per-job* directory that is a **sibling** of `ctx.workspace`, not
 //! nested inside it (never built in place either) — see `JobContext`'s doc
 //! comment. Freshness is still required even though the two are separate:
-//! Cargo needs to rewrite `Cargo.lock` whenever the patched-in package's
-//! version changes (verified empirically — this happens even though the
-//! path is patched, not a plain dependency), so sharing one `harness/`
-//! directory across concurrent or sequential jobs would race different
-//! students' builds against the same `Cargo.lock`/`target/`. The per-job
-//! copy is what the design's "fresh, disk-backed, per-job target volume"
-//! (§10/§13) already calls for.
+//! Cargo needs to rewrite `Cargo.lock` whenever the path-dependency's
+//! contents change between jobs, so sharing one `harness/` directory across
+//! concurrent or sequential jobs would race different students' builds
+//! against the same `Cargo.lock`/`target/`. The per-job copy is what the
+//! design's "fresh, disk-backed, per-job target volume" (§10/§13) already
+//! calls for.
 //!
 //! Because `driver_dir` and `workspace` no longer share an ancestor
 //! directory, Cargo's directory-based config discovery can't find
 //! `workspace`'s offline-vendoring `.cargo/config.toml` (written by
 //! `Prepare` for a future `binary` evaluator, which builds directly
 //! in `workspace`) from `driver_dir`. This evaluator instead passes the
-//! equivalent `[source]` override as `--config` flags directly, alongside
-//! the dependency patch — verified working together, fully offline, with a
-//! real (non-empty) vendored crate.
+//! equivalent `[source]` override as `--config` flags directly — verified
+//! working, fully offline, with a real (non-empty) vendored crate.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -55,7 +51,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    StageStatus, TestResult, TestStatus, TestVisibility, Tier,
+    StageStatus, TestResult, TestStatus, TestVisibility,
 };
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::{ScoredTest, Spec};
@@ -70,7 +66,6 @@ const VENDOR_DIR_NAME: &str = "vendor";
 pub struct Library<S> {
     sandbox: S,
     package_dir: PathBuf,
-    student_package_name: String,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
     tests: Vec<ScoredTest>,
@@ -78,7 +73,6 @@ pub struct Library<S> {
 
 impl<S: Sandbox> Library<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
-        let student_package_name = spec.assignment.id.clone();
         let package_dir = package_dir.into();
         let harness_manifest = package_dir.join("harness/Cargo.toml");
         if !harness_manifest.is_file() {
@@ -91,7 +85,6 @@ impl<S: Sandbox> Library<S> {
         Ok(Self {
             sandbox,
             package_dir,
-            student_package_name,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
             tests: spec.scoring.tests.clone(),
@@ -135,27 +128,13 @@ impl<S: Sandbox> Library<S> {
     }
 
     /// The `--config` arguments for one `cargo`/`cargo nextest` invocation:
-    /// the offline vendored-source override (only when the package has been
-    /// prefetched — mirrors `Prepare`'s own file-based version, see this
-    /// module's doc comment for why this evaluator can't rely on that file),
-    /// then, **for `Tier::Authoritative` only**, the dependency patch that
-    /// redirects the driver's `<assignment-id>` dependency at `workspace`
-    /// (the checkout actually being evaluated this job — a student's
-    /// fetch, or the reference solution), overriding whatever the
-    /// checked-in `harness/Cargo.toml` defaults to. Every path is
-    /// absolutized: Cargo's config-path resolution has already bitten this
-    /// codebase once (see `vendor::absolutize`'s doc comment), and a
-    /// relative `ctx.workspace` is a real possibility (it's derived from
-    /// `Config::storage_dir`, which defaults to a relative path).
-    ///
-    /// `Tier::Ci` never gets a patch override: `Prepare` builds the
-    /// `harness/` that ships in the starter repo **in place**, already
-    /// correctly path-dependency-wired to the checkout it's a sibling of
-    /// (see `prepare::prepare`'s doc comment) -- there's no arbitrary
-    /// per-job location to redirect to, and patches don't apply to path
-    /// dependencies anyway (they only override registry/git-sourced ones),
-    /// so injecting one here would be inert at best.
-    fn config_args(&self, workspace: &Path, tier: Tier) -> Vec<String> {
+    /// just the offline vendored-source override, only when the package has
+    /// been prefetched (mirrors `Prepare`'s own file-based version, see
+    /// this module's doc comment for why this evaluator can't rely on that
+    /// file). No dependency redirection here — `harness/Cargo.toml`'s plain
+    /// path dependency on the sibling directory is already correct by
+    /// construction, for every tier (see this module's doc comment).
+    fn config_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         let vendor_dir = self.vendor_dir();
         if vendor_dir.is_dir() {
@@ -167,14 +146,6 @@ impl<S: Sandbox> Library<S> {
                 vendor::absolutize(&vendor_dir).display()
             ));
         }
-        if tier == Tier::Authoritative {
-            args.push("--config".to_string());
-            args.push(format!(
-                "patch.crates-io.{}.path=\"{}\"",
-                self.student_package_name,
-                vendor::absolutize(workspace).display()
-            ));
-        }
         args
     }
 }
@@ -182,7 +153,7 @@ impl<S: Sandbox> Library<S> {
 impl<S: Sandbox> Evaluator for Library<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let driver_dir = &ctx.driver_dir;
-        let config_args = self.config_args(&ctx.workspace, ctx.tier);
+        let config_args = self.config_args();
 
         let env = self.offline_env();
         let mounts = self.mounts(&ctx.workspace, driver_dir);
@@ -553,7 +524,7 @@ visibility = "public"
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
             package_dir.join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n",
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         )
         .unwrap();
     }
@@ -568,42 +539,29 @@ visibility = "public"
     }
 
     #[test]
-    fn patch_config_arg_names_the_student_package_and_an_absolute_path() {
+    fn config_args_has_no_vendored_source_override_without_a_prefetched_vendor_dir() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let evaluator =
             Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
-        let args = evaluator.config_args(
-            std::path::Path::new("relative/workspace"),
-            Tier::Authoritative,
-        );
-        let arg = args
-            .iter()
-            .find(|a| a.starts_with("patch.crates-io"))
-            .unwrap();
-
-        assert!(arg.starts_with("patch.crates-io.hw3.path="));
-        assert!(
-            arg.contains(
-                std::env::current_dir()
-                    .unwrap()
-                    .join("relative/workspace")
-                    .to_str()
-                    .unwrap()
-            )
-        );
+        assert!(evaluator.config_args().is_empty());
     }
 
     #[test]
-    fn ci_tier_never_gets_a_patch_override() {
+    fn config_args_points_at_the_vendor_dir_once_prefetched() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
+        std::fs::create_dir_all(package_dir.path().join("vendor")).unwrap();
         let evaluator =
             Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
-        let args = evaluator.config_args(std::path::Path::new("relative/workspace"), Tier::Ci);
+        let args = evaluator.config_args();
 
+        assert!(
+            args.iter()
+                .any(|a| a.starts_with("source.vendored-sources.directory="))
+        );
         assert!(!args.iter().any(|a| a.starts_with("patch.crates-io")));
     }
 

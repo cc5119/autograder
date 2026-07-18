@@ -46,21 +46,24 @@ pub struct JobContext {
     pub run_id: String,
     pub tier: Tier,
     /// The student's checkout (fetch destination for `grade`; the current
-    /// directory for `ci`). Never written into by an evaluator — only read,
-    /// as the target of a patched-in or path dependency.
+    /// directory for `ci`). Named after `[assignment].id`, not e.g.
+    /// "student" -- the `library` driver crate's checked-in `Cargo.toml`
+    /// depends on that exact sibling name (see `evaluator::library`'s
+    /// module doc comment), so this naming is what lets that dependency
+    /// resolve correctly with no patch/`--config` override needed, for
+    /// every tier. Never written into by an evaluator — only read, as the
+    /// target of that path dependency.
     pub workspace: PathBuf,
     /// Where a `library` driver crate is built — always a *sibling* of
     /// `workspace`, not nested inside it, so nothing an evaluator builds
     /// ever lands inside the student's own checkout. What that sibling
     /// *is* differs by tier (see `prepare::prepare`'s doc comment for the
     /// full reasoning): a fresh, per-job scratch copy for
-    /// `Tier::Authoritative` (an arbitrary checkout location, redirected
-    /// via a `--config` patch override); `package_dir/harness` itself,
-    /// built **in place** with no copy at all, for `Tier::Ci` (the starter
-    /// repo `scaffold` produces already has `harness/` positioned as a
-    /// real sibling of the checkout, wired via a plain path dependency).
-    /// Unused by `binary`, which builds the student's own binary directly
-    /// in `workspace`.
+    /// `Tier::Authoritative`; `package_dir/harness` itself, built **in
+    /// place** with no copy at all, for `Tier::Ci` (the starter repo
+    /// `scaffold` produces already has `harness/` positioned as a real
+    /// sibling of the checkout). Unused by `binary`, which builds the
+    /// student's own binary directly in `workspace`.
     pub driver_dir: PathBuf,
 }
 

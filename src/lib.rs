@@ -418,7 +418,7 @@ visibility = "public"
         );
         write(
             &assignment_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n",
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
             &assignment_dir.path().join("harness/src/main.rs"),

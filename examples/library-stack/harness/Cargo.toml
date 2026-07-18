@@ -3,15 +3,11 @@ name = "driver"
 version = "0.0.0"
 edition = "2021"
 
+# A plain path dependency, always pointed at whatever's actually sitting in
+# the sibling directory named after [assignment].id: the reference solution
+# for standalone testing (`cd harness && cargo nextest run`, no autograder
+# involvement), a copied submission for authoritative grading, or the
+# student's own crate for `ci` -- autograder always positions that sibling
+# consistently, so no --config override is needed at grade/ci time.
 [dependencies]
-library-stack-example = "*"
-
-# Default target for standalone testing (`cd harness && cargo nextest run`,
-# no autograder involvement): the reference solution kept alongside this
-# harness, in a directory named after [assignment].id (see ../autograder.toml
-# and ../library-stack-example/). Grading always overrides this via a
-# --config CLI flag pointing at the actual checkout being evaluated -- a
-# config-sourced [patch] entry takes precedence over this manifest-declared
-# one (verified).
-[patch.crates-io]
 library-stack-example = { path = "../library-stack-example" }

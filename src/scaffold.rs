@@ -20,12 +20,12 @@
 //! sit in `package_dir` -- there's no `.autograder/public/` wrapper
 //! directory the way earlier versions of this module had. That parity is
 //! deliberate, not cosmetic: `harness/Cargo.toml`'s dependency on `<id>`
-//! resolves via a plain path (`../<id>`, see
-//! `publish::rewrite_harness_dependency_to_path`) precisely because
-//! `<id>/` is always sitting right there as a sibling, in both the private
-//! package and the published starter alike -- no patch, no `--config`
-//! override, no per-tier special-casing needed to make it resolve
-//! correctly. A generated root `[workspace]` manifest (`Cargo.toml`, see
+//! is already a plain path (`../<id>`, see `evaluator::library`'s module
+//! doc comment) precisely because `<id>/` is always sitting right there as
+//! a sibling, in both the private package and the published starter alike
+//! -- no patch, no `--config` override, no per-tier special-casing needed
+//! to make it resolve correctly, and no rewrite needed here either. A
+//! generated root `[workspace]` manifest (`Cargo.toml`, see
 //! `write_workspace_manifest`) is the one thing with no private-package
 //! counterpart: it's what makes a bare `cargo test` run from `out_dir`
 //! build and run *both* the student's own crate and the harness's public
@@ -48,10 +48,9 @@
 //!   ([`crate::publish::derive_public_spec_toml`]).
 //! - `harness/` — a copy of the private `harness/`, with test files
 //!   filtered down to the public-visibility tests named in that same spec
-//!   transform ([`crate::publish::keep_only_named_tests`]) and its
-//!   manifest's `<id> = "*"` + checked-in `[patch]` rewritten to a plain
-//!   `<id> = { path = "../<id>" }` dependency
-//!   ([`crate::publish::rewrite_harness_dependency_to_path`]). `binary`-kind
+//!   transform ([`crate::publish::keep_only_named_tests`]); its manifest is
+//!   copied verbatim, no rewrite needed (see `publish`'s module doc
+//!   comment). `binary`-kind
 //!   has no `harness/Cargo.toml` at all (its harness is just loose
 //!   `tests/*.rs`, merged onto whatever crate `Prepare` targets at grading
 //!   time), so for that kind those same public-only test files are
@@ -102,9 +101,9 @@ pub struct ScaffoldOutcome {
 /// top-level siblings, exactly where `autograder.toml`/`harness/`/`<id>/`
 /// sit in `package_dir`. That parity is what lets `harness/`'s dependency
 /// on `<id>` be an ordinary, always-resolving path dependency instead of
-/// needing a patch or `--config` override in the starter (see
-/// `publish::rewrite_harness_dependency_to_path`) -- and it's why a plain
-/// `cargo test` from `out_dir` (no `autograder` involvement) already runs
+/// needing a patch or `--config` override in the starter, copied verbatim
+/// with no rewrite -- and it's why a plain `cargo test` from `out_dir` (no
+/// `autograder` involvement) already runs
 /// both the student's own tests and the public harness's, via the
 /// `[workspace]` manifest this also writes.
 pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
@@ -147,12 +146,7 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
     })?;
 
     let harness_dir = out_dir.join("harness");
-    copy_public_harness(
-        &package_dir.join("harness"),
-        &harness_dir,
-        &public_test_names,
-        id,
-    )?;
+    copy_public_harness(&package_dir.join("harness"), &harness_dir, &public_test_names)?;
 
     // `binary`-kind has no harness crate to link in via the workspace
     // (`harness/` there is just loose `tests/*.rs`, merged onto whatever
@@ -356,37 +350,18 @@ fn copy_file(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copies the instructor's `harness/` into the public starter, then
-/// rewrites the two files that carry private-only content in place: the
-/// manifest's dependency on `<id>` (a plain path dependency now, not the
-/// private `"*"` + checked-in `[patch]` -- see
-/// [`crate::publish::rewrite_harness_dependency_to_path`]) and every
-/// `tests/*.rs` file (dropped down to just the public-visibility tests
-/// named in `public_test_names`, via
-/// [`crate::publish::keep_only_named_tests`]).
-fn copy_public_harness(
-    src: &Path,
-    dst: &Path,
-    public_test_names: &HashSet<String>,
-    id: &str,
-) -> Result<()> {
+/// Copies the instructor's `harness/` into the public starter verbatim --
+/// its `Cargo.toml` needs no rewriting (see `publish`'s module doc comment:
+/// the checked-in dependency is already a plain path onto the sibling
+/// directory named after `[assignment].id`, which means the same thing in
+/// both the private package and the published starter) -- then filters
+/// every `tests/*.rs` file down to just the public-visibility tests named
+/// in `public_test_names`, via [`crate::publish::keep_only_named_tests`].
+fn copy_public_harness(src: &Path, dst: &Path, public_test_names: &HashSet<String>) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
     copy_dir_if_exists(src, dst)?;
-
-    let manifest_path = dst.join("Cargo.toml");
-    if manifest_path.is_file() {
-        let manifest = std::fs::read_to_string(&manifest_path).map_err(|source| Error::Io {
-            path: manifest_path.clone(),
-            source,
-        })?;
-        let rewritten = publish::rewrite_harness_dependency_to_path(&manifest, id)?;
-        std::fs::write(&manifest_path, rewritten).map_err(|source| Error::Io {
-            path: manifest_path,
-            source,
-        })?;
-    }
 
     let tests_dir = dst.join("tests");
     if tests_dir.is_dir() {
@@ -497,7 +472,7 @@ points = 20
 visibility = "private"
 "#;
 
-    const HARNESS_MANIFEST: &str = "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = \"*\"\n\n[patch.crates-io]\nhw3 = { path = \"../hw3\" }\n";
+    const HARNESS_MANIFEST: &str = "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n";
 
     const JUDGE_RS: &str = r#"
         #[test]

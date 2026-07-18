@@ -104,9 +104,14 @@ pub fn grade_batch<F: Fetchable>(
         let run_id = generate_run_id();
         // `workspace` and `driver_dir` are siblings under one per-job root,
         // never nested inside each other -- see `JobContext`'s doc comment.
+        // `workspace` is named after `[assignment].id`, not e.g. "student":
+        // the harness's checked-in `Cargo.toml` depends on that exact
+        // sibling name (see `evaluator::library`'s module doc comment), so
+        // this naming is what lets that dependency resolve correctly with
+        // no patch/`--config` override needed.
         let job_root = work_dir.join(&submission.student_id);
-        let workspace = job_root.join("student");
-        let driver_dir = job_root.join("driver");
+        let workspace = job_root.join(&spec.assignment.id);
+        let driver_dir = job_root.join("harness");
         let ctx = JobContext {
             assignment_id: spec.assignment.id.clone(),
             student_id: submission.student_id.clone(),
