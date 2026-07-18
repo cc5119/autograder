@@ -1,6 +1,6 @@
 # Autograder — Implementation Plan
 
-Status: M1, M2, M3, and M4 done
+Status: M1, M2, M3, M4, and M5 done
 Last updated: 2026-07-18
 Companion to: [`docs/design.md`](./design.md)
 
@@ -62,8 +62,8 @@ src/
     container.rs  # ContainerSandbox (rootless podman shell-out)
   evaluator/      # Evaluator trait + judge protocol
     mod.rs
-    linked_library.rs
-    binary_harness.rs
+    library.rs
+    binary.rs
   vendor.rs       # offline vendoring / prefetch (cargo vendor + .cargo/config.toml)
   grade.rs        # Grader trait + scoring policies (pure)
   report/         # Reporter trait + impls
@@ -187,22 +187,22 @@ Grade → Report + result persistence. No untrusted-code isolation yet.
   `harness/` + `fixtures/` **overlaid on top** (instructor files win; matching
   student paths removed; student test files ignored), per design §7.2. Wire
   student code to harness per `kind` at a structural level (create the driver
-  crate scaffold for `linked-library`; identify the bin target for
-  `binary-harness`). Offline cargo env + manifest allowlist diff come in M2.
+  crate scaffold for `library`; identify the bin target for
+  `binary`). Offline cargo env + manifest allowlist diff come in M2.
 - **Verify:** unit test that overlay precedence is correct and a student file at
   an instructor path is replaced.
 - Revised post-M3: `fixtures/` overlaying was removed — nothing ever read it
   (dead plumbing since it was first added), and it had the same
   workspace-pollution issue described below for `harness/`; it can be
   reintroduced, correctly scoped, once an evaluator actually needs fixture
-  data. `linked-library`'s `harness/` copy target moved from the student's
+  data. `library`'s `harness/` copy target moved from the student's
   own `workspace` to a separate, fresh, per-job `driver_dir` (a sibling, not
   nested inside `workspace`) — see step 14's revision note and design §9.1.
   Because the destination is now always guaranteed empty by construction
   (never a directory the student has touched), the copy helper
   (`copy_dir_into`, renamed from `overlay_dir`) dropped its "remove any
   pre-existing file first" collision handling — that behavior is only still
-  relevant for `binary-harness`'s copy onto the student's own workspace,
+  relevant for `binary`'s copy onto the student's own workspace,
   which remains unimplemented.
 
 ### Step 7 — Grade stage (pure) + scoring policies
@@ -241,13 +241,13 @@ returns `NotImplemented` pending M6's `GitHubFetcher`.
 
 ---
 
-## M2 — Sandbox, offline vendoring, linked-library evaluator — **Done**
+## M2 — Sandbox, offline vendoring, library evaluator — **Done**
 
-Goal: replace the stub evaluator with a real sandboxed `linked-library` run and
+Goal: replace the stub evaluator with a real sandboxed `library` run and
 enforce the dependency allowlist offline.
 
-**Status:** done. `grade` now builds a `LinkedLibrary` evaluator over a
-`ContainerSandbox` for `linked-library` assignments (`binary-harness` still
+**Status:** done. `grade` now builds a `Library` evaluator over a
+`ContainerSandbox` for `library` assignments (`binary` still
 `NotImplemented`, M4). Confirmed end-to-end short of the actual container
 run: fetch → prepare (offline env + manifest diagnostics) → evaluator
 correctly shells out to `podman run <exact flags>` and fails there with "No
@@ -256,7 +256,7 @@ exactly the deferred boundary the ground rules describe. 55 unit/integration
 tests pass (up from 25 at M1 close); one deviation from the design doc worth
 noting: verdicts come from parsing `cargo nextest`'s JUnit report rather than
 a custom judge process writing `EvaluationResult` JSON to `/out` — this
-follows the plan's own step 14 wording and keeps `linked_library.rs` agnostic
+follows the plan's own step 14 wording and keeps `library.rs` agnostic
 to any particular assignment's op-sequence protocol (that protocol is fully
 instructor-authored test code overlaid from `harness/`).
 
@@ -300,8 +300,8 @@ instructor-authored test code overlaid from `harness/`).
 - Parse manifests with `toml` (optionally `cargo_metadata` for resolved graphs).
 - **Verify:** unit tests for each diagnostic case against crafted `Cargo.toml`s.
 
-### Step 14 — Judge protocol + `linked-library` evaluator
-- `evaluator/linked_library.rs`: assemble the trusted **driver** crate
+### Step 14 — Judge protocol + `library` evaluator
+- `evaluator/library.rs`: assemble the trusted **driver** crate
   (path-depends on the student lib via `[student].package-name`) whose only job is
   read-op → call student API → serialize return value → write back, with **no
   assertions**. The **judge** (no student code) drives op sequences and asserts on
@@ -326,7 +326,7 @@ instructor-authored test code overlaid from `harness/`).
     the offline vendored-source override (previously a file `Prepare` wrote
     into `workspace/.cargo/config.toml`, relying on an ancestor-directory
     relationship with the driver's build dir) is now passed as `--config`
-    flags directly by `LinkedLibrary` itself, since sibling directories
+    flags directly by `Library` itself, since sibling directories
     don't share that ancestry for Cargo's config discovery to walk up
     through — verified working, fully offline, with a real vendored crate.
     `ci` puts its driver scratch dir under the system temp dir, never inside
@@ -343,7 +343,7 @@ instructor-authored test code overlaid from `harness/`).
 - Judge writes `EvaluationResult` to the `/out` mount; student stdout/stderr
   captured separately (byte-capped) for diagnostics only, never parsed for
   verdicts (design §10, §12). Replace `StubEvaluator` in the `grade` pipeline with
-  `LinkedLibrary` over `ContainerSandbox`.
+  `Library` over `ContainerSandbox`.
 - **Verify:** end-to-end on a provisioned host **[deferred: needs podman +
   nextest]**; unit coverage for the egress/diagnostics split lands now. **M2 done.**
 
@@ -352,7 +352,7 @@ instructor-authored test code overlaid from `harness/`).
 ## M3 — CI tier (public, advisory) — **Done**
 
 **Status:** done. `autograder ci --harness <public-dir>` runs Prepare (overlay
-+ offline env + manifest diagnostics) → a `LinkedLibrary` evaluator over
++ offline env + manifest diagnostics) → a `Library` evaluator over
 `LocalSandbox` → `CiReport`, with `tier: "ci"` and no scores. Verified real
 end-to-end on this host short of `cargo-nextest` (not installed here, same
 deferred boundary as M2's podman): build succeeds, the run stage correctly
@@ -360,7 +360,7 @@ reports `HarnessError` rather than crashing or false-passing when nextest is
 missing, and the CLI exits 1. `scaffold <public-repo> --out <dir>` produces
 the documented starter tree (`.autograder/public/`, `.github/workflows/autograde.yml`,
 a student `Cargo.toml` pre-populated from `[allowed-crates]`) — verified live
-against a fixture public repo. `binary-harness` for the CI tier remains
+against a fixture public repo. `binary` for the CI tier remains
 `NotImplemented` pending M4, matching the authoritative tier. 12 new
 unit/integration tests added (65 total, up from 53 at M2 close).
 
@@ -405,7 +405,7 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 - Revised again post-M3: removed `[student]` (`spec::Student` — `package-name`,
   `bin-name`) and the `--solution` flag entirely. `[assignment].id` is now the
   single identifier used everywhere those two fields used to be read
-  (`evaluator::linked_library`'s patch arg, `prepare::Wiring::BinaryHarness`'s
+  (`evaluator::library`'s patch arg, `prepare::Wiring::Binary`'s
   bin name, the generated starter's `Cargo.toml` package name) — one name, no
   separate section to keep in sync with it, no flag to override where the
   solution lives. The reference solution directory is now
@@ -414,7 +414,7 @@ unit/integration tests added (65 total, up from 53 at M2 close).
   equal `id`, that's a misconfigured assignment and scaffold errors out
   (`check_solution_package_name`) rather than silently deriving a stub with
   the wrong shape. Renamed the example's `instructor/solution/` to
-  `instructor/linked-library-stack-example/` to match.
+  `instructor/library-stack-example/` to match.
 - Revised a third time post-M3: simplified `scaffold` from "assemble each
   output separately" to "copy real files, then strip in place" —
   `student_manifest_toml` (a hand-built `Cargo.toml` from
@@ -446,16 +446,16 @@ unit/integration tests added (65 total, up from 53 at M2 close).
 
 ---
 
-## M4 — Caching, binary-harness — **Done**
+## M4 — Caching, binary — **Done**
 
-**Status:** done. `evaluator/binary_harness.rs` builds the student's own
+**Status:** done. `evaluator/binary.rs` builds the student's own
 crate directly in `workspace` (no separate driver dir) and runs the
 instructor-authored `harness/` integration tests under `cargo nextest`,
-exactly like `linked-library` minus the `[patch]` injection — the harness
+exactly like `library` minus the `[patch]` injection — the harness
 locates the built binary via Cargo's own `env!("CARGO_BIN_EXE_<name>")`
 inside its test code, so this module needs no extra wiring for that.
 `build_evaluator`/`build_local_evaluator` in `lib.rs` now construct it for
-`AssignmentKind::BinaryHarness` instead of returning `NotImplemented`. Base
+`AssignmentKind::Binary` instead of returning `NotImplemented`. Base
 image tag/`Containerfile` construction moved out of `lib.rs`'s inline
 `format!` into `image.rs` (`base_image_tag`, `containerfile`, `build_argv`,
 `build_base_image`) so `ContainerSandbox::preflight`'s expected tag and the
@@ -486,22 +486,22 @@ construction is unit-tested without them.
   (`image.rs`, `cache.rs`, `volume.rs`) and the scoping decision on real
   disk-quota enforcement.
 
-### Step 21 — `binary-harness` evaluator
-- `evaluator/binary_harness.rs`: the trusted judge spawns the built student
+### Step 21 — `binary` evaluator
+- `evaluator/binary.rs`: the trusted judge spawns the built student
   **binary** (target named `[assignment].id`) as a child — protocol / timing /
   stdin / args — and asserts on stdout/files/observable behavior, each interaction
   → a named `TestResult`. Exit code is only one input to the verdict, never "pass"
   alone. Always under `[limits.run]`.
-- Funnels into the same `EvaluationResult` shape as `linked-library`.
+- Funnels into the same `EvaluationResult` shape as `library`.
 - **Verify (unit):** protocol driver + verdict logic against a fake child;
   live sandboxed run **[deferred: needs podman]**. **M4 done.**
 - **Status:** done. The "protocol/timing/stdin/args" driving and the
   stdout/file assertions are entirely instructor-authored code living in
-  `harness/tests/*.rs` (mirroring how `linked-library`'s judge protocol is
+  `harness/tests/*.rs` (mirroring how `library`'s judge protocol is
   fully instructor-authored, per that evaluator's own doc comment) — this
   module's job stayed mechanical: build the student crate, run `cargo
   nextest run --offline` in the same workspace, parse the resulting JUnit
-  report into `TestResult`s (reusing `linked_library::parse_junit_report`).
+  report into `TestResult`s (reusing `library::parse_junit_report`).
   Verified: build-failure short-circuit, missing-JUnit-report →
   `HarnessError` (never a silent pass), and a captured JUnit sample parsing
   correctly, all against a scripted `Sandbox` double — live sandboxed run
@@ -509,7 +509,36 @@ construction is unit-tested without them.
 
 ---
 
-## M5 — Grading / regrading
+## M5 — Grading / regrading — **Done**
+
+**Status:** done. `run_regrade` (already wired since M1) re-derives `Grade`s
+from persisted `EvaluationResult`s with zero re-evaluation; step 23's own
+verify item had no direct test coverage until now — added
+`lib.rs::regrade_tests::regrade_recomputes_scores_from_a_changed_policy_
+without_reevaluating`, which persists one eval, regrades under `weighted`,
+edits `autograder.toml` to `pass-count` on disk, and regrades again,
+asserting the score/max change purely from the policy edit. `overrides.rs`
+adds `Overrides` (`overrides.toml`, loaded from the assignment package
+alongside `autograder.toml`/`harness/`): a `[manual.<student_id>]` table for
+a manual score override (score + required `reason`, always wins outright)
+and a `[late.<student_id>]` table (an operator-supplied `submitted_at`) that
+feeds a new `[scoring.late-penalty]` spec section (`grace`, `per-day-percent`,
+`max-percent`) — `Duration` parsing gained `h`/`d` units to make a realistic
+grace period expressible. Both `run_grade`/`pipeline::grade_batch` and
+`run_regrade` call the same `overrides::apply` after `Grader::grade`, so
+editing the override file and re-running either command picks it up
+immediately, and — per design §14 — **only the derived `Grade` changes**;
+the persisted raw `EvaluationResult` is never touched (verified directly:
+`pipeline::grade_batch_applies_a_manual_override_after_grading` asserts the
+persisted eval's test statuses are unaffected by the override). `Grade`
+gained `override_reason`/`late_penalty_percent` fields (both reporters
+updated: the CSV gradebook gained two trailing columns, JSON just picks the
+new fields up via serde). 114 unit/integration tests pass (up from 99 at M4
+close). No real submission-timestamp source exists yet to compute lateness
+automatically — that's still M6's `GitHubFetcher`/push-time API — so
+`submitted_at` is filled in by an operator the same way a manual override
+already is; the late-penalty *calculation* itself doesn't change once a
+real timestamp is threaded through automatically.
 
 ### Step 23 — Decoupled `regrade` from persisted results
 - `regrade` command: re-run **only** the Grade stage from persisted
@@ -517,6 +546,7 @@ construction is unit-tested without them.
   Confirm the three scoring models end-to-end over persisted fixtures.
 - **Verify:** persist a set of results, change weights, `regrade`, assert scores
   update without re-evaluation.
+- **Status:** done — see M5's status write-up above.
 
 ### Step 24 — Manual overrides + late penalties
 - Grade-stage override file (per-student manual score/status overrides) and
@@ -524,6 +554,7 @@ construction is unit-tested without them.
   **recorded**, never by mutating raw `EvaluationResult`s (design §14).
 - **Verify:** unit tests that an override and a late penalty change the `Grade`
   but leave the persisted raw result untouched. **M5 done.**
+- **Status:** done — see M5's status write-up above.
 
 ---
 
@@ -573,7 +604,10 @@ construction is unit-tested without them.
 
 These are the design's §18 items, mapped to where a decision is needed:
 - Scoring-model default (§18.1) → Step 7 (default to `weighted`, others available).
-- Late-submission policy (§18.2) → Step 24.
+- Late-submission policy (§18.2) → Step 24. Resolved for v1: a grace period
+  + percent-per-day-late penalty (capped), driven by an operator-supplied
+  `submitted_at` in `overrides.toml` until M6's push-time API can supply it
+  automatically.
 - Per-test vs run-wide CPU budgets (§18.3) → Steps 11/14.
 - CI memory/pids enforcement expectations (§18.4) → Step 16.
 - Release targets + version pinning (§18.5) → Step 19.

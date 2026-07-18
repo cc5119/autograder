@@ -1,5 +1,5 @@
-pub mod binary_harness;
-pub mod linked_library;
+pub mod binary;
+pub mod library;
 
 use crate::error::Result;
 use crate::model::{
@@ -32,7 +32,7 @@ pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
 }
 
 /// Turns a prepared workspace into a raw evaluation result. Real impls
-/// (`LinkedLibrary`, `BinaryHarness`, M2/M4) launch a trusted judge process
+/// (`Library`, `Binary`, M2/M4) launch a trusted judge process
 /// against a `Sandbox`; that seam is added in M2 (design §4, §9).
 pub trait Evaluator {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult>;

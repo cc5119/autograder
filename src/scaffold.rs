@@ -6,12 +6,12 @@
 //!
 //! `package_dir` is the instructor package (`autograder.toml`, `harness/`,
 //! `<assignment-id>/` — the required reference solution). `[assignment].id`
-//! is the single identifier for everything
-//! student-facing (design §5): the crate name the harness's `Cargo.toml`
-//! depends on (`evaluator::linked_library`), the binary name for
-//! `binary-harness` (`prepare::Wiring::BinaryHarness`), *and* the directory
-//! name the reference solution must live in — `package_dir.join(&spec.assignment.id)`.
-//! No `[student]` section to keep in sync with it, no `--solution` flag.
+//! is the single identifier for everything student-facing (design §5): the
+//! crate name the harness's `Cargo.toml` depends on (`evaluator::library`),
+//! the binary target name for `binary`-kind assignments
+//! (`prepare::Wiring::Binary`), *and* the directory name the reference
+//! solution must live in — `package_dir.join(&spec.assignment.id)`. No
+//! `[student]` section to keep in sync with it, no `--solution` flag.
 //!
 //! From `package_dir`, `scaffold` produces `out_dir` as:
 //! - A full recursive copy of `package_dir/<id>/` (the reference solution —
@@ -95,8 +95,7 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         path: private_spec_path.clone(),
         source,
     })?;
-    let (public_spec_toml, public_test_names) =
-        publish::derive_public_spec_toml(&private_toml)?;
+    let (public_spec_toml, public_test_names) = publish::derive_public_spec_toml(&private_toml)?;
 
     let public_dir = out_dir.join(".autograder/public");
     std::fs::create_dir_all(&public_dir).map_err(|source| Error::Io {
@@ -356,7 +355,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -412,7 +411,9 @@ visibility = "private"
     fn write_solution_crate(solution_dir: &Path, package_name: &str) {
         write(
             &solution_dir.join("Cargo.toml"),
-            &format!("[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"),
+            &format!(
+                "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"
+            ),
         );
         write(
             &solution_dir.join("src/lib.rs"),
@@ -459,19 +460,25 @@ visibility = "private"
         let out_dir = tempfile::tempdir().unwrap();
         let outcome = scaffold(package_dir.path(), out_dir.path()).unwrap();
 
-        assert!(outcome
-            .out_dir
-            .join(".autograder/public")
-            .join(spec::PUBLIC_SPEC_FILE)
-            .is_file());
-        assert!(outcome
-            .out_dir
-            .join(".autograder/public/harness/tests/judge.rs")
-            .is_file());
-        assert!(outcome
-            .out_dir
-            .join(".github/workflows/autograde.yml")
-            .is_file());
+        assert!(
+            outcome
+                .out_dir
+                .join(".autograder/public")
+                .join(spec::PUBLIC_SPEC_FILE)
+                .is_file()
+        );
+        assert!(
+            outcome
+                .out_dir
+                .join(".autograder/public/harness/tests/judge.rs")
+                .is_file()
+        );
+        assert!(
+            outcome
+                .out_dir
+                .join(".github/workflows/autograde.yml")
+                .is_file()
+        );
         assert!(outcome.out_dir.join("Cargo.toml").is_file());
         assert!(outcome.out_dir.join("src/lib.rs").is_file());
     }
@@ -513,10 +520,9 @@ visibility = "private"
         assert!(judge.contains("fn insert_basic"));
         assert!(!judge.contains("balance_adversarial"));
 
-        let manifest = std::fs::read_to_string(
-            out_dir.path().join(".autograder/public/harness/Cargo.toml"),
-        )
-        .unwrap();
+        let manifest =
+            std::fs::read_to_string(out_dir.path().join(".autograder/public/harness/Cargo.toml"))
+                .unwrap();
         assert!(!manifest.contains("patch"));
         assert!(!manifest.contains("solution"));
     }
@@ -524,8 +530,14 @@ visibility = "private"
     #[test]
     fn scaffold_errors_clearly_when_the_solution_directory_is_missing() {
         let package_dir = tempfile::tempdir().unwrap();
-        write(&package_dir.path().join(spec::PRIVATE_SPEC_FILE), PRIVATE_SPEC);
-        write(&package_dir.path().join("harness/Cargo.toml"), HARNESS_MANIFEST);
+        write(
+            &package_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            PRIVATE_SPEC,
+        );
+        write(
+            &package_dir.path().join("harness/Cargo.toml"),
+            HARNESS_MANIFEST,
+        );
         write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
         // deliberately no `hw3/` solution directory
         let out_dir = tempfile::tempdir().unwrap();

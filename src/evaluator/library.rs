@@ -1,4 +1,4 @@
-//! The `linked-library` `Evaluator` (design §9.1): builds the trusted
+//! The `library` `Evaluator` (design §9.1): builds the trusted
 //! **driver** crate (depends on the student library via a patched-in path)
 //! and runs the instructor-authored **judge** — process-per-session under
 //! `cargo nextest` — under a `Sandbox`. Both build and run stages happen
@@ -43,7 +43,7 @@
 //! Because `driver_dir` and `workspace` no longer share an ancestor
 //! directory, Cargo's directory-based config discovery can't find
 //! `workspace`'s offline-vendoring `.cargo/config.toml` (written by
-//! `Prepare` for a future `binary-harness` evaluator, which builds directly
+//! `Prepare` for a future `binary` evaluator, which builds directly
 //! in `workspace`) from `driver_dir`. This evaluator instead passes the
 //! equivalent `[source]` override as `--config` flags directly, alongside
 //! the dependency patch — verified working together, fully offline, with a
@@ -67,7 +67,7 @@ use super::{Evaluator, build_sandbox_limits, run_sandbox_limits};
 /// writes to; mirrors `vendor::prefetch`'s output layout.
 const VENDOR_DIR_NAME: &str = "vendor";
 
-pub struct LinkedLibrary<S> {
+pub struct Library<S> {
     sandbox: S,
     package_dir: PathBuf,
     student_package_name: String,
@@ -76,14 +76,14 @@ pub struct LinkedLibrary<S> {
     tests: Vec<ScoredTest>,
 }
 
-impl<S: Sandbox> LinkedLibrary<S> {
+impl<S: Sandbox> Library<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let student_package_name = spec.assignment.id.clone();
         let package_dir = package_dir.into();
         let harness_manifest = package_dir.join("harness/Cargo.toml");
         if !harness_manifest.is_file() {
             return Err(Error::InvalidSpec(format!(
-                "linked-library assignment missing {} -- the harness must be a real, \
+                "library assignment missing {} -- the harness must be a real, \
                  instructor-authored crate (no default is generated)",
                 harness_manifest.display()
             )));
@@ -169,7 +169,7 @@ impl<S: Sandbox> LinkedLibrary<S> {
     }
 }
 
-impl<S: Sandbox> Evaluator for LinkedLibrary<S> {
+impl<S: Sandbox> Evaluator for Library<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let driver_dir = &ctx.driver_dir;
         let config_args = self.config_args(&ctx.workspace);
@@ -490,7 +490,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -535,7 +535,7 @@ visibility = "public"
         }
     }
 
-    /// A minimal but real `harness/Cargo.toml` -- `LinkedLibrary::new` now
+    /// A minimal but real `harness/Cargo.toml` -- `Library::new` now
     /// requires this to exist (no generated fallback), even for tests that
     /// never actually invoke real cargo (`ScriptedSandbox` ignores the
     /// `SandboxSpec` content).
@@ -552,7 +552,7 @@ visibility = "public"
     fn new_errors_clearly_when_the_harness_is_missing() {
         let package_dir = tempfile::tempdir().unwrap();
 
-        let result = LinkedLibrary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+        let result = Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
 
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
@@ -562,7 +562,7 @@ visibility = "public"
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let evaluator =
-            LinkedLibrary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+            Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
         let args = evaluator.config_args(std::path::Path::new("relative/workspace"));
         let arg = args
@@ -590,7 +590,7 @@ visibility = "public"
         let driver_dir = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
-        let evaluator = LinkedLibrary::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(
@@ -612,7 +612,7 @@ visibility = "public"
         let driver_dir = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
-        let evaluator = LinkedLibrary::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(
@@ -635,7 +635,7 @@ visibility = "public"
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
-        let evaluator = LinkedLibrary::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(

@@ -15,12 +15,12 @@ pub const PUBLIC_SPEC_FILE: &str = "autograder.public.toml";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssignmentKind {
-    LinkedLibrary,
-    BinaryHarness,
+    Library,
+    Binary,
 }
 
-/// `id` doubles as the student-facing crate name: for `linked-library` it's
-/// the dependency name the harness links against, for `binary-harness` it's
+/// `id` doubles as the student-facing crate name: for `library` it's
+/// the dependency name the harness links against, for `binary` it's
 /// the expected binary target name. One identifier, no separate
 /// `[student]` config section to keep in sync with it.
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +76,10 @@ impl<'de> Deserialize<'de> for ByteSize {
 pub struct Duration(pub std::time::Duration);
 
 impl Duration {
+    fn zero() -> Self {
+        Duration(std::time::Duration::ZERO)
+    }
+
     fn parse(s: &str) -> std::result::Result<Self, String> {
         let s = s.trim();
         let digits = s.trim_end_matches(|c: char| c.is_alphabetic());
@@ -86,6 +90,8 @@ impl Duration {
         let secs = match unit {
             "s" => value,
             "m" => value * 60,
+            "h" => value * 60 * 60,
+            "d" => value * 60 * 60 * 24,
             other => return Err(format!("unknown duration unit {other:?} in {s:?}")),
         };
         Ok(Duration(std::time::Duration::from_secs(secs)))
@@ -148,11 +154,30 @@ pub struct ScoredTest {
     pub points: Option<f64>,
 }
 
+/// A late-submission penalty (design §14, §18.2, M5 step 24): a grace
+/// period, then a percentage of the score deducted per day late, capped at
+/// `max-percent`. Applied at the Grade stage against a per-student
+/// submission time recorded in `overrides.toml` (see `overrides.rs`) --
+/// never by mutating the persisted raw `EvaluationResult`. Absent
+/// `[scoring.late-penalty]` means no late penalty is ever applied, even if
+/// an `overrides.toml` late entry exists for a student.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LatePenalty {
+    #[serde(default = "Duration::zero")]
+    pub grace: Duration,
+    #[serde(rename = "per-day-percent")]
+    pub per_day_percent: f64,
+    #[serde(rename = "max-percent")]
+    pub max_percent: f64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Scoring {
     pub model: ScoringModel,
     #[serde(default, rename = "tests")]
     pub tests: Vec<ScoredTest>,
+    #[serde(default, rename = "late-penalty")]
+    pub late_penalty: Option<LatePenalty>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,7 +226,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -237,7 +262,7 @@ visibility = "public"
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -280,7 +305,7 @@ visibility = "private"
     fn parses_public_spec_with_no_points() {
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
-        assert_eq!(spec.assignment.kind, AssignmentKind::LinkedLibrary);
+        assert_eq!(spec.assignment.kind, AssignmentKind::Library);
         assert_eq!(spec.limits.build.memory, ByteSize(2 * 1024 * 1024 * 1024));
         assert_eq!(
             spec.limits.build.wall_clock,
@@ -297,5 +322,39 @@ visibility = "private"
         assert_eq!(spec.scoring.tests[0].points, Some(10.0));
         assert_eq!(spec.scoring.tests[1].visibility, TestVisibility::Private);
         assert!(!spec.exposes_no_points());
+    }
+
+    #[test]
+    fn scoring_with_no_late_penalty_table_parses_to_none() {
+        let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
+        assert!(spec.scoring.late_penalty.is_none());
+    }
+
+    #[test]
+    fn late_penalty_table_parses_grace_hours_and_percentages() {
+        let toml = PUBLIC_TOML.replace(
+            "[scoring]\nmodel = \"weighted\"\n[[scoring.tests]]",
+            "[scoring]\nmodel = \"weighted\"\n\n[scoring.late-penalty]\ngrace = \"24h\"\nper-day-percent = 10\nmax-percent = 50\n\n[[scoring.tests]]",
+        );
+        let spec: Spec = toml::from_str(&toml).unwrap();
+        let penalty = spec.scoring.late_penalty.unwrap();
+        assert_eq!(
+            penalty.grace,
+            Duration(std::time::Duration::from_secs(24 * 3600))
+        );
+        assert_eq!(penalty.per_day_percent, 10.0);
+        assert_eq!(penalty.max_percent, 50.0);
+    }
+
+    #[test]
+    fn duration_parses_hour_and_day_units() {
+        assert_eq!(
+            Duration::parse("2d").unwrap(),
+            Duration(std::time::Duration::from_secs(2 * 24 * 3600))
+        );
+        assert_eq!(
+            Duration::parse("3h").unwrap(),
+            Duration(std::time::Duration::from_secs(3 * 3600))
+        );
     }
 }

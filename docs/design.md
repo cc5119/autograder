@@ -71,7 +71,7 @@ Key risks and mitigations (authoritative tier):
 | Network exfiltration / calling home / dependency confusion | Grading containers run with `--network=none`. All dependencies are vendored offline (§8). |
 | Reading/exfiltrating the hidden test suite | Grading is offline, so even though tests are present on the container FS during evaluation, results can only leave via the controlled, captured output channel. The **CI tier never receives hidden tests at all** (§11). |
 | Escaping the sandbox to the host | Containers run unprivileged (rootless Podman recommended), read-only root FS, dropped capabilities, `no-new-privileges`, seccomp default profile. |
-| Tampering with the grader / instructor tests | Instructor harness + tests come from a trusted private repo, materialized fresh per job and kept out of the (untrusted) student checkout entirely for `linked-library` (§7.2, §9.1); student-provided test files are ignored. |
+| Tampering with the grader / instructor tests | Instructor harness + tests come from a trusted private repo, materialized fresh per job and kept out of the (untrusted) student checkout entirely for `library` (§7.2, §9.1); student-provided test files are ignored. |
 | **Forging the verdict at runtime** — in an in-process test run, student code shares an address space with the assertions and can `exit(0)` (from a `Drop`, thread, or ctor), swallow assertion panics, or print fake result JSON | The pass/fail verdict is **always computed by a trusted judge process that contains no student code** (§9). Student code is driven across a process boundary and graded only on its observable outputs; the judge defaults every test to *fail* and records a pass only on a positive, judge-observed signal. Enforced in **both tiers**. |
 
 **CI tier trust:** students fully control their CI environment and could fake
@@ -142,7 +142,7 @@ struct Submission {
 /// Turns a prepared workspace into a raw evaluation result. It launches a
 /// **trusted judge process that contains no student code** and drives the
 /// untrusted student code across a process boundary (§9), grading only the
-/// student's observable outputs. v1 impls: LinkedLibrary, BinaryHarness. Same
+/// student's observable outputs. v1 impls: Library, Binary. Same
 /// impls serve both tiers; the tier only changes which tests/harness are present.
 trait Evaluator {
     fn evaluate(&self, ctx: &JobContext, sandbox: &dyn Sandbox) -> Result<EvaluationResult>;
@@ -195,8 +195,8 @@ for the parts `scaffold` derives (open question §18.6 revisited).
 
 There is no `[student]` spec section either: `[assignment].id` is the single
 identifier for everything student-facing — the crate name the harness
-depends on (§9.1), the binary target name for `binary-harness`, and the
-directory name the reference solution must live in
+depends on (§9.1), the binary target name for `binary`-kind assignments,
+and the directory name the reference solution must live in
 (`<instructor-repo>/<id>/`). That solution directory is **required** —
 `scaffold` has nothing to copy the starter's `Cargo.toml`/`src/` from without
 it, so a missing directory is a clear error, not a placeholder. `scaffold`
@@ -240,7 +240,7 @@ reads whatever spec it is given and computes no score for a test that carries no
 `points`, so the shipped spec never reveals weighting.
 
 `id` also doubles as the student-facing crate name — the expected Cargo
-package name (`linked-library`) or binary target name (`binary-harness`).
+package name (`library`) or binary target name (`binary`).
 No separate `[student]` section: one identifier, nothing to keep in sync
 with it by hand.
 
@@ -249,7 +249,7 @@ with it by hand.
 [assignment]
 id = "hw3"                       # also the expected package/binary name
 name = "Binary search tree"
-kind = "linked-library"          # or "binary-harness"; extensible
+kind = "library"          # or "binary"; extensible
 deadline = "2026-02-14T23:59:59-08:00"
 
 [toolchain]
@@ -339,14 +339,14 @@ the same trait.
 
 ### 7.2 Prepare
 
-- Materialize a clean student checkout at the chosen SHA. For `linked-library`,
+- Materialize a clean student checkout at the chosen SHA. For `library`,
   the instructor harness/judge is copied into a **separate, fresh, per-job
   directory** rather than onto the student's own checkout (§9.1) — nothing an
-  evaluator builds ever lands inside the student's tree. `binary-harness`
+  evaluator builds ever lands inside the student's tree. `binary`
   (unimplemented) copies the harness directly onto the student's checkout,
   since it needs to wire against the student's own build output there.
 - Assemble the offline Cargo environment: mount the prevendored crate directory
-  and write the `.cargo/config.toml` source replacement (§8) — `linked-library`
+  and write the `.cargo/config.toml` source replacement (§8) — `library`
   additionally passes the equivalent override as `--config` flags directly, see
   §9.1.
 - Wire the student code to the harness according to `kind` (§9).
@@ -428,7 +428,7 @@ corrupt the student's own process, which the judge scores as a *fail*. The judge
 **defaults every test to fail** and records a pass only on a positive,
 judge-observed signal (timeout, crash, early exit, wrong/no output → fail).
 
-### 9.1 `linked-library`
+### 9.1 `library`
 
 - The student repo is a **library crate** exposing a predefined public API.
 - Instructor ships a **thin, trusted driver binary**, checked in permanently at
@@ -472,7 +472,7 @@ judge-observed signal (timeout, crash, early exit, wrong/no output → fail).
   structured, isolated per-test runner (see §17 — libtest's own JSON output is
   nightly-only/unstable, so this is a hard dependency, not optional).
 
-### 9.2 `binary-harness`
+### 9.2 `binary`
 
 - The student repo builds a **binary** (target named `[assignment].id`).
 - The trusted judge/harness spawns the built binary as a child — possibly
@@ -715,14 +715,19 @@ autograder scaffold <assignment-repo> --out starter-<id>/   # emit starter templ
 - Containers: `bollard` (Docker API) or shell out to `podman`.
 - Tests: `cargo nextest` for structured, isolated, process-per-test results.
   **Required, not optional** — libtest's own JSON output is nightly-only/unstable,
-  so nextest is the structured-output dependency for the `linked-library` judge
+  so nextest is the structured-output dependency for the `library` judge
   (§9.1).
 
 ## 18. Open questions / decisions to revisit
 
 1. **Scoring model default** — proposed `weighted`; confirm vs pass-count/pass-fail.
-2. **Late submissions** — is "latest commit before deadline" the only policy, or
-   also a graded-late-with-penalty window (Grade-stage penalty)?
+2. **Late submissions** — resolved for v1 (M5 step 24): "latest commit before
+   deadline" is still the default fetch-time selection, plus an optional
+   Grade-stage penalty (`[scoring.late-penalty]`: a grace period, then a
+   percentage deducted per day late, capped) applied via a per-student
+   `submitted_at` recorded in `overrides.toml` — see `overrides.rs`. Until
+   M6's GitHub push-time API lands, that timestamp is operator-supplied
+   rather than automatically resolved.
 3. **Per-test limits** — the scored bound is now CPU-time with wall-clock as a
    safety net (§10); still open is per-test CPU-time budgets vs a single run-wide
    one (nextest supports per-test).
@@ -761,11 +766,11 @@ autograder scaffold <assignment-repo> --out starter-<id>/   # emit starter templ
 1. **M1 — Skeleton:** CSV `Source`, host-side clone with deadline-based commit
    selection, spec parsing, JSON/CSV reporters. No sandbox yet (trusted wiring).
 2. **M2 — Sandbox:** `ContainerSandbox` (Podman) with limits, offline vendoring,
-   `linked-library` evaluator, `EvaluationResult` persistence.
+   `library` evaluator, `EvaluationResult` persistence.
 3. **M3 — CI tier:** `autograder ci` entrypoint + `LocalSandbox` + `CiReporter`,
    public-harness format, `scaffold` command, GitHub Actions wrapper, release
    pipeline for the pinned binary.
-4. **M4 — Robustness:** failure isolation, base-image caching, `binary-harness`
+4. **M4 — Robustness:** failure isolation, base-image caching, `binary`
    evaluator.
 5. **M5 — Grading/regrading:** decoupled Grade stage, scoring policies, manual
    overrides, late penalties.

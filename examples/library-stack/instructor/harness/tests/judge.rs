@@ -6,7 +6,7 @@
 //! spawns its own driver process.
 //!
 //! `push_pop_basic` is the public test (also shipped in
-//! `examples/linked-library-stack/public/`); `many_pushes_then_pops` is
+//! `examples/library-stack/public/`); `many_pushes_then_pops` is
 //! private (hidden) — it never ships to students, and it's adversarial in
 //! the sense the design calls for (§9): it can't be satisfied by a solution
 //! that special-cases the couple of ops the public test happens to check.

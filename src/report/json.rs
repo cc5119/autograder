@@ -34,6 +34,8 @@ mod tests {
             max: 30.0,
             status: "fail".into(),
             failing_tests: vec!["balance_adversarial".into()],
+            override_reason: None,
+            late_penalty_percent: None,
         }];
 
         let json = render(&grades).unwrap();

@@ -10,11 +10,11 @@ use crate::vendor;
 /// added in M2 (steps 12-13); this only identifies the wiring target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wiring {
-    /// `linked-library`: a driver crate scaffold path-depends on the
+    /// `library`: a driver crate scaffold path-depends on the
     /// student's package (named `[assignment].id`).
-    LinkedLibrary { driver_dir: std::path::PathBuf },
-    /// `binary-harness`: the built binary target the judge will spawn.
-    BinaryHarness { bin_name: String },
+    Library { driver_dir: std::path::PathBuf },
+    /// `binary`: the built binary target the judge will spawn.
+    Binary { bin_name: String },
 }
 
 /// The offline cargo environment installed into the workspace so the build
@@ -44,8 +44,8 @@ pub struct PrepareOutcome {
 /// plus the harness. `package_dir` is the instructor assignment package
 /// containing `harness/` and (once prefetched) `vendor/`.
 ///
-/// `linked-library`'s `harness/` (the driver crate — no `driver/`
-/// subdirectory in the checked-in package, see `evaluator::linked_library`)
+/// `library`'s `harness/` (the driver crate — no `driver/`
+/// subdirectory in the checked-in package, see `evaluator::library`)
 /// is copied into `driver_dir`: a *fresh, per-job* directory that is a
 /// **sibling** of `workspace`, not nested inside it, so nothing an evaluator
 /// builds ever lands inside the student's own checkout. It must still be
@@ -61,16 +61,16 @@ pub fn prepare(
     spec: &Spec,
 ) -> Result<PrepareOutcome> {
     let wiring = match spec.assignment.kind {
-        AssignmentKind::LinkedLibrary => {
+        AssignmentKind::Library => {
             std::fs::create_dir_all(driver_dir).map_err(|source| Error::Io {
                 path: driver_dir.to_path_buf(),
                 source,
             })?;
-            Wiring::LinkedLibrary {
+            Wiring::Library {
                 driver_dir: driver_dir.to_path_buf(),
             }
         }
-        AssignmentKind::BinaryHarness => Wiring::BinaryHarness {
+        AssignmentKind::Binary => Wiring::Binary {
             bin_name: spec.assignment.id.clone(),
         },
     };
@@ -78,14 +78,15 @@ pub fn prepare(
     let harness_dir = package_dir.join("harness");
     if harness_dir.is_dir() {
         let harness_copy_target = match &wiring {
-            Wiring::LinkedLibrary { driver_dir } => driver_dir.clone(),
-            Wiring::BinaryHarness { .. } => workspace.to_path_buf(),
+            Wiring::Library { driver_dir } => driver_dir.clone(),
+            Wiring::Binary { .. } => workspace.to_path_buf(),
         };
         copy_dir_into(&harness_copy_target, &harness_dir)?;
     }
 
     let offline_env = install_offline_env(workspace, package_dir)?;
-    let manifest_diagnostics = diagnose_manifest(workspace, spec, offline_env.vendor_dir.as_deref())?;
+    let manifest_diagnostics =
+        diagnose_manifest(workspace, spec, offline_env.vendor_dir.as_deref())?;
 
     Ok(PrepareOutcome {
         wiring,
@@ -99,14 +100,14 @@ pub fn prepare(
 /// env var the build/run sandbox spec must set (design §8.2). A no-op when
 /// the package hasn't been prefetched (no `vendor/` dir yet).
 ///
-/// `linked-library`'s actual build no longer discovers this file — its
+/// `library`'s actual build no longer discovers this file — its
 /// `driver_dir` is a sibling of `workspace`, not a descendant, so Cargo's
-/// directory-based config discovery never reaches it; `LinkedLibrary`
+/// directory-based config discovery never reaches it; `Library`
 /// passes the equivalent `[source]` override directly via `--config`
 /// instead (verified working with real vendored crates, offline). This
 /// function's return value is still consulted for `diagnose_manifest`
 /// below (a plain filesystem read, unrelated to Cargo's own config
-/// resolution) and still applies as-is to a future `binary-harness`
+/// resolution) and still applies as-is to a future `binary`
 /// evaluator, which builds directly in `workspace`.
 fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEnv> {
     let vendor_dir = package_dir.join("vendor");
@@ -162,7 +163,7 @@ fn diagnose_manifest(
 /// Recursively copies `src`'s tree onto `dest`, path-for-path. `dest` is
 /// assumed to contain nothing at any of those paths — true by construction
 /// for both callers (a freshly-created `driver_dir` that's never reused
-/// across jobs; a `binary-harness` workspace where the harness paths are
+/// across jobs; a `binary` workspace where the harness paths are
 /// instructor-chosen to not collide with the student's own). If that
 /// invariant is ever violated, `std::fs::copy` simply overwrites the file —
 /// there's no separate collision-detection step to keep in sync.
@@ -210,7 +211,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -280,7 +281,11 @@ model = "weighted"
         let outcome = prepare(workspace.path(), driver_dir.path(), package.path(), &spec).unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
-        assert!(outcome.manifest_diagnostics[0].to_string().contains("tokio"));
+        assert!(
+            outcome.manifest_diagnostics[0]
+                .to_string()
+                .contains("tokio")
+        );
     }
 
     #[test]
@@ -302,7 +307,10 @@ model = "weighted"
         let dest = tempfile::tempdir().unwrap();
         let src = tempfile::tempdir().unwrap();
 
-        write(&src.path().join("Cargo.toml"), "[package]\nname = \"driver\"\n");
+        write(
+            &src.path().join("Cargo.toml"),
+            "[package]\nname = \"driver\"\n",
+        );
         write(&src.path().join("tests/judge.rs"), "// judge");
 
         copy_dir_into(dest.path(), src.path()).unwrap();

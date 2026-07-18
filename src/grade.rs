@@ -73,6 +73,8 @@ impl Grader for DefaultGrader {
             max,
             status,
             failing_tests,
+            override_reason: None,
+            late_penalty_percent: None,
         }
     }
 }
@@ -95,10 +97,7 @@ mod tests {
     use super::*;
     use crate::model::{ResourceUsage, StageReport, StageReports, Tier};
 
-    fn eval_with(
-        stages: StageReports,
-        tests: Vec<crate::model::TestResult>,
-    ) -> EvaluationResult {
+    fn eval_with(stages: StageReports, tests: Vec<crate::model::TestResult>) -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
             tier: Tier::Authoritative,
@@ -144,6 +143,7 @@ mod tests {
                     points,
                 })
                 .collect(),
+            late_penalty: None,
         }
     }
 

@@ -8,6 +8,7 @@ pub mod grade;
 pub mod image;
 pub mod manifest_check;
 pub mod model;
+pub mod overrides;
 pub mod pipeline;
 pub mod prepare;
 pub mod publish;
@@ -26,8 +27,8 @@ pub use config::Config;
 pub use error::{Error, Result};
 
 use evaluator::Evaluator;
-use evaluator::binary_harness::BinaryHarness;
-use evaluator::linked_library::LinkedLibrary;
+use evaluator::binary::Binary;
+use evaluator::library::Library;
 use grade::{DefaultGrader, Grader};
 use model::{JobContext, Tier};
 use report::{Reporter, ci::CiReport, csv::CsvReporter, json::JsonReporter};
@@ -89,6 +90,7 @@ fn run_grade(
     };
     let store = Store::new(&config.storage_dir);
     let work_dir = config.storage_dir.join(".work");
+    let overrides = overrides::Overrides::load_from_package(assignment)?;
 
     // Each Submission's fetchable knows how to fetch itself
     // (fetch::Fetchable), so only the source kind needs picking here. A CSV
@@ -105,6 +107,7 @@ fn run_grade(
             &spec,
             &work_dir,
             &store,
+            &overrides,
         )?,
         Submissions::Csv(_) => {
             return Err(Error::NotImplemented(
@@ -131,12 +134,8 @@ fn build_evaluator(
     let sandbox = ContainerSandbox::new(base_image, config.seccomp_profile.clone());
     sandbox.preflight()?;
     match spec.assignment.kind {
-        AssignmentKind::LinkedLibrary => {
-            Ok(Box::new(LinkedLibrary::new(spec, package_dir, sandbox)?))
-        }
-        AssignmentKind::BinaryHarness => {
-            Ok(Box::new(BinaryHarness::new(spec, package_dir, sandbox)?))
-        }
+        AssignmentKind::Library => Ok(Box::new(Library::new(spec, package_dir, sandbox)?)),
+        AssignmentKind::Binary => Ok(Box::new(Binary::new(spec, package_dir, sandbox)?)),
     }
 }
 
@@ -197,16 +196,8 @@ fn run_ci(harness_dir: &std::path::Path) -> Result<()> {
 /// doc comment in `cli.rs`).
 fn build_local_evaluator(spec: &Spec, package_dir: &std::path::Path) -> Result<Box<dyn Evaluator>> {
     match spec.assignment.kind {
-        AssignmentKind::LinkedLibrary => Ok(Box::new(LinkedLibrary::new(
-            spec,
-            package_dir,
-            LocalSandbox,
-        )?)),
-        AssignmentKind::BinaryHarness => Ok(Box::new(BinaryHarness::new(
-            spec,
-            package_dir,
-            LocalSandbox,
-        )?)),
+        AssignmentKind::Library => Ok(Box::new(Library::new(spec, package_dir, LocalSandbox)?)),
+        AssignmentKind::Binary => Ok(Box::new(Binary::new(spec, package_dir, LocalSandbox)?)),
     }
 }
 
@@ -216,14 +207,28 @@ fn run_scaffold(assignment: &std::path::Path, out: &std::path::Path) -> Result<(
     Ok(())
 }
 
+/// Re-runs **only** the Grade stage from persisted `EvaluationResult`s (no
+/// student code, no evaluator) — design §14, M5 step 23. Applying
+/// `spec.scoring` and `overrides.toml` fresh from disk on every call, rather
+/// than trusting a previously-persisted `Grade`, is what makes this a fast,
+/// idempotent offline recomputation: editing scoring weights or an
+/// override/late-penalty entry and re-running `regrade` always reflects the
+/// current policy, never a stale one baked in at `grade` time.
 fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Config) -> Result<()> {
     let spec = Spec::load(assignment)?;
     let store = Store::new(&config.storage_dir);
     let evals = store.latest_evals(assignment_id)?;
+    let overrides = overrides::Overrides::load_from_package(assignment)?;
 
     let mut grades = Vec::new();
     for eval in &evals {
         let grade = DefaultGrader.grade(eval, &spec.scoring);
+        let grade = overrides::apply(
+            grade,
+            &overrides,
+            spec.assignment.deadline,
+            spec.scoring.late_penalty.as_ref(),
+        );
         store.save_grade(&eval.assignment_id, &eval.run_id, &grade)?;
         grades.push(grade);
     }
@@ -275,7 +280,7 @@ mod ci_tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 [toolchain]
@@ -367,8 +372,8 @@ visibility = "public"
     }
 
     #[test]
-    fn ci_evaluator_selection_builds_binary_harness_when_its_harness_dir_exists() {
-        let toml = PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
+    fn ci_evaluator_selection_builds_binary_when_its_harness_dir_exists() {
+        let toml = PUBLIC_SPEC.replace("kind = \"library\"", "kind = \"binary\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
@@ -378,8 +383,8 @@ visibility = "public"
     }
 
     #[test]
-    fn ci_evaluator_selection_errors_clearly_when_binary_harness_dir_is_missing() {
-        let toml = PUBLIC_SPEC.replace("kind = \"linked-library\"", "kind = \"binary-harness\"");
+    fn ci_evaluator_selection_errors_clearly_when_binary_dir_is_missing() {
+        let toml = PUBLIC_SPEC.replace("kind = \"library\"", "kind = \"binary\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
@@ -432,5 +437,166 @@ visibility = "public"
         let grades = store.latest_grades("hw3").unwrap();
         assert_eq!(grades.len(), 1);
         assert_eq!(grades[0].status, "HarnessError");
+    }
+}
+
+#[cfg(test)]
+mod regrade_tests {
+    use super::*;
+    use model::{
+        Diagnostics, EvaluationResult, ResourceUsage, StageReport, StageReports, TestResult,
+        TestStatus, TestVisibility, Tier,
+    };
+
+    fn write(path: &std::path::Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn spec_toml(model: &str) -> String {
+        format!(
+            r#"
+[assignment]
+id = "hw3"
+name = "Binary search tree"
+kind = "library"
+deadline = "2026-02-14T23:59:59-08:00"
+
+[toolchain]
+channel = "1.86.0"
+
+[allowed-crates]
+
+[limits.build]
+wall-clock = "30s"
+cpus = 1
+memory = "512MiB"
+pids = 64
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "256MiB"
+pids = 64
+max-output-bytes = "64KiB"
+
+[scoring]
+model = "{model}"
+
+[[scoring.tests]]
+name = "insert_basic"
+points = 10
+visibility = "public"
+
+[[scoring.tests]]
+name = "balance_adversarial"
+points = 20
+visibility = "private"
+"#
+        )
+    }
+
+    fn persisted_eval() -> EvaluationResult {
+        EvaluationResult {
+            schema_version: 1,
+            tier: Tier::Authoritative,
+            assignment_id: "hw3".into(),
+            student_id: "alice".into(),
+            run_id: "run-1".into(),
+            graded_commit: None,
+            instructor_commit: None,
+            public_harness_commit: None,
+            stages: StageReports {
+                fetch: StageReport::ok(),
+                build: StageReport::ok(),
+                run: StageReport::ok(),
+            },
+            tests: vec![
+                TestResult {
+                    name: "insert_basic".into(),
+                    visibility: TestVisibility::Public,
+                    status: TestStatus::Pass,
+                    duration_ms: None,
+                    message: None,
+                },
+                TestResult {
+                    name: "balance_adversarial".into(),
+                    visibility: TestVisibility::Private,
+                    status: TestStatus::Fail,
+                    duration_ms: None,
+                    message: None,
+                },
+            ],
+            resource_usage: ResourceUsage::default(),
+            diagnostics: Diagnostics::default(),
+        }
+    }
+
+    /// Step 23's verify: persist a result, change the scoring policy, call
+    /// `regrade`, and confirm the score updates -- without re-running the
+    /// evaluator (there's no student code or sandbox involved at all here).
+    #[test]
+    fn regrade_recomputes_scores_from_a_changed_policy_without_reevaluating() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            storage_dir: store_dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        write(
+            &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            &spec_toml("weighted"),
+        );
+        let store = Store::new(&config.storage_dir);
+        store.save_eval(&persisted_eval()).unwrap();
+
+        run_regrade("hw3", assignment_dir.path(), &config).unwrap();
+        let grades = store.latest_grades("hw3").unwrap();
+        assert_eq!(grades.len(), 1);
+        // insert_basic passes (10 pts), balance_adversarial fails -> 10/30.
+        assert_eq!(grades[0].score, 10.0);
+        assert_eq!(grades[0].max, 30.0);
+
+        // Change the policy to pass-count and regrade again: 1 of 2 tests
+        // passing, with no re-fetch/build/run of any kind.
+        write(
+            &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            &spec_toml("pass-count"),
+        );
+        run_regrade("hw3", assignment_dir.path(), &config).unwrap();
+        let grades = store.latest_grades("hw3").unwrap();
+        assert_eq!(grades[0].score, 1.0);
+        assert_eq!(grades[0].max, 2.0);
+    }
+
+    #[test]
+    fn regrade_applies_overrides_toml_on_top_of_the_recomputed_score() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            storage_dir: store_dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        write(
+            &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            &spec_toml("weighted"),
+        );
+        write(
+            &assignment_dir.path().join(overrides::OVERRIDES_FILE),
+            "[manual.alice]\nscore = 25.0\nreason = \"Appeal granted for balance_adversarial\"\n",
+        );
+        let store = Store::new(&config.storage_dir);
+        store.save_eval(&persisted_eval()).unwrap();
+
+        run_regrade("hw3", assignment_dir.path(), &config).unwrap();
+
+        let grades = store.latest_grades("hw3").unwrap();
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].score, 25.0);
+        assert_eq!(grades[0].status, "override");
+        assert!(grades[0].override_reason.is_some());
     }
 }

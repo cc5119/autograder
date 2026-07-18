@@ -1,29 +1,29 @@
-//! The `binary-harness` `Evaluator` (design §9.2): the student repo builds
-//! a **binary** (target named `[assignment].id`); the trusted judge —
+//! The `binary` `Evaluator` (design §9.2): the student repo builds a
+//! **binary** (target named `[assignment].id`); the trusted judge —
 //! instructor-authored integration tests overlaid from `harness/` directly
-//! onto the student's own workspace by `Prepare` (see `prepare::Wiring::
-//! BinaryHarness`, unlike `linked-library`'s separate `driver_dir`) — spawns
-//! that binary as a child and asserts on its observable behavior
+//! onto the student's own workspace by `Prepare` (see
+//! `prepare::Wiring::Binary`, unlike `library`'s separate `driver_dir`) —
+//! spawns that binary as a child and asserts on its observable behavior
 //! (stdout/files/exit code), never on anything the student's own process
 //! self-reports.
 //!
-//! Unlike `linked-library`, there is no separate driver crate and no
-//! `[patch]` injection: the harness's `tests/*.rs` files land in the
-//! student's own crate, so a plain `cargo build` produces the binary and
-//! `cargo nextest run` builds+runs the harness's integration tests in the
-//! same package — which can locate the built binary via Cargo's standard
+//! Unlike `library`, there is no separate driver crate and no `[patch]`
+//! injection: the harness's `tests/*.rs` files land in the student's own
+//! crate, so a plain `cargo build` produces the binary and `cargo nextest
+//! run` builds+runs the harness's integration tests in the same package —
+//! which can locate the built binary via Cargo's standard
 //! `env!("CARGO_BIN_EXE_<name>")` mechanism with no extra wiring from this
 //! module. Because build and run both happen directly in `ctx.workspace`
 //! (not a sibling scratch dir), `Prepare`'s own `.cargo/config.toml` (written
 //! into `workspace` when the package has been prefetched) is discovered by
 //! Cargo's ordinary directory-based config lookup, so this evaluator only
 //! needs to set `CARGO_NET_OFFLINE` -- no `--config` flags to reproduce it,
-//! unlike `linked_library` (see that module's doc comment for why *it*
-//! can't rely on the file).
+//! unlike `library` (see that module's doc comment for why *it* can't rely
+//! on the file).
 //!
 //! Run **process-per-session under `cargo nextest`**, exactly like
-//! `linked-library`: verdicts come from parsing nextest's JUnit report, not
-//! from any output the harness/child process claims for itself.
+//! `library`: verdicts come from parsing nextest's JUnit report, not from
+//! any output the harness/child process claims for itself.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -36,12 +36,12 @@ use crate::model::{
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::{ScoredTest, Spec};
 
-use super::linked_library::parse_junit_report;
+use super::library::parse_junit_report;
 use super::{Evaluator, build_sandbox_limits, run_sandbox_limits};
 
 const VENDOR_DIR_NAME: &str = "vendor";
 
-pub struct BinaryHarness<S> {
+pub struct Binary<S> {
     sandbox: S,
     package_dir: PathBuf,
     build_limits: SandboxLimits,
@@ -49,13 +49,13 @@ pub struct BinaryHarness<S> {
     tests: Vec<ScoredTest>,
 }
 
-impl<S: Sandbox> BinaryHarness<S> {
+impl<S: Sandbox> Binary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
         let harness_dir = package_dir.join("harness");
         if !harness_dir.is_dir() {
             return Err(Error::InvalidSpec(format!(
-                "binary-harness assignment missing {} -- the harness must be real, \
+                "binary assignment missing {} -- the harness must be real, \
                  instructor-authored integration tests (no default is generated)",
                 harness_dir.display()
             )));
@@ -99,7 +99,7 @@ impl<S: Sandbox> BinaryHarness<S> {
     }
 }
 
-impl<S: Sandbox> Evaluator for BinaryHarness<S> {
+impl<S: Sandbox> Evaluator for Binary<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let workspace = &ctx.workspace;
         let env = self.offline_env();
@@ -309,7 +309,7 @@ mod tests {
 [assignment]
 id = "wc"
 name = "Word count"
-kind = "binary-harness"
+kind = "binary"
 deadline = "2026-02-14T23:59:59-08:00"
 
 [toolchain]
@@ -349,7 +349,7 @@ visibility = "public"
             run_id: "run-1".into(),
             tier: Tier::Authoritative,
             workspace,
-            driver_dir: PathBuf::from("/tmp/unused-for-binary-harness"),
+            driver_dir: PathBuf::from("/tmp/unused-for-binary"),
         }
     }
 
@@ -366,7 +366,7 @@ visibility = "public"
     fn new_errors_clearly_when_the_harness_is_missing() {
         let package_dir = tempfile::tempdir().unwrap();
 
-        let result = BinaryHarness::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+        let result = Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
 
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
@@ -378,7 +378,7 @@ visibility = "public"
         let workspace = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
-        let evaluator = BinaryHarness::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(workspace.path().to_path_buf()))
@@ -396,7 +396,7 @@ visibility = "public"
         let workspace = tempfile::tempdir().unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
-        let evaluator = BinaryHarness::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(workspace.path().to_path_buf()))
@@ -415,7 +415,7 @@ visibility = "public"
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
-        let evaluator = BinaryHarness::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(workspace.path().to_path_buf()))
@@ -432,7 +432,7 @@ visibility = "public"
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_dir(package_dir.path());
         let evaluator =
-            BinaryHarness::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+            Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
         let mounts = evaluator.mounts(std::path::Path::new("/tmp/some-workspace"));
         let workspace_mount = mounts

@@ -1,4 +1,4 @@
 [package]
-name = "linked-library-stack-example"
+name = "library-stack-example"
 version = "0.1.0"
 edition = "2021"

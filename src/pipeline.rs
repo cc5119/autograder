@@ -9,6 +9,7 @@ use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus, Tier,
 };
+use crate::overrides::{self, Overrides};
 use crate::source::SubmissionsSource;
 use crate::spec::Spec;
 use crate::store::Store;
@@ -19,7 +20,11 @@ static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// ever ran (fetch failure, disallowed dependency), so a non-fatal
 /// per-student problem still produces a well-formed, gradeable result
 /// instead of aborting the batch.
-fn terminal_eval(ctx: &JobContext, status: StageStatus, message: Option<String>) -> EvaluationResult {
+fn terminal_eval(
+    ctx: &JobContext,
+    status: StageStatus,
+    message: Option<String>,
+) -> EvaluationResult {
     EvaluationResult {
         schema_version: 1,
         tier: ctx.tier,
@@ -69,12 +74,18 @@ pub(crate) fn generate_run_id() -> String {
 }
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
-/// Fetch -> Prepare -> Evaluate -> persist -> Grade, one student at a time.
+/// Fetch -> Prepare -> Evaluate -> persist -> Grade -> apply overrides, one
+/// student at a time.
 ///
 /// Generic over the fetchable type `F: Fetchable`: `source` yields
 /// `Submission<F>`s and each one fetches itself, so the compiler rejects
 /// ever pairing e.g. a `CsvRoster` (`SubmissionsSource<GitRepo>`) with a
 /// workspace that only makes sense for a `LocalPath`.
+///
+/// `overrides` (design §14, §18.2 -- M5 step 24) is applied to the `Grade`
+/// after `grader.grade` runs, never touching the persisted `eval` -- see
+/// `overrides::apply`'s doc comment for why a manual override or late
+/// penalty is recomputed here rather than baked into the raw result.
 #[allow(clippy::too_many_arguments)]
 pub fn grade_batch<F: Fetchable>(
     source: &dyn SubmissionsSource<F>,
@@ -84,6 +95,7 @@ pub fn grade_batch<F: Fetchable>(
     spec: &Spec,
     work_dir: &Path,
     store: &Store,
+    overrides: &Overrides,
 ) -> Result<Vec<crate::model::Grade>> {
     let submissions = source.submissions()?;
     let mut grades = Vec::new();
@@ -107,7 +119,11 @@ pub fn grade_batch<F: Fetchable>(
         let fetch_outcome = submission.fetch(&workspace)?;
 
         let eval = if fetch_outcome.status != StageStatus::Ok {
-            terminal_eval(&ctx, StageStatus::FetchFailed, fetch_outcome.message.clone())
+            terminal_eval(
+                &ctx,
+                StageStatus::FetchFailed,
+                fetch_outcome.message.clone(),
+            )
         } else {
             let prepared = crate::prepare::prepare(&workspace, &driver_dir, package_dir, spec)?;
             if !prepared.manifest_diagnostics.is_empty() {
@@ -125,6 +141,12 @@ pub fn grade_batch<F: Fetchable>(
 
         store.save_eval(&eval)?;
         let grade = grader.grade(&eval, &spec.scoring);
+        let grade = overrides::apply(
+            grade,
+            overrides,
+            spec.assignment.deadline,
+            spec.scoring.late_penalty.as_ref(),
+        );
         store.save_grade(&ctx.assignment_id, &ctx.run_id, &grade)?;
         grades.push(grade);
     }
@@ -155,7 +177,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -215,6 +237,7 @@ visibility = "public"
             &spec,
             work_dir.path(),
             &store,
+            &Overrides::default(),
         )
         .unwrap();
 
@@ -264,6 +287,7 @@ visibility = "public"
             &spec,
             work_dir.path(),
             &store,
+            &Overrides::default(),
         )
         .unwrap();
 
@@ -308,11 +332,66 @@ visibility = "public"
             &spec,
             work_dir.path(),
             &store,
+            &Overrides::default(),
         )
         .unwrap();
 
         assert_eq!(grades.len(), 1);
         assert_eq!(grades[0].score, 0.0);
         assert_eq!(grades[0].status, "FetchFailed");
+    }
+
+    #[test]
+    fn grade_batch_applies_a_manual_override_after_grading() {
+        let package_dir = tempfile::tempdir().unwrap();
+        let submission_src = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+
+        write(&submission_src.path().join("src/lib.rs"), "// student code");
+
+        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let source = FixedSource(vec![crate::model::Submission {
+            student_id: "alice".into(),
+            fetchable: LocalPath(submission_src.path().to_path_buf()),
+            metadata: Default::default(),
+        }]);
+        let evaluator = crate::evaluator::StubEvaluator {
+            tests: spec.scoring.tests.clone(),
+        };
+        let store = Store::new(store_dir.path());
+        let overrides = Overrides {
+            manual: std::collections::BTreeMap::from([(
+                "alice".to_string(),
+                crate::overrides::ManualOverride {
+                    score: 3.0,
+                    status: Some("manual-review".into()),
+                    reason: "Partial credit for a documented edge case".into(),
+                },
+            )]),
+            late: Default::default(),
+        };
+
+        let grades = grade_batch(
+            &source,
+            &evaluator,
+            &DefaultGrader,
+            package_dir.path(),
+            &spec,
+            work_dir.path(),
+            &store,
+            &overrides,
+        )
+        .unwrap();
+
+        assert_eq!(grades.len(), 1);
+        assert_eq!(grades[0].score, 3.0);
+        assert_eq!(grades[0].status, "manual-review");
+        assert!(grades[0].override_reason.is_some());
+
+        // The raw persisted eval is untouched by the override -- only the
+        // derived Grade reflects it.
+        let persisted = store.latest_evals("hw3").unwrap();
+        assert_eq!(persisted[0].tests[0].status, crate::model::TestStatus::Pass);
     }
 }

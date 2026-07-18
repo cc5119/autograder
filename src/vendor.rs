@@ -148,7 +148,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 
@@ -214,7 +214,10 @@ model = "weighted"
         assert!(absolutized.is_absolute());
         assert_eq!(
             absolutized,
-            std::env::current_dir().unwrap().join(relative).join("vendor")
+            std::env::current_dir()
+                .unwrap()
+                .join(relative)
+                .join("vendor")
         );
     }
 

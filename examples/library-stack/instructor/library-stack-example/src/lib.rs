@@ -1,7 +1,7 @@
-//! A correct reference solution for the `linked-library-stack` example
+//! A correct reference solution for the `library-stack` example
 //! assignment (see the top-level README's "Try it" section): a plain LIFO
 //! stack of `i64`s. This directory is named after `[assignment].id` in
-//! `../autograder.toml` (`linked-library-stack-example`) -- `autograder
+//! `../autograder.toml` (`library-stack-example`) -- `autograder
 //! scaffold` requires that to derive the starter's src/ from it, and
 //! `../harness/Cargo.toml` depends on + patches this same name by default,
 //! so `cd ../harness && cargo nextest run` works standalone, no autograder

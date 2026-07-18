@@ -27,11 +27,10 @@ use crate::error::{Error, Result};
 /// (visibility = "public"), so the caller can filter harness test files to
 /// match.
 pub fn derive_public_spec_toml(private_toml: &str) -> Result<(String, HashSet<String>)> {
-    let mut value: toml::Value =
-        toml::from_str(private_toml).map_err(|source| Error::Toml {
-            path: PathBuf::from("<private spec>"),
-            source: Box::new(source),
-        })?;
+    let mut value: toml::Value = toml::from_str(private_toml).map_err(|source| Error::Toml {
+        path: PathBuf::from("<private spec>"),
+        source: Box::new(source),
+    })?;
 
     let mut public_names = HashSet::new();
     if let Some(tests) = value
@@ -72,7 +71,8 @@ pub fn strip_toml_table(source: &str, key: &str) -> Result<String> {
     if let Some(table) = value.as_table_mut() {
         table.remove(key);
     }
-    toml::to_string_pretty(&value).map_err(|e| Error::Other(format!("failed to render manifest: {e}")))
+    toml::to_string_pretty(&value)
+        .map_err(|e| Error::Other(format!("failed to render manifest: {e}")))
 }
 
 /// Drops any `#[test]` fn not named in `keep_names`; everything else
@@ -109,7 +109,7 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "linked-library"
+kind = "library"
 deadline = "2026-02-14T23:59:59-08:00"
 
 

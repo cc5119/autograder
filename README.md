@@ -10,8 +10,8 @@ cargo build
 
 ## Try it
 
-[`examples/linked-library-stack/`](examples/linked-library-stack/) is a
-working `linked-library` assignment (a tiny `Stack<i64>`): just
+[`examples/library-stack/`](examples/library-stack/) is a
+working `library` assignment (a tiny `Stack<i64>`): just
 `instructor/` — private full spec + `harness/` (the driver crate + judge,
 public + hidden tests) + a reference solution kept alongside it. There's no
 separate hand-maintained public repo to keep in sync: `scaffold` derives
@@ -30,7 +30,7 @@ sync by hand.
 
 `harness/Cargo.toml` depends on the assignment's crate via `<id> = "*"`
 plus a checked-in `[patch.crates-io]` pointing at `../<id>` by default — so
-`cd examples/linked-library-stack/instructor/harness && cargo nextest run`
+`cd examples/library-stack/instructor/harness && cargo nextest run`
 grades the reference solution directly, no autograder involvement.
 Grading/`ci` always override that default via a `--config` CLI flag
 pointing at whatever checkout is actually being evaluated (a config-sourced
@@ -52,36 +52,36 @@ BIN=$PWD/target/debug/autograder
 
 # sanity-check the harness against the reference solution -- no autograder,
 # needs cargo-nextest installed
-(cd examples/linked-library-stack/instructor/harness && cargo nextest run)
+(cd examples/library-stack/instructor/harness && cargo nextest run)
 
 # vendor the (empty) dependency allowlist
-$BIN prefetch examples/linked-library-stack/instructor
+$BIN prefetch examples/library-stack/instructor
 
 # authoritative grading, needs Podman (add --local-sandbox if you don't have it)
 # -- grade wants a --submissions dir with one subdirectory per student, so
 # stage the reference solution as a scratch "alice" submission
 rm -rf /tmp/ll-stack-submissions
 mkdir -p /tmp/ll-stack-submissions/alice
-cp -r examples/linked-library-stack/instructor/linked-library-stack-example/. /tmp/ll-stack-submissions/alice/
-$BIN grade examples/linked-library-stack/instructor --submissions /tmp/ll-stack-submissions
-$BIN report linked-library-stack-example --format csv
+cp -r examples/library-stack/instructor/library-stack-example/. /tmp/ll-stack-submissions/alice/
+$BIN grade examples/library-stack/instructor --submissions /tmp/ll-stack-submissions
+$BIN report library-stack-example --format csv
 
 # generate the starter repo a student would clone: derives the public spec
 # (no points/hidden tests) + public harness (only the public test, no
 # [patch]) + a starter src/lib.rs (solution's API shape, todo!() bodies --
 # picked up automatically from instructor/<id>/, no --solution flag) --
 # all from the private instructor/ package in one command
-$BIN scaffold examples/linked-library-stack/instructor --out /tmp/starter-stack
+$BIN scaffold examples/library-stack/instructor --out /tmp/starter-stack
 
 # student-facing CI check, no Podman needed -- runs against the harness
 # scaffold just derived, from within a student's own checkout (here, the
 # reference solution again)
-(cd examples/linked-library-stack/instructor/linked-library-stack-example && \
+(cd examples/library-stack/instructor/library-stack-example && \
   $BIN ci --harness /tmp/starter-stack/.autograder/public)
 ```
 
 Use the already-built `$BIN` rather than `cargo run` once you `cd` into
-`instructor/linked-library-stack-example/`: `prefetch` writes
+`instructor/library-stack-example/`: `prefetch` writes
 `instructor/.cargo/config.toml` (pointing at `instructor/vendor/`), and
 Cargo's config discovery walks *up* from the current directory — so a
 `cargo run` invoked from inside that directory would pick that config up
@@ -91,3 +91,31 @@ the assignment's (empty) vendored set instead of the real registry.
 Generated artifacts (`vendor/`, `.cargo/`, `.autograder-store/`) are
 gitignored. `ci` never writes into the checkout it's run from — the driver
 it builds lives in a separate scratch directory under the system temp dir.
+
+## Setting up Podman
+
+`grade` (without `--local-sandbox`) runs student code in rootless Podman
+containers. Three things need to be in place first:
+
+1. **Install rootless Podman** (`sudo dnf install podman` / `sudo apt-get
+   install podman`), then confirm `podman info` works without `sudo`. See
+   [Podman's rootless
+   docs](https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md)
+   if it doesn't.
+2. **Seccomp profile** at `/etc/autograder/seccomp.json` (the fixed default
+   in `Config`; not yet configurable via flag/file):
+   ```sh
+   sudo mkdir -p /etc/autograder
+   sudo cp /usr/share/containers/seccomp.json /etc/autograder/seccomp.json
+   ```
+3. **Base image**, tagged `autograder-base:<channel>` where `<channel>`
+   matches the assignment's `[toolchain].channel` (no CLI command builds
+   this yet, so do it by hand per toolchain version):
+   ```sh
+   printf 'FROM docker.io/library/rust:1.86.0\nRUN cargo install cargo-nextest --locked\n' > Containerfile
+   podman build -t autograder-base:1.86.0 -f Containerfile .
+   ```
+
+`ContainerSandbox::preflight` checks all this up front and fails clearly if
+anything's missing, rather than grading anyone. `ci` and `--local-sandbox`
+don't need Podman at all.
