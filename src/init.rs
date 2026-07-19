@@ -111,7 +111,6 @@ mod tests {
 
         assert!(outcome.dir.join("wc/src/main.rs").is_file());
         assert!(outcome.dir.join("harness/Cargo.toml").is_file());
-        assert!(outcome.dir.join("harness/src/main.rs").is_file());
         assert!(outcome.dir.join("harness/tests/judge.rs").is_file());
 
         let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();

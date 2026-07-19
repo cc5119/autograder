@@ -36,7 +36,6 @@ pub enum AssignmentKind {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
     pub id: AssignmentId,
-    pub name: String,
     pub kind: AssignmentKind,
     pub deadline: Zoned,
     pub harness: String,
