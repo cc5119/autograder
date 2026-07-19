@@ -127,10 +127,8 @@ pub fn check_manifest(
     allowed_crates: &BTreeMap<String, String>,
     vendor_dir: Option<&Path>,
 ) -> Result<Vec<ManifestDiagnostic>> {
-    let manifest: CargoManifest =
-        toml::from_str(manifest_toml).map_err(|source| Error::Other(format!(
-            "failed to parse student Cargo.toml: {source}"
-        )))?;
+    let manifest: CargoManifest = toml::from_str(manifest_toml)
+        .map_err(|source| Error::Other(format!("failed to parse student Cargo.toml: {source}")))?;
 
     let mut diagnostics = Vec::new();
 
@@ -326,12 +324,8 @@ serde = "2.0"
 [dependencies]
 serde = "=1.2.3"
 "#;
-        let diagnostics = check_manifest(
-            manifest,
-            &allowlist(&[("serde", "1")]),
-            Some(vendor.path()),
-        )
-        .unwrap();
+        let diagnostics =
+            check_manifest(manifest, &allowlist(&[("serde", "1")]), Some(vendor.path())).unwrap();
 
         assert_eq!(
             diagnostics,
@@ -358,12 +352,8 @@ serde = "=1.2.3"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 "#;
-        let diagnostics = check_manifest(
-            manifest,
-            &allowlist(&[("serde", "1")]),
-            Some(vendor.path()),
-        )
-        .unwrap();
+        let diagnostics =
+            check_manifest(manifest, &allowlist(&[("serde", "1")]), Some(vendor.path())).unwrap();
 
         assert_eq!(
             diagnostics,
@@ -386,7 +376,9 @@ serde = { path = "../fake-serde" }
 "#;
         let diagnostics = check_manifest(manifest, &allowlist(&[]), None).unwrap();
 
-        assert!(diagnostics.contains(&ManifestDiagnostic::GitDependency { name: "evil".into() }));
+        assert!(diagnostics.contains(&ManifestDiagnostic::GitDependency {
+            name: "evil".into()
+        }));
         assert!(diagnostics.contains(&ManifestDiagnostic::PathDependency {
             name: "local".into()
         }));

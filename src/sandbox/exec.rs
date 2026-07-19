@@ -33,9 +33,9 @@ pub fn run_with_timeout(
     cmd.stderr(Stdio::piped());
 
     let program = format!("{:?}", cmd);
-    let mut child: Child = cmd.spawn().map_err(|source| Error::Other(format!(
-        "failed to spawn {program}: {source}"
-    )))?;
+    let mut child: Child = cmd
+        .spawn()
+        .map_err(|source| Error::Other(format!("failed to spawn {program}: {source}")))?;
 
     let stdout: ChildStdout = child.stdout.take().expect("piped stdout");
     let stderr: ChildStderr = child.stderr.take().expect("piped stderr");

@@ -16,7 +16,29 @@ pub enum Command {
         /// Path to the assignment repo.
         assignment: PathBuf,
     },
-    /// Run the full Fetch -> Prepare -> Evaluate -> Grade -> Report pipeline.
+    /// Run the Fetch stage alone: lands each submission at
+    /// `<student_id>/checkout/` under the storage dir and records the
+    /// outcome, without running Prepare/Evaluate/Grade. `grade --fetch`
+    /// runs this same stage first; running it separately is what lets a
+    /// later plain `grade` (no `--fetch`) redo just Prepare/Evaluate/Grade
+    /// against what's already on disk, with no network access needed.
+    Fetch {
+        /// Path to the assignment repo.
+        assignment: PathBuf,
+        /// Where submissions come from: a roster CSV file, or a directory
+        /// with one subdirectory per student. The kind is inferred from
+        /// whether the path is a file or a directory.
+        #[arg(long)]
+        submissions: PathBuf,
+        /// Override the deadline used for push-time commit selection
+        /// (RFC3339) -- see `[assignment].deadline`.
+        #[arg(long)]
+        as_of: Option<String>,
+    },
+    /// Run Prepare -> Evaluate -> Grade -> Report. By default reuses
+    /// whatever a prior `autograder fetch` (or an earlier `grade --fetch`)
+    /// already landed on disk -- pass `--fetch` to run the Fetch stage
+    /// first, in the same command.
     Grade {
         /// Path to the assignment repo.
         assignment: PathBuf,
@@ -25,7 +47,14 @@ pub enum Command {
         /// whether the path is a file or a directory.
         #[arg(long)]
         submissions: PathBuf,
-        /// Override the deadline used for commit selection (RFC3339).
+        /// Run the Fetch stage first, before grading (equivalent to
+        /// `autograder fetch` followed by `autograder grade`). Without
+        /// this flag, grading reuses whatever the most recent fetch left
+        /// on disk and never touches the network.
+        #[arg(long)]
+        fetch: bool,
+        /// Override the deadline used for push-time commit selection
+        /// (RFC3339) -- only meaningful together with `--fetch`.
         #[arg(long)]
         as_of: Option<String>,
         /// Grade using the host-process `LocalSandbox` instead of the

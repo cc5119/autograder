@@ -11,8 +11,9 @@ const KNOWN_COLUMNS: &[&str] = &["student_id", "repo_url", "ref"];
 /// A `SubmissionsSource<GitRepo>` backed by a CSV roster:
 /// `student_id,repo_url,ref,email,section,...` (design §6). Columns beyond
 /// `student_id`/`repo_url`/`ref` are carried into `Submission::metadata`.
-/// `repo_url`/`ref` become the `GitRepo` fetchable, meant for a future
-/// `GitHubFetcher` (M6) — its `Fetchable` impl is a stub until then.
+/// `repo_url`/`ref` become the `GitRepo` fetchable (see `crate::fetch`'s
+/// `Fetchable for GitRepo` impl: an unset `ref` is resolved at fetch time
+/// via push-time deadline selection, a pinned one is checked out exactly).
 pub struct CsvRoster {
     path: PathBuf,
 }
@@ -117,7 +118,10 @@ mod tests {
             submissions[0].metadata.get("email"),
             Some(&"alice@x.edu".to_string())
         );
-        assert_eq!(submissions[0].metadata.get("section"), Some(&"A".to_string()));
+        assert_eq!(
+            submissions[0].metadata.get("section"),
+            Some(&"A".to_string())
+        );
 
         assert_eq!(submissions[1].student_id, "bob");
         assert_eq!(submissions[1].fetchable.r#ref, Some("main".to_string()));

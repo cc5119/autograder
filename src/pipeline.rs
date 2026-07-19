@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::{Error, Result};
 use crate::evaluator::Evaluator;
-use crate::fetch::Fetchable;
+use crate::fetch::read_fetch_record;
 use crate::grade::Grader;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
@@ -73,31 +73,37 @@ pub(crate) fn generate_run_id() -> String {
 }
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
-/// Fetch -> Prepare -> Evaluate -> persist -> Grade -> apply overrides, one
-/// student at a time.
+/// Prepare -> Evaluate -> persist -> Grade -> apply overrides, one student
+/// at a time. Fetch is deliberately *not* one of these stages -- it runs
+/// separately, either via `autograder fetch` or `autograder grade --fetch`
+/// (see `crate::fetch::fetch_batch`), so re-running just this part (e.g.
+/// after fixing a harness bug) never needs network access. This function
+/// only ever *reads* what a prior fetch left behind: `job_root/checkout/`
+/// and the [`crate::fetch::FetchRecord`] describing it. A student with no
+/// such record (fetch never ran for them) gets a `FetchFailed` result, the
+/// same as one whose fetch itself failed -- the batch never aborts for one
+/// student either way.
 ///
-/// Generic over the fetchable type `F: Fetchable`: `source` yields
-/// `Submission<F>`s and each one fetches itself, so the compiler rejects
-/// ever pairing e.g. a `CsvRoster` (`SubmissionsSource<GitRepo>`) with a
-/// workspace that only makes sense for a `LocalPath`.
+/// Not generic over a fetchable type -- `source` only needs to yield the
+/// roster (`student_id`/`metadata`), since this function never fetches.
 ///
-/// Fetch always lands the whole submitted checkout at `job_root/checkout/`
-/// (kept, never modified again -- the record of what was actually
-/// submitted) -- `Fetchable` has no notion of `[assignment].id`, so it
-/// can't know to extract just the crate itself. This function does that
-/// extraction: the `<id>/` subdirectory gets copied into an ephemeral
-/// `job_root/build/` alongside a fresh copy of the *private* harness (see
+/// The `checkout/` a prior fetch left behind mirrors `scaffold`'s starter
+/// layout (the crate under `[assignment].id`, possibly a `harness/`
+/// alongside it that this pipeline never trusts or reads) and is kept on
+/// disk indefinitely as the record of what was actually submitted --
+/// never written into by anything past this point. This function extracts
+/// just the `<id>/` subdirectory into an ephemeral `job_root/build/`
+/// alongside a fresh copy of the *private* harness (see
 /// `prepare::prepare`), which is what Prepare/Evaluate actually operate
 /// on. `build/` is deleted after every run regardless of outcome, so the
-/// private harness's test source never lingers on disk -- only the raw
-/// `checkout/` (which never contained it) survives.
+/// private harness's test source never lingers on disk.
 ///
 /// `overrides` (design §14, §18.2 -- M5 step 24) is applied to the `Grade`
 /// after `grader.grade` runs, never touching the persisted `eval` -- see
 /// `overrides::apply`'s doc comment for why a manual override or late
 /// penalty is recomputed here rather than baked into the raw result.
 #[allow(clippy::too_many_arguments)]
-pub fn grade_batch<F: Fetchable>(
+pub fn grade_batch<F>(
     source: &dyn SubmissionsSource<F>,
     evaluator: &dyn Evaluator,
     grader: &dyn Grader,
@@ -113,12 +119,8 @@ pub fn grade_batch<F: Fetchable>(
     for submission in submissions {
         let run_id = generate_run_id();
         let job_root = work_dir.join(&submission.student_id);
-        // The raw fetched checkout: whatever shape the submission source
-        // hands back (mirrors `scaffold`'s starter layout -- the crate
-        // under `[assignment].id`, possibly a `harness/` alongside it that
-        // this pipeline never trusts or reads). Kept on disk indefinitely
-        // as the record of what was actually submitted -- never written
-        // into by anything past this point.
+        // The raw fetched checkout a prior `fetch_batch` run left behind.
+        // Never written into by anything past this point.
         let checkout_dir = job_root.join("checkout");
         // The ephemeral combined copy actually used to build/test: just
         // the extracted `<id>/` crate plus a fresh copy of the *private*
@@ -141,14 +143,21 @@ pub fn grade_batch<F: Fetchable>(
             driver_dir: driver_dir.clone(),
         };
 
-        let fetch_outcome = submission.fetch(&checkout_dir)?;
+        let fetch_record = read_fetch_record(&job_root)?;
 
-        let eval = if fetch_outcome.status != StageStatus::Ok {
-            terminal_eval(
-                &ctx,
-                StageStatus::FetchFailed,
-                fetch_outcome.message.clone(),
-            )
+        let eval = if fetch_record
+            .as_ref()
+            .is_none_or(|r| r.status != StageStatus::Ok)
+        {
+            let message = match &fetch_record {
+                Some(r) => r.message.clone(),
+                None => Some(format!(
+                    "no prior fetch found for {} -- run `autograder fetch` first, or pass \
+                     --fetch to grade",
+                    submission.student_id
+                )),
+            };
+            terminal_eval(&ctx, StageStatus::FetchFailed, message)
         } else {
             let submitted_crate = checkout_dir.join(&spec.assignment.id);
             if !submitted_crate.is_dir() {
@@ -277,6 +286,16 @@ mod tests {
         }
     }
 
+    /// `grade_batch` no longer fetches -- it only reads what a prior
+    /// `fetch_batch` run left at `work_dir/<student_id>/checkout/` plus
+    /// its `FetchRecord`. Every test below needs that populated first,
+    /// exactly as a real `grade --fetch` (or a separate `autograder
+    /// fetch`) would.
+    fn fetch_first(source: &FixedSource, work_dir: &std::path::Path) {
+        let deadline = "2026-02-14T23:59:59-08:00".parse().unwrap();
+        crate::fetch::fetch_batch(source, work_dir, deadline).unwrap();
+    }
+
     fn write(path: &std::path::Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
@@ -344,6 +363,7 @@ visibility = "public"
         };
         let store = Store::new(store_dir.path());
 
+        fetch_first(&source, work_dir.path());
         let grades = grade_batch(
             &source,
             &evaluator,
@@ -400,6 +420,7 @@ visibility = "public"
         };
         let store = Store::new(store_dir.path());
 
+        fetch_first(&source, work_dir.path());
         let grades = grade_batch(
             &source,
             &evaluator,
@@ -495,6 +516,7 @@ visibility = "public"
         let evaluator = CapturingEvaluator { seen: &seen };
         let store = Store::new(store_dir.path());
 
+        fetch_first(&source, work_dir.path());
         grade_batch(
             &source,
             &evaluator,
@@ -543,6 +565,7 @@ visibility = "public"
         };
         let store = Store::new(store_dir.path());
 
+        fetch_first(&source, work_dir.path());
         let grades = grade_batch(
             &source,
             &evaluator,
@@ -588,6 +611,7 @@ visibility = "public"
         };
         let store = Store::new(store_dir.path());
 
+        fetch_first(&source, work_dir.path());
         let grades = grade_batch(
             &source,
             &evaluator,
@@ -639,6 +663,7 @@ visibility = "public"
             late: Default::default(),
         };
 
+        fetch_first(&source, work_dir.path());
         let grades = grade_batch(
             &source,
             &evaluator,

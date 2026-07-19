@@ -1,4 +1,3 @@
-pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod error;
@@ -39,12 +38,25 @@ use store::Store;
 pub fn dispatch(command: Command, config: &Config) -> Result<()> {
     match command {
         Command::Prefetch { assignment } => run_prefetch(&assignment),
+        Command::Fetch {
+            assignment,
+            submissions,
+            as_of,
+        } => run_fetch(&assignment, &submissions, as_of.as_deref(), config),
         Command::Grade {
             assignment,
             submissions,
-            as_of: _,
+            fetch,
+            as_of,
             local_sandbox,
-        } => run_grade(&assignment, &submissions, local_sandbox, config),
+        } => run_grade(
+            &assignment,
+            &submissions,
+            fetch,
+            as_of.as_deref(),
+            local_sandbox,
+            config,
+        ),
         Command::Ci { local_sandbox } => run_ci(local_sandbox),
         Command::Regrade {
             assignment_id,
@@ -70,9 +82,68 @@ fn run_prefetch(assignment: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// The deadline used for push-time commit selection: `--as-of` if given
+/// (RFC3339), otherwise `[assignment].deadline`. A parse failure is an
+/// `InvalidSpec`, not a panic or a silent fallback to the spec's deadline
+/// -- a typo'd `--as-of` should fail loudly, not quietly grade against the
+/// wrong cutoff.
+fn resolve_deadline(
+    spec: &Spec,
+    as_of: Option<&str>,
+) -> Result<chrono::DateTime<chrono::FixedOffset>> {
+    match as_of {
+        Some(raw) => chrono::DateTime::parse_from_rfc3339(raw).map_err(|source| {
+            Error::InvalidSpec(format!(
+                "--as-of {raw:?} is not a valid RFC3339 timestamp: {source}"
+            ))
+        }),
+        None => Ok(spec.assignment.deadline),
+    }
+}
+
+/// Runs the Fetch stage alone (`autograder fetch`, and the first half of
+/// `autograder grade --fetch`): populates/refreshes
+/// `work_dir/<student_id>/checkout/` for every submission in the roster,
+/// recording each outcome via `fetch::FetchRecord` so a later `grade` (with
+/// or without `--fetch`) can read it back.
+fn run_fetch(
+    assignment: &std::path::Path,
+    submissions: &std::path::Path,
+    as_of: Option<&str>,
+    config: &Config,
+) -> Result<()> {
+    let spec = Spec::load(assignment)?;
+    let deadline = resolve_deadline(&spec, as_of)?;
+    let work_dir = config.storage_dir.join(".work");
+
+    let records = match Submissions::open(submissions)? {
+        Submissions::Directory(source) => fetch::fetch_batch(&source, &work_dir, deadline)?,
+        Submissions::Csv(source) => fetch::fetch_batch(&source, &work_dir, deadline)?,
+    };
+
+    for (student_id, record) in &records {
+        if record.status == model::StageStatus::Ok {
+            tracing::info!(
+                student_id,
+                graded_commit = record.graded_commit.as_deref().unwrap_or(""),
+                "fetched"
+            );
+        } else {
+            tracing::warn!(
+                student_id,
+                message = record.message.as_deref().unwrap_or(""),
+                "fetch failed"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn run_grade(
     assignment: &std::path::Path,
     submissions: &std::path::Path,
+    do_fetch: bool,
+    as_of: Option<&str>,
     local_sandbox: bool,
     config: &Config,
 ) -> Result<()> {
@@ -82,12 +153,10 @@ fn run_grade(
     let work_dir = config.storage_dir.join(".work");
     let overrides = overrides::Overrides::load_from_package(assignment)?;
 
-    // Each Submission's fetchable knows how to fetch itself
-    // (fetch::Fetchable), so only the source kind needs picking here. A CSV
-    // roster's GitRepo submissions aren't fetchable yet —
-    // Fetchable::fetch for GitRepo is a stub until GitHubFetcher lands in
-    // M6 (design §7.1) — so that branch fails clearly instead of silently
-    // misinterpreting the URL as a path.
+    if do_fetch {
+        run_fetch(assignment, submissions, as_of, config)?;
+    }
+
     let grades = match Submissions::open(submissions)? {
         Submissions::Directory(source) => pipeline::grade_batch(
             &source,
@@ -99,12 +168,16 @@ fn run_grade(
             &store,
             &overrides,
         )?,
-        Submissions::Csv(_) => {
-            return Err(Error::NotImplemented(
-                "grading from a CSV roster requires GitHubFetcher (M6); \
-                 use a --submissions directory for local/dev runs",
-            ));
-        }
+        Submissions::Csv(source) => pipeline::grade_batch(
+            &source,
+            evaluator.as_ref(),
+            &DefaultGrader,
+            assignment,
+            &spec,
+            &work_dir,
+            &store,
+            &overrides,
+        )?,
     };
 
     write_reports(&spec.assignment.id, &grades, config)
@@ -432,7 +505,15 @@ visibility = "public"
             storage_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
         };
 
-        run_grade(assignment_dir.path(), submissions_dir.path(), true, &config).unwrap();
+        run_grade(
+            assignment_dir.path(),
+            submissions_dir.path(),
+            true,
+            None,
+            true,
+            &config,
+        )
+        .unwrap();
 
         let store = Store::new(&config.storage_dir);
         let grades = store.latest_grades("hw3").unwrap();

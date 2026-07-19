@@ -9,14 +9,16 @@
 //! `[scoring]` policy or an edited override file both take effect the same
 //! way: recomputed fresh from the persisted eval, never patched in place.
 //!
-//! Until M6's `GitHubFetcher` lands, this repo has no automatic source of a
-//! submission's real server-side push time (design §7.1) to compute
-//! lateness from -- so `submitted_at` here is operator-supplied, the same
-//! way a manual score override already is: an instructor/TA fills in
-//! `overrides.toml` after checking the real submission time. Once M6 lands,
-//! a real timestamp could be threaded through automatically instead of
-//! requiring this file entry, but the late-penalty *calculation* itself
-//! (grace period, then a percentage per day late, capped) doesn't change.
+//! `crate::fetch`'s `Fetchable for GitRepo` resolves *which commit* gets
+//! graded from the deadline (design §7.1), but doesn't surface that
+//! commit's own push/commit timestamp anywhere `apply` can read -- so
+//! `submitted_at` here is still operator-supplied, the same way a manual
+//! score override already is: an instructor/TA fills in `overrides.toml`
+//! after checking the real submission time. Threading a real timestamp
+//! through automatically (from `FetchRecord` or the resolved commit's own
+//! metadata) would remove the need for this file entry, but the
+//! late-penalty *calculation* itself (grace period, then a percentage per
+//! day late, capped) wouldn't change.
 
 use std::collections::BTreeMap;
 use std::path::Path;

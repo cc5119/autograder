@@ -143,8 +143,8 @@
 use std::collections::HashSet;
 
 use syn::{
-    Attribute, Block, Expr, ExprLit, ImplItem, Item, Lit, Local, Meta, Stmt, StmtMacro,
-    TraitItem, Visibility,
+    Attribute, Block, Expr, ExprLit, ImplItem, Item, Lit, Local, Meta, Stmt, StmtMacro, TraitItem,
+    Visibility,
 };
 
 use crate::error::{Error, Result};
@@ -231,7 +231,12 @@ fn directive_of(attr: &Attribute) -> Option<Directive> {
     else {
         return None;
     };
-    let rest = s.value().trim().strip_prefix("autograder:")?.trim().to_string();
+    let rest = s
+        .value()
+        .trim()
+        .strip_prefix("autograder:")?
+        .trim()
+        .to_string();
     match rest.as_str() {
         "keep" => Some(Directive::Keep),
         "stub" => Some(Directive::Stub),
@@ -495,7 +500,11 @@ fn todo_stmt(original: &Stmt) -> Stmt {
         // context. Parsing it as a one-statement `Block` instead gives it
         // that context, then unwrapping recovers the `Stmt`.
         let block: Block = syn::parse_quote! {{ todo!() }};
-        block.stmts.into_iter().next().expect("block has exactly one statement")
+        block
+            .stmts
+            .into_iter()
+            .next()
+            .expect("block has exactly one statement")
     }
 }
 

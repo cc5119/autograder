@@ -22,8 +22,10 @@ pub struct Submission<F> {
 #[derive(Debug, Clone)]
 pub struct LocalPath(pub PathBuf);
 
-/// A `Fetchable` for a future `GitHubFetcher` (M6): a clone URL plus an
-/// optional pinned ref/branch override. Produced by `CsvRoster`.
+/// A `Fetchable` for a git remote: a clone URL plus an optional pinned
+/// ref/branch override -- when unset, `crate::fetch`'s `Fetchable for
+/// GitRepo` impl resolves it via push-time deadline selection instead.
+/// Produced by `CsvRoster`.
 #[derive(Debug, Clone)]
 pub struct GitRepo {
     pub url: String,

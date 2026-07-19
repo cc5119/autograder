@@ -82,7 +82,7 @@ fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
     })
 }
 
-fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+pub(crate) fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|source| Error::Io {
             path: dir.to_path_buf(),
@@ -96,7 +96,7 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     })
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let contents = std::fs::read_to_string(path).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,

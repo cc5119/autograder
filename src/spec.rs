@@ -360,10 +360,7 @@ visibility = "private"
 
     #[test]
     fn missing_sandbox_table_is_a_clear_parse_error() {
-        let toml = PUBLIC_TOML.replace(
-            "[sandbox]\nimage = \"autograder-base:1.86.0\"\n",
-            "",
-        );
+        let toml = PUBLIC_TOML.replace("[sandbox]\nimage = \"autograder-base:1.86.0\"\n", "");
         let result: std::result::Result<Spec, _> = toml::from_str(&toml);
         assert!(result.is_err());
     }
