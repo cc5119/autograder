@@ -4,9 +4,10 @@
 //! hand-maintained `public/` sibling repo, and no separately-assembled
 //! `Cargo.toml`/`src/` built up from spec fields in Rust code.
 //!
-//! `package_dir` is the instructor package (`autograder.toml`,
-//! `<assignment-id>/` — the required reference solution — and, for
-//! `library`-kind only, `harness/`; see below). `[assignment].id` is the
+//! `package_dir` is the instructor package (`autograder.toml`, a root
+//! `[workspace]` `Cargo.toml`, `<assignment-id>/` — the required reference
+//! solution — and, for `library`-kind only, `harness/`; see below).
+//! `[assignment].id` is the
 //! single identifier for everything student-facing (design §5): the crate
 //! name the harness's `Cargo.toml` depends on (`evaluator::library`), the
 //! binary target name for `binary`-kind assignments, *and* the directory
@@ -24,12 +25,17 @@
 //! doc comment) precisely because `<id>/` is always sitting right there as
 //! a sibling, in both the private package and the published starter alike
 //! -- no patch, no `--config` override, no per-tier special-casing needed
-//! to make it resolve correctly, and no rewrite needed here either. A
-//! generated root `[workspace]` manifest (`Cargo.toml`, see
-//! `write_workspace_manifest`) is the one thing with no private-package
-//! counterpart: it's what makes a bare `cargo test` run from `out_dir`
-//! build and run *both* the student's own crate and the harness's public
-//! judge tests, no `autograder` involvement, no flags.
+//! to make it resolve correctly, and no rewrite needed here either. The
+//! root `[workspace]` manifest (`Cargo.toml`) is copied verbatim too, same
+//! as `harness/Cargo.toml` -- purely a convenience for whoever's *reading*
+//! the private package standalone (an instructor sanity-checking `cargo
+//! test` from `package_dir` itself, or a student doing the same from the
+//! published starter); `autograder`'s own grading/`ci` pipeline never
+//! reads it at all (every sandboxed build always `cd`s directly into the
+//! harness/workspace directory it needs, see `evaluator::library`'s
+//! module doc comment). Copying it here rather than regenerating an
+//! equivalent one from `spec` means there's only ever one place the
+//! member list is written down, instead of two that could drift apart.
 //!
 //! From `package_dir`, `scaffold` produces `out_dir` as:
 //! - `<id>/` — a full recursive copy of `package_dir/<id>/` (the reference
@@ -69,7 +75,9 @@
 //!   nothing in this codebase currently reads it (same reasoning as the
 //!   `fixtures/` overlay removed from `prepare.rs`); reintroduce it,
 //!   correctly scoped, once an evaluator actually needs fixture data.
-//! - `Cargo.toml` — the root `[workspace]` manifest (see above).
+//! - `Cargo.toml` — the private package's own root `[workspace]` manifest,
+//!   copied verbatim (see above); required, same as `autograder.toml` and
+//!   the solution directory.
 //! - `.github/workflows/autograde.yml` — a thin wrapper around `autograder
 //!   ci`, run from the repo root (`ci` takes no `--harness` flag, see its
 //!   own doc comment). The one file with no private-repo counterpart to
@@ -104,9 +112,9 @@ pub struct ScaffoldOutcome {
 /// on `<id>` be an ordinary, always-resolving path dependency instead of
 /// needing a patch or `--config` override in the starter, copied verbatim
 /// with no rewrite -- and it's why a plain `cargo test` from `out_dir` (no
-/// `autograder` involvement) already runs
-/// both the student's own tests and the public harness's, via the
-/// `[workspace]` manifest this also writes.
+/// `autograder` involvement) already runs both the student's own tests
+/// and the public harness's, via the `[workspace]` manifest this also
+/// copies over from `package_dir` (see [`copy_workspace_manifest`]).
 pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
     let private_spec_path = package_dir.join(spec::PRIVATE_SPEC_FILE);
     if !private_spec_path.is_file() {
@@ -200,37 +208,35 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         source,
     })?;
 
-    write_workspace_manifest(out_dir, id, spec.assignment.kind)?;
+    copy_workspace_manifest(package_dir, out_dir)?;
 
     Ok(ScaffoldOutcome {
         out_dir: out_dir.to_path_buf(),
     })
 }
 
-/// The root `[workspace]` manifest that makes a bare `cargo test` from
-/// `out_dir` build+run every member with no flags: for `library`, the
-/// student's crate (`<id>/`) and the harness/judge crate (`harness/`); for
-/// `binary`, just `<id>/` (its harness has no `Cargo.toml` of its own, so
-/// there's nothing else to list -- declaring the workspace at all still
-/// buys command parity with `library`'s starter, "cargo test always
-/// works" regardless of kind). A virtual manifest (`[workspace]` with no
-/// `[package]` of its own) defaults to operating on every member for a
-/// bare `cargo test`/`cargo build` with no package-selection flags, so no
-/// `default-members` key is needed here.
-fn write_workspace_manifest(out_dir: &Path, id: &str, kind: AssignmentKind) -> Result<()> {
-    let members = match kind {
-        AssignmentKind::Library => format!("[\"harness\", \"{id}\"]"),
-        AssignmentKind::Binary => format!("[\"{id}\"]"),
-    };
-    let manifest_path = out_dir.join("Cargo.toml");
-    std::fs::write(
-        &manifest_path,
-        format!("[workspace]\nmembers = {members}\n"),
-    )
-    .map_err(|source| Error::Io {
-        path: manifest_path,
-        source,
-    })
+/// Copies the private package's own root `[workspace]` manifest verbatim --
+/// no rewrite, same reasoning as `harness/Cargo.toml` (see `publish`'s
+/// module doc comment): the private package already lists exactly the
+/// members the starter needs (`["harness", "<id>"]` for `library`-kind,
+/// `["<id>"]` for `binary`-kind -- see e.g. `examples/library-stack/
+/// Cargo.toml`), so generating an equivalent one here from `spec` would
+/// just be a second, hand-rolled source of the same fact that could drift
+/// from the real one. Required, not optional: `scaffold` refuses to guess
+/// it, same as the solution directory or `autograder.toml`. It's what
+/// makes a bare `cargo test` from `out_dir` build+run every member with no
+/// flags, no `autograder` involvement.
+fn copy_workspace_manifest(package_dir: &Path, out_dir: &Path) -> Result<()> {
+    let src = package_dir.join("Cargo.toml");
+    if !src.is_file() {
+        return Err(Error::InvalidSpec(format!(
+            "scaffold requires a root Cargo.toml at {} (a [workspace] manifest listing every \
+             member the starter needs) -- there is nothing to copy the starter's own workspace \
+             manifest from",
+            src.display()
+        )));
+    }
+    copy_file(&src, &out_dir.join("Cargo.toml"))
 }
 
 /// The thin GitHub Actions wrapper (design §11.2): downloads a
@@ -578,6 +584,10 @@ visibility = "private"
     /// manifest.
     fn write_instructor_package(package_dir: &Path) {
         write(&package_dir.join(spec::PRIVATE_SPEC_FILE), PRIVATE_SPEC);
+        write(
+            &package_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
+        );
         write(&package_dir.join("harness/Cargo.toml"), HARNESS_MANIFEST);
         write(&package_dir.join("harness/src/main.rs"), "fn main() {}\n");
         write(&package_dir.join("harness/tests/judge.rs"), JUDGE_RS);
@@ -722,6 +732,20 @@ visibility = "private"
         assert!(matches!(err, Error::InvalidSpec(_)));
     }
 
+    /// The root `[workspace]` manifest is copied from the private package,
+    /// not regenerated -- refuses to guess one if it's missing, same as
+    /// `autograder.toml` or the solution directory.
+    #[test]
+    fn scaffold_rejects_a_package_dir_without_a_root_workspace_manifest() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_instructor_package(package_dir.path());
+        std::fs::remove_file(package_dir.path().join("Cargo.toml")).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+
+        let err = scaffold(package_dir.path(), out_dir.path()).unwrap_err();
+        assert!(matches!(err, Error::InvalidSpec(_)));
+    }
+
     /// End-to-end: given the real solution crate `write_instructor_package`
     /// puts at `package_dir/<id>`, the emitted starter's `<id>/` crate
     /// builds on its own (implying `cargo fix` left it in a compiling
@@ -854,6 +878,10 @@ visibility = "private"
         write(
             &package_dir.join(spec::PRIVATE_SPEC_FILE),
             BINARY_PRIVATE_SPEC,
+        );
+        write(
+            &package_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"wc\"]\n",
         );
         write(
             &package_dir.join("wc/Cargo.toml"),
