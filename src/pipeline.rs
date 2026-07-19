@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::evaluator::Evaluator;
 use crate::fetch::read_fetch_record;
 use crate::model::{
@@ -175,7 +175,7 @@ pub fn grade_batch<F>(
                 // closure succeeded or hit a hard error, before letting
                 // that error propagate.
                 let outcome: Result<EvaluationResult> = (|| {
-                    crate::prepare::copy_dir_into(&workspace, &submitted_crate)?;
+                    crate::fs::copy_dir_all(&submitted_crate, &workspace)?;
                     // Both kinds need the *private* judge overlaid onto
                     // this submission -- `package_dir`'s own `<id>/` is
                     // the reference solution, not this submission, and
@@ -187,7 +187,7 @@ pub fn grade_batch<F>(
                     // `binary` has no separate crate at all, so its judge
                     // tests get merged directly into `workspace`'s own
                     // `tests/`. That `tests/` dir is wiped first, not just
-                    // overlaid onto: `copy_dir_into` only overwrites paths
+                    // overlaid onto: `copy_dir_all` only overwrites paths
                     // that exist in its source, so simply copying on top
                     // would leave any *other* file the submission already
                     // had there (e.g. the public judge `publish` baked
@@ -204,22 +204,17 @@ pub fn grade_batch<F>(
                         AssignmentKind::Library => {
                             let harness_dir = package_dir.join("harness");
                             if harness_dir.is_dir() {
-                                crate::prepare::copy_dir_into(&driver_dir, &harness_dir)?;
+                                crate::fs::copy_dir_all(&harness_dir, &driver_dir)?;
                             }
                         }
                         AssignmentKind::Binary => {
                             let tests_dir = package_dir.join(&spec.assignment.id).join("tests");
                             let workspace_tests_dir = workspace.join("tests");
                             if workspace_tests_dir.is_dir() {
-                                std::fs::remove_dir_all(&workspace_tests_dir).map_err(
-                                    |source| Error::Io {
-                                        path: workspace_tests_dir.clone(),
-                                        source,
-                                    },
-                                )?;
+                                crate::fs::remove_dir_all(&workspace_tests_dir)?;
                             }
                             if tests_dir.is_dir() {
-                                crate::prepare::copy_dir_into(&workspace_tests_dir, &tests_dir)?;
+                                crate::fs::copy_dir_all(&tests_dir, &workspace_tests_dir)?;
                             }
                         }
                     }

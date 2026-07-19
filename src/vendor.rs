@@ -78,28 +78,14 @@ pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
         // no dependency to vendor in this project"); an empty allowlist is
         // a legitimate spec, so produce an empty vendor dir instead of
         // treating this as an error.
-        std::fs::create_dir_all(&vendor_dir).map_err(|source| Error::Io {
-            path: vendor_dir.clone(),
-            source,
-        })?;
+        crate::fs::create_dir_all(&vendor_dir)?;
     } else {
         let manifest_dir = package_dir.join(".vendor-manifest");
         let src_dir = manifest_dir.join("src");
-        std::fs::create_dir_all(&src_dir).map_err(|source| Error::Io {
-            path: src_dir.clone(),
-            source,
-        })?;
+        crate::fs::create_dir_all(&src_dir)?;
         let manifest_path = manifest_dir.join("Cargo.toml");
-        std::fs::write(&manifest_path, synthetic_manifest_toml(spec)).map_err(|source| {
-            Error::Io {
-                path: manifest_path.clone(),
-                source,
-            }
-        })?;
-        std::fs::write(src_dir.join("lib.rs"), "").map_err(|source| Error::Io {
-            path: src_dir.join("lib.rs"),
-            source,
-        })?;
+        crate::fs::write(&manifest_path, synthetic_manifest_toml(spec))?;
+        crate::fs::write(&src_dir.join("lib.rs"), "")?;
 
         let output = Command::new("cargo")
             .arg("vendor")
@@ -118,19 +104,12 @@ pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     }
 
     let cargo_dir = package_dir.join(".cargo");
-    std::fs::create_dir_all(&cargo_dir).map_err(|source| Error::Io {
-        path: cargo_dir.clone(),
-        source,
-    })?;
+    crate::fs::create_dir_all(&cargo_dir)?;
     let cargo_config_path = cargo_dir.join("config.toml");
-    std::fs::write(
+    crate::fs::write(
         &cargo_config_path,
         vendor_config_toml(&absolute_vendor_dir(package_dir)),
-    )
-    .map_err(|source| Error::Io {
-        path: cargo_config_path.clone(),
-        source,
-    })?;
+    )?;
 
     Ok(VendorOutcome {
         vendor_dir,

@@ -1,4 +1,4 @@
 [package]
-name = "library-stack-example"
+name = "library-stack"
 version = "0.1.0"
 edition = "2024"

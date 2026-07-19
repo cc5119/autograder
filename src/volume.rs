@@ -19,41 +19,8 @@
 
 use std::path::Path;
 
-use crate::error::{Error, Result};
-
-/// Recursively sums the byte size of every regular file under `dir`.
-/// `dir` not existing is `0`, not an error -- a job that never got far
-/// enough to write anything hasn't exceeded any quota.
-pub fn directory_size_bytes(dir: &Path) -> Result<u64> {
-    if !dir.exists() {
-        return Ok(0);
-    }
-    let mut total = 0u64;
-    let entries = std::fs::read_dir(dir).map_err(|source| Error::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: entry.path(),
-            source,
-        })?;
-        if file_type.is_dir() {
-            total += directory_size_bytes(&entry.path())?;
-        } else if file_type.is_file() {
-            let metadata = entry.metadata().map_err(|source| Error::Io {
-                path: entry.path(),
-                source,
-            })?;
-            total += metadata.len();
-        }
-    }
-    Ok(total)
-}
+use crate::error::Result;
+use crate::fs::directory_size_bytes;
 
 /// Whether `dir`'s total on-disk size exceeds `quota_bytes`.
 pub fn exceeds_quota(dir: &Path, quota_bytes: u64) -> Result<bool> {
@@ -63,24 +30,6 @@ pub fn exceeds_quota(dir: &Path, quota_bytes: u64) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn missing_directory_has_zero_size() {
-        assert_eq!(
-            directory_size_bytes(Path::new("/nonexistent/for/sure")).unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn sums_file_sizes_recursively() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.bin"), vec![0u8; 100]).unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        std::fs::write(dir.path().join("sub/b.bin"), vec![0u8; 50]).unwrap();
-
-        assert_eq!(directory_size_bytes(dir.path()).unwrap(), 150);
-    }
 
     #[test]
     fn exceeds_quota_compares_against_the_cap() {

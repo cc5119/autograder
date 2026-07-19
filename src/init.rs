@@ -30,6 +30,7 @@ use chrono::{Duration, Local, SubsecRound};
 use include_dir::{Dir, File, include_dir};
 
 use crate::error::{Error, Result};
+use crate::fs;
 use crate::spec::AssignmentKind;
 
 static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
@@ -50,7 +51,7 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
              starting with a letter (it doubles as a Cargo package name)"
         )));
     }
-    if dir.is_dir() && !is_empty_dir(dir)? {
+    if dir.is_dir() && !fs::is_empty_dir(dir)? {
         return Err(Error::InvalidSpec(format!(
             "init requires an empty or nonexistent directory, but {} already has contents",
             dir.display()
@@ -85,13 +86,9 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
 
         let dst = dir.join(&rel_path);
         if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| Error::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
+            fs::create_dir_all(parent)?;
         }
-        std::fs::write(&dst, substitute(contents, &placeholders))
-            .map_err(|source| Error::Io { path: dst, source })?;
+        fs::write(&dst, substitute(contents, &placeholders))?;
     }
 
     Ok(InitOutcome {
@@ -144,14 +141,6 @@ fn is_valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-fn is_empty_dir(dir: &Path) -> Result<bool> {
-    let mut entries = std::fs::read_dir(dir).map_err(|source| Error::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    Ok(entries.next().is_none())
 }
 
 #[cfg(test)]

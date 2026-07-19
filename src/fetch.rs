@@ -34,6 +34,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::fs;
 use crate::model::{GitRepo, LocalPath, StageStatus, Submission};
 use crate::source::SubmissionsSource;
 use crate::store::{read_json, write_json};
@@ -94,14 +95,14 @@ impl Fetchable for LocalPath {
                 src.display()
             )));
         }
-        if is_empty_dir(src)? {
+        if fs::is_empty_dir(src)? {
             return Ok(FetchOutcome::failed(format!(
                 "source directory {} is empty",
                 src.display()
             )));
         }
 
-        copy_dir_all(src, dest)?;
+        fs::copy_dir_all(src, dest)?;
         let graded_commit = hash_tree(dest)?;
         Ok(FetchOutcome::ok(dest.to_path_buf(), graded_commit))
     }
@@ -121,16 +122,10 @@ impl Fetchable for GitRepo {
     /// batch.
     fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
         if dest.exists() {
-            std::fs::remove_dir_all(dest).map_err(|source| Error::Io {
-                path: dest.to_path_buf(),
-                source,
-            })?;
+            fs::remove_dir_all(dest)?;
         }
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| Error::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
+            fs::create_dir_all(parent)?;
         }
 
         if let Err(e) = run_git(GIT_BIN, &clone_argv(&self.url, dest)) {
@@ -208,15 +203,7 @@ impl DirectorySource {
 impl SubmissionsSource<LocalPath> for DirectorySource {
     fn submissions(&self) -> Result<Vec<Submission<LocalPath>>> {
         let mut submissions = Vec::new();
-        let entries = std::fs::read_dir(&self.root).map_err(|source| Error::Io {
-            path: self.root.clone(),
-            source,
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|source| Error::Io {
-                path: self.root.clone(),
-                source,
-            })?;
+        for entry in fs::read_dir_entries(&self.root)? {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -298,85 +285,22 @@ pub fn fetch_batch<F: Fetchable>(
     Ok(records)
 }
 
-fn is_empty_dir(dir: &Path) -> Result<bool> {
-    let mut entries = std::fs::read_dir(dir).map_err(|source| Error::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    Ok(entries.next().is_none())
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst).map_err(|source| Error::Io {
-        path: dst.to_path_buf(),
-        source,
-    })?;
-    let entries = std::fs::read_dir(src).map_err(|source| Error::Io {
-        path: src.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::Io {
-            path: src.to_path_buf(),
-            source,
-        })?;
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: entry.path(),
-            source,
-        })?;
-        let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_all(&entry.path(), &dst_path)?;
-        } else if file_type.is_file() {
-            std::fs::copy(entry.path(), &dst_path).map_err(|source| Error::Io {
-                path: entry.path(),
-                source,
-            })?;
-        }
-    }
-    Ok(())
-}
-
 /// A synthetic content hash of a directory tree, standing in for a real
 /// commit SHA for `LocalPath` submissions (which have no commit at all).
 fn hash_tree(dir: &Path) -> Result<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut paths = Vec::new();
-    collect_files(dir, dir, &mut paths)?;
+    let mut paths = fs::walk_files(dir)?;
     paths.sort();
 
     let mut hasher = DefaultHasher::new();
     for rel_path in &paths {
         rel_path.hash(&mut hasher);
-        let contents = std::fs::read(dir.join(rel_path)).map_err(|source| Error::Io {
-            path: dir.join(rel_path),
-            source,
-        })?;
+        let contents = fs::read(&dir.join(rel_path))?;
         contents.hash(&mut hasher);
     }
     Ok(format!("{:016x}", hasher.finish()))
-}
-
-fn collect_files(root: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries = std::fs::read_dir(current).map_err(|source| Error::Io {
-        path: current.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::Io {
-            path: current.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, &path, out)?;
-        } else if path.is_file() {
-            out.push(path.strip_prefix(root).unwrap().to_path_buf());
-        }
-    }
-    Ok(())
 }
 
 /// `git clone <repo_url> <dest>` argv (excluding the `git` binary itself).

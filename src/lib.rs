@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod evaluator;
 pub mod fetch;
+pub mod fs;
 pub mod grade;
 pub mod init;
 pub mod manifest_check;
@@ -230,10 +231,7 @@ fn build_evaluator_for(
 /// fails, mirroring `autograder ci`'s exit code contract (design §11.1).
 /// Never touches `grade::grade`/`Scoring` — evaluation only.
 fn run_ci(local_sandbox: bool) -> Result<()> {
-    let harness_dir = std::env::current_dir().map_err(|source| Error::Io {
-        path: std::path::PathBuf::from("."),
-        source,
-    })?;
+    let harness_dir = fs::current_dir()?;
     let spec = Spec::load(&harness_dir)?;
     let workspace = harness_dir.join(&spec.assignment.id);
     let run_id = pipeline::generate_run_id();
@@ -328,10 +326,7 @@ fn run_report(
 
 fn write_reports(assignment_id: &str, grades: &[model::Grade], config: &Config) -> Result<()> {
     let reports_dir = config.storage_dir.join("reports");
-    std::fs::create_dir_all(&reports_dir).map_err(|source| Error::Io {
-        path: reports_dir.clone(),
-        source,
-    })?;
+    fs::create_dir_all(&reports_dir)?;
 
     JsonReporter {
         out: Some(reports_dir.join(format!("{assignment_id}.json"))),

@@ -9,7 +9,7 @@
 # match.
 
 [assignment]
-id = "library-stack-example"
+id = "library-stack"
 name = "Stack (library example)"
 kind = "library"
 deadline = "2099-01-01T00:00:00-00:00"

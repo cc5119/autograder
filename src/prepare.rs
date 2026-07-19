@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::manifest_check::{self, ManifestDiagnostic};
 use crate::spec::Spec;
 use crate::vendor;
@@ -82,19 +82,12 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
     }
 
     let cargo_dir = workspace.join(".cargo");
-    std::fs::create_dir_all(&cargo_dir).map_err(|source| Error::Io {
-        path: cargo_dir.clone(),
-        source,
-    })?;
+    crate::fs::create_dir_all(&cargo_dir)?;
     let config_path = cargo_dir.join("config.toml");
-    std::fs::write(
+    crate::fs::write(
         &config_path,
         vendor::vendor_config_toml(&vendor::absolute_vendor_dir(package_dir)),
-    )
-    .map_err(|source| Error::Io {
-        path: config_path.clone(),
-        source,
-    })?;
+    )?;
 
     let mut env = std::collections::BTreeMap::new();
     env.insert("CARGO_NET_OFFLINE".to_string(), "true".to_string());
@@ -119,56 +112,8 @@ fn diagnose_manifest(
     if !manifest_path.is_file() {
         return Ok(Vec::new());
     }
-    let contents = std::fs::read_to_string(&manifest_path).map_err(|source| Error::Io {
-        path: manifest_path.clone(),
-        source,
-    })?;
+    let contents = crate::fs::read_to_string(&manifest_path)?;
     manifest_check::check_manifest(&contents, &spec.allowed_crates, vendor_dir)
-}
-
-/// Recursively copies `src`'s tree onto `dest`, path-for-path, overwriting
-/// any file already at a given path but never removing one that isn't
-/// present in `src`. `dest` is assumed to contain nothing at all for most
-/// callers -- a freshly-created `driver_dir` that's never reused across
-/// jobs; `pipeline`'s freshly-created scratch `build/<id>/`, extracted
-/// fresh from `checkout/` on every run -- so the overwrite behavior never
-/// actually matters there. The one caller that *relies* on the overwrite
-/// (rather than just tolerating it) is `pipeline::grade_batch`'s `binary`
-/// judge overlay onto `workspace/tests/`, which the caller wipes with
-/// `remove_dir_all` immediately beforehand precisely so this function's
-/// "leaves unrelated files alone" behavior can't leave a stray
-/// student-supplied file sitting there uncleared (see that call site's
-/// comment for why that matters for grading integrity, not just
-/// tidiness).
-pub(crate) fn copy_dir_into(dest: &Path, src: &Path) -> Result<()> {
-    std::fs::create_dir_all(dest).map_err(|source| Error::Io {
-        path: dest.to_path_buf(),
-        source,
-    })?;
-    let entries = std::fs::read_dir(src).map_err(|source| Error::Io {
-        path: src.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::Io {
-            path: src.to_path_buf(),
-            source,
-        })?;
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: entry.path(),
-            source,
-        })?;
-        let dest_path = dest.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_into(&dest_path, &entry.path())?;
-        } else if file_type.is_file() {
-            std::fs::copy(entry.path(), &dest_path).map_err(|source| Error::Io {
-                path: dest_path.clone(),
-                source,
-            })?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -305,28 +250,5 @@ model = "weighted"
         );
         assert!(!workspace.path().join("harness").exists());
         assert!(!workspace.path().join("tests").exists());
-    }
-
-    #[test]
-    fn copy_dir_into_recursively_copies_the_whole_tree() {
-        let dest = tempfile::tempdir().unwrap();
-        let src = tempfile::tempdir().unwrap();
-
-        write(
-            &src.path().join("Cargo.toml"),
-            "[package]\nname = \"driver\"\n",
-        );
-        write(&src.path().join("tests/judge.rs"), "// judge");
-
-        copy_dir_into(dest.path(), src.path()).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(dest.path().join("Cargo.toml")).unwrap(),
-            "[package]\nname = \"driver\"\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dest.path().join("tests/judge.rs")).unwrap(),
-            "// judge"
-        );
     }
 }

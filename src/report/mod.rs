@@ -4,7 +4,7 @@ pub mod json;
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::Grade;
 
 /// Emits reports from grades. v1 impls: `JsonReporter`, `CsvReporter`.
@@ -27,8 +27,5 @@ fn write_output(out: &Option<PathBuf>, contents: &str) -> Result<()> {
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<()> {
-    std::fs::write(path, contents).map_err(|source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    crate::fs::write(path, contents)
 }

@@ -32,6 +32,7 @@ use ignore::overrides::OverrideBuilder;
 use syn::Item;
 
 use crate::error::{Error, Result};
+use crate::fs;
 use crate::spec::{self, AssignmentKind, Spec};
 
 /// `templates/autograde.yml.tmpl`'s release coordinates (repo, version,
@@ -104,10 +105,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     // Derived purely from the private TOML text -- doesn't need anything
     // copied yet, so it can run before the walk instead of being
     // interleaved with it.
-    let private_toml = std::fs::read_to_string(&private_spec_path).map_err(|source| Error::Io {
-        path: private_spec_path.clone(),
-        source,
-    })?;
+    let private_toml = fs::read_to_string(&private_spec_path)?;
     let (public_spec_toml, public_test_names) = derive_public_spec_toml(&private_toml)?;
 
     let ctx = PublishCtx {
@@ -122,22 +120,13 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     run_cargo_fix(&student_dir)?;
 
     let public_spec_path = out_dir.join(spec::PUBLIC_SPEC_FILE);
-    std::fs::write(&public_spec_path, public_spec_toml).map_err(|source| Error::Io {
-        path: public_spec_path,
-        source,
-    })?;
+    fs::write(&public_spec_path, public_spec_toml)?;
 
     let workflow_dir = out_dir.join(".github/workflows");
-    std::fs::create_dir_all(&workflow_dir).map_err(|source| Error::Io {
-        path: workflow_dir.clone(),
-        source,
-    })?;
+    fs::create_dir_all(&workflow_dir)?;
     let workflow_path = workflow_dir.join("autograde.yml");
     let workflow_yaml = autograde_workflow_yaml(&spec.sandbox.image);
-    std::fs::write(&workflow_path, workflow_yaml).map_err(|source| Error::Io {
-        path: workflow_path.clone(),
-        source,
-    })?;
+    fs::write(&workflow_path, workflow_yaml)?;
 
     Ok(PublishOutcome {
         out_dir: out_dir.to_path_buf(),
@@ -145,8 +134,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
 }
 
 fn copy_matching(ctx: &PublishCtx, out_dir: &Path, rules: &[Rule]) -> Result<()> {
-    let mut all_files = Vec::new();
-    walk_files(&ctx.package_dir, &ctx.package_dir, &mut all_files)?;
+    let all_files = fs::walk_files(&ctx.package_dir)?;
 
     for rule in rules {
         let output_files = match rule {
@@ -199,54 +187,16 @@ fn copy_matching(ctx: &PublishCtx, out_dir: &Path, rules: &[Rule]) -> Result<()>
 
 fn read_file(package_dir: &Path, rel_path: PathBuf) -> Result<MatchedFile> {
     let full_path = package_dir.join(&rel_path);
-    let content = std::fs::read_to_string(&full_path).map_err(|source| Error::Io {
-        path: full_path,
-        source,
-    })?;
+    let content = fs::read_to_string(&full_path)?;
     Ok(MatchedFile { rel_path, content })
 }
 
 fn write_file(out_dir: &Path, file: MatchedFile) -> Result<()> {
     let dst = out_dir.join(&file.rel_path);
     if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| Error::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent)?;
     }
-    std::fs::write(&dst, file.content).map_err(|source| Error::Io { path: dst, source })
-}
-
-/// Collects every regular file under `dir`, recursively, as paths relative
-/// to `root`.
-fn walk_files(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir).map_err(|source| Error::Io {
-        path: dir.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: path.clone(),
-            source,
-        })?;
-        if file_type.is_dir() {
-            walk_files(&path, root, out)?;
-        } else if file_type.is_file() {
-            out.push(
-                path.strip_prefix(root)
-                    .expect("path is under root")
-                    .to_path_buf(),
-            );
-        }
-    }
-    Ok(())
+    fs::write(&dst, file.content)
 }
 
 fn validate_manifest(path: &str, file: MatchedFile, ctx: &PublishCtx) -> Result<MatchedFile> {
@@ -354,10 +304,7 @@ fn run_cargo_fix(student_dir: &Path) -> Result<()> {
 
     let target_dir = student_dir.join("target");
     if target_dir.is_dir() {
-        std::fs::remove_dir_all(&target_dir).map_err(|source| Error::Io {
-            path: target_dir,
-            source,
-        })?;
+        fs::remove_dir_all(&target_dir)?;
     }
 
     Ok(())
