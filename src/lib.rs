@@ -344,6 +344,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -451,6 +452,10 @@ base = 0.0
             PUBLIC_SPEC,
         );
         write(
+            &assignment_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
+        );
+        write(
             &assignment_dir.path().join("harness/Cargo.toml"),
             "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
@@ -511,6 +516,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"

@@ -12,11 +12,24 @@
 //! of `ctx.workspace` (never built in place): freshness matters because
 //! Cargo rewrites `Cargo.lock` whenever the path-dependency's contents
 //! change, so sharing one `harness/` across jobs would race different
-//! students' builds against the same lockfile/target dir. Since
-//! `driver_dir` and `workspace` don't share an ancestor, Cargo's
-//! directory-based config discovery can't find `workspace`'s offline
-//! vendoring config from `driver_dir` -- this evaluator passes the
-//! equivalent `[source]` override as `--config` flags directly instead.
+//! students' builds against the same lockfile/target dir.
+//!
+//! `driver_dir` and `workspace` share a common parent (`repo_root`, the
+//! caller's job-build directory for `grade`, or the published repo root for
+//! `ci`) that also carries the same root `[workspace]` manifest `publish`
+//! ships to students, listing both as members -- build and run both happen
+//! with `workdir = repo_root` and `--manifest-path <driver_dir>/Cargo.toml`,
+//! so Cargo resolves one shared `Cargo.lock`/`target/` exactly as a
+//! student's own `cargo test` would, while `--manifest-path` still scopes
+//! the *default package* to just `harness`, never sweeping in the
+//! student's own crate's tests (`grade` trusts every test an `eval` reports
+//! with no name allowlist, so accidentally running the student's own tests
+//! would let them inflate their own score). `[assignment].judge-target`
+//! (required) narrows further to one specific `harness/tests/*.rs` target
+//! via `--test`. Since `repo_root` isn't a descendant of `workspace`, Cargo's
+//! directory-based config discovery still can't find `workspace`'s offline
+//! vendoring config from `driver_dir`/`repo_root` -- this evaluator passes
+//! the equivalent `[source]` override as `--config` flags directly instead.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,6 +54,7 @@ pub struct Library<S> {
     package_dir: PathBuf,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
+    judge_target: String,
 }
 
 impl<S: Sandbox> Library<S> {
@@ -59,6 +73,7 @@ impl<S: Sandbox> Library<S> {
             package_dir,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
+            judge_target: spec.assignment.judge_target.clone(),
         })
     }
 
@@ -74,17 +89,24 @@ impl<S: Sandbox> Library<S> {
         env
     }
 
-    fn mounts(&self, workspace: &Path, driver_dir: &Path) -> Vec<Mount> {
+    /// `repo_root` (containing both `workspace` and `driver_dir`) is
+    /// mounted read-write, since a workspace build's `Cargo.lock`/`target/`
+    /// land at its root, not under `driver_dir`. `workspace` is then
+    /// mounted again, more specifically and read-only, which shadows just
+    /// that subtree of the broader mount -- the student's own submitted
+    /// source must never be writable inside the sandbox, even though the
+    /// judge crate and build artifacts around it are.
+    fn mounts(&self, repo_root: &Path, workspace: &Path) -> Vec<Mount> {
         let mut mounts = vec![
+            Mount {
+                host_path: repo_root.to_path_buf(),
+                container_path: repo_root.to_path_buf(),
+                mode: MountMode::ReadWrite,
+            },
             Mount {
                 host_path: workspace.to_path_buf(),
                 container_path: workspace.to_path_buf(),
                 mode: MountMode::ReadOnly,
-            },
-            Mount {
-                host_path: driver_dir.to_path_buf(),
-                container_path: driver_dir.to_path_buf(),
-                mode: MountMode::ReadWrite,
             },
         ];
         let vendor_dir = self.vendor_dir();
@@ -120,15 +142,25 @@ impl<S: Sandbox> Library<S> {
 impl<S: Sandbox> Evaluator for Library<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let driver_dir = &ctx.driver_dir;
+        let repo_root = driver_dir
+            .parent()
+            .expect("driver_dir is always a sibling of workspace under a shared repo_root (see this module's doc comment)")
+            .to_path_buf();
+        let manifest_path = driver_dir.join("Cargo.toml");
         let config_args = self.config_args();
 
         let env = self.offline_env();
-        let mounts = self.mounts(&ctx.workspace, driver_dir);
+        let mounts = self.mounts(&repo_root, &ctx.workspace);
 
         let mut build_spec = SandboxSpec::new("cargo", self.build_limits.clone());
-        build_spec.args = vec!["build".into(), "--offline".into()];
+        build_spec.args = vec![
+            "build".into(),
+            "--offline".into(),
+            "--manifest-path".into(),
+            manifest_path.display().to_string(),
+        ];
         build_spec.args.extend(config_args.iter().cloned());
-        build_spec.workdir = Some(driver_dir.clone());
+        build_spec.workdir = Some(repo_root.clone());
         build_spec.env = env.clone();
         build_spec.mounts = mounts.clone();
 
@@ -145,12 +177,20 @@ impl<S: Sandbox> Evaluator for Library<S> {
             ));
         }
 
-        write_nextest_config(driver_dir)?;
+        write_nextest_config(&repo_root)?;
 
         let mut run_spec = SandboxSpec::new("cargo", self.run_limits.clone());
-        run_spec.args = vec!["nextest".into(), "run".into(), "--offline".into()];
+        run_spec.args = vec![
+            "nextest".into(),
+            "run".into(),
+            "--offline".into(),
+            "--manifest-path".into(),
+            manifest_path.display().to_string(),
+            "--test".into(),
+            self.judge_target.clone(),
+        ];
         run_spec.args.extend(config_args);
-        run_spec.workdir = Some(driver_dir.clone());
+        run_spec.workdir = Some(repo_root.clone());
         run_spec.env = env;
         run_spec.mounts = mounts;
 
@@ -172,7 +212,7 @@ impl<S: Sandbox> Evaluator for Library<S> {
             ));
         }
 
-        let junit_path = driver_dir.join("target/nextest/default/junit.xml");
+        let junit_path = repo_root.join("target/nextest/default/junit.xml");
         let Ok(xml) = std::fs::read_to_string(&junit_path) else {
             // No report means the judge crashed before any session
             // completed -- never treat that as a pass.
@@ -417,18 +457,31 @@ autograder: case=b score=0.25
     /// Returns canned outcomes for the build then run invocation, in order.
     struct ScriptedSandbox {
         outcomes: Mutex<Vec<SandboxOutcome>>,
+        specs: std::sync::Arc<Mutex<Vec<SandboxSpec>>>,
     }
 
     impl ScriptedSandbox {
         fn new(outcomes: Vec<SandboxOutcome>) -> Self {
             Self {
                 outcomes: Mutex::new(outcomes),
+                specs: std::sync::Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        /// Like `new`, but also returns a handle to every `SandboxSpec`
+        /// this sandbox is run with -- for tests that need to inspect the
+        /// argv `Library` builds, even though `Library::new` consumes the
+        /// sandbox by value.
+        fn spy(outcomes: Vec<SandboxOutcome>) -> (Self, std::sync::Arc<Mutex<Vec<SandboxSpec>>>) {
+            let sandbox = Self::new(outcomes);
+            let specs = sandbox.specs.clone();
+            (sandbox, specs)
         }
     }
 
     impl Sandbox for ScriptedSandbox {
-        fn run(&self, _spec: &SandboxSpec) -> Result<SandboxOutcome> {
+        fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
+            self.specs.lock().unwrap().push(spec.clone());
             Ok(self.outcomes.lock().unwrap().remove(0))
         }
     }
@@ -462,7 +515,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-
+judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -488,6 +541,23 @@ formula = "sum"
 base = 0.0
 "#;
         toml::from_str(toml).unwrap()
+    }
+
+    fn spec_with_judge_target(target: &str) -> Spec {
+        let mut spec = spec();
+        spec.assignment.judge_target = target.to_string();
+        spec
+    }
+
+    /// `workspace` and `driver_dir` as real siblings under one `repo_root`,
+    /// matching the invariant `Library::evaluate` relies on in production
+    /// (see this module's doc comment).
+    fn job_dirs(repo_root: &std::path::Path) -> (PathBuf, PathBuf) {
+        let workspace = repo_root.join("hw3");
+        let driver_dir = repo_root.join("harness");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&driver_dir).unwrap();
+        (workspace, driver_dir)
     }
 
     fn ctx(workspace: PathBuf, driver_dir: PathBuf) -> JobContext {
@@ -550,18 +620,13 @@ base = 0.0
     fn build_failure_short_circuits_before_running_nextest() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
-        let workspace = tempfile::tempdir().unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, driver_dir) = job_dirs(repo_root.path());
 
         let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
         let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator
-            .evaluate(&ctx(
-                workspace.path().to_path_buf(),
-                driver_dir.path().to_path_buf(),
-            ))
-            .unwrap();
+        let eval = evaluator.evaluate(&ctx(workspace, driver_dir)).unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
         assert!(eval.diagnostics.compiler_errors.unwrap().contains("E0433"));
@@ -572,18 +637,13 @@ base = 0.0
     fn missing_junit_report_after_a_successful_run_is_a_harness_error() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
-        let workspace = tempfile::tempdir().unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, driver_dir) = job_dirs(repo_root.path());
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
         let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator
-            .evaluate(&ctx(
-                workspace.path().to_path_buf(),
-                driver_dir.path().to_path_buf(),
-            ))
-            .unwrap();
+        let eval = evaluator.evaluate(&ctx(workspace, driver_dir)).unwrap();
 
         assert_eq!(eval.stages.run.status, StageStatus::HarnessError);
     }
@@ -592,24 +652,75 @@ base = 0.0
     fn a_junit_report_on_disk_is_parsed_into_the_eval_result() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
-        let workspace = tempfile::tempdir().unwrap();
-        let driver_dir = tempfile::tempdir().unwrap();
-        let junit_path = driver_dir.path().join("target/nextest/default/junit.xml");
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, driver_dir) = job_dirs(repo_root.path());
+        // Workspace builds land `target/` at the workspace root, not under
+        // `driver_dir` -- see this module's doc comment.
+        let junit_path = repo_root.path().join("target/nextest/default/junit.xml");
         std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
         let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator
-            .evaluate(&ctx(
-                workspace.path().to_path_buf(),
-                driver_dir.path().to_path_buf(),
-            ))
-            .unwrap();
+        let eval = evaluator.evaluate(&ctx(workspace, driver_dir)).unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::Ok);
         assert_eq!(eval.stages.run.status, StageStatus::Ok);
         assert_eq!(eval.tests.len(), 3);
+    }
+
+    #[test]
+    fn build_and_run_execute_at_the_shared_repo_root_scoped_to_the_harness_manifest() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, driver_dir) = job_dirs(repo_root.path());
+        let manifest_path = driver_dir.join("Cargo.toml");
+
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
+        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(workspace, driver_dir)).unwrap();
+
+        let specs = specs.lock().unwrap();
+        let build_spec = &specs[0];
+        assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
+        assert!(build_spec.args.contains(&"--manifest-path".to_string()));
+        assert!(
+            build_spec
+                .args
+                .contains(&manifest_path.display().to_string())
+        );
+        // Never runs nextest at all here (build failed), but never a
+        // `--test` filter on the build step either way -- that's a
+        // `nextest run`-only flag.
+        assert!(!build_spec.args.contains(&"--test".to_string()));
+    }
+
+    #[test]
+    fn judge_target_is_passed_as_a_nextest_test_filter_but_never_to_the_build_step() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, driver_dir) = job_dirs(repo_root.path());
+        let junit_path = repo_root.path().join("target/nextest/default/junit.xml");
+        std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
+        std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
+
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome()]);
+        let evaluator = Library::new(
+            &spec_with_judge_target("judge"),
+            package_dir.path(),
+            sandbox,
+        )
+        .unwrap();
+        evaluator.evaluate(&ctx(workspace, driver_dir)).unwrap();
+
+        let specs = specs.lock().unwrap();
+        let build_spec = &specs[0];
+        let run_spec = &specs[1];
+        assert!(!build_spec.args.contains(&"--test".to_string()));
+        assert!(run_spec.args.contains(&"--test".to_string()));
+        assert!(run_spec.args.contains(&"judge".to_string()));
     }
 }

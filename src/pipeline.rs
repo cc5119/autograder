@@ -31,7 +31,15 @@ fn checkout_rules() -> Vec<Rule> {
 /// checkout had at the same paths.
 fn package_rules(kind: AssignmentKind) -> Vec<Rule> {
     match kind {
-        AssignmentKind::Library => vec![Rule::Glob("harness/**", None)],
+        // The root `[workspace]` manifest too, so `harness` and `{id}`
+        // build as real workspace members sharing one `Cargo.lock`/
+        // `target/` -- the same shape `publish` ships to students, so
+        // grading resolves dependencies exactly as their own `cargo test`
+        // would (see `evaluator::library`'s module doc comment).
+        AssignmentKind::Library => vec![
+            Rule::File("Cargo.toml", None),
+            Rule::Glob("harness/**", None),
+        ],
         AssignmentKind::Binary => vec![
             // `{id}/tests/**` is wiped first, not just overlaid onto: a
             // same-named decoy test left over from the submission's own
@@ -265,6 +273,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+judge-target = "judge"
 
 
 [sandbox]
@@ -308,6 +317,10 @@ base = 0.0
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
+        write(
+            &package_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"hw3\"]\n",
+        );
         write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
@@ -493,6 +506,10 @@ base = 0.0
         let store_dir = tempfile::tempdir().unwrap();
 
         write(
+            &package_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"hw3\"]\n",
+        );
+        write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
         );
@@ -583,6 +600,10 @@ base = 0.0
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
+        write(
+            &package_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"hw3\"]\n",
+        );
         write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
