@@ -119,9 +119,8 @@ pub enum ReportFormat {
     Csv,
 }
 
-/// Mirrors `spec::AssignmentKind` -- kept separate (rather than deriving
-/// `clap::ValueEnum` on the spec type itself) so `spec` stays free of any
-/// CLI-parsing dependency; `From` below maps this to the real type.
+/// Mirrors `spec::AssignmentKind`, kept separate so `spec` stays free of a
+/// CLI-parsing dependency.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum AssignmentKindArg {
     Library,

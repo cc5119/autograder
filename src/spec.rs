@@ -19,10 +19,8 @@ pub enum AssignmentKind {
     Binary,
 }
 
-/// `id` doubles as the student-facing crate name: for `library` it's
-/// the dependency name the harness links against, for `binary` it's
-/// the expected binary target name. One identifier, no separate
-/// `[student]` config section to keep in sync with it.
+/// `id` doubles as the student-facing crate name: the dependency name for
+/// `library`, the expected binary target name for `binary`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
     pub id: String,
@@ -31,23 +29,10 @@ pub struct Assignment {
     pub deadline: DateTime<FixedOffset>,
 }
 
-/// Describes the environment jobs run in — currently just the container
-/// image, but the natural home for future execution-environment knobs
-/// (a runtime choice, design §18.8) rather than overloading `[assignment]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Sandbox {
     /// The container image `ContainerSandbox` requires to already exist
-    /// locally (`podman image exists <ref>` — see `ContainerSandbox::
-    /// preflight`'s doc comment). Any string `podman run`/`podman image
-    /// exists` accepts: a bare local tag (`autograder-base:1.86.0`) or a
-    /// fully-qualified registry reference (`ghcr.io/org/autograder-base:
-    /// 1.86.0`) that an operator has already `podman pull`ed onto this
-    /// host — `autograder` never pulls images itself (the sandbox runs
-    /// fully offline; fetching a base image is a deliberate, out-of-band
-    /// host action, the same category of prerequisite as the seccomp
-    /// profile). Building/hosting that image (pinning a Rust toolchain,
-    /// installing `cargo-nextest`) is entirely the operator's concern —
-    /// this crate has no opinion on how it was produced.
+    /// locally -- `autograder` never pulls images itself.
     pub image: String,
 }
 
@@ -169,13 +154,9 @@ pub struct ScoredTest {
     pub points: Option<f64>,
 }
 
-/// A late-submission penalty (design §14, §18.2, M5 step 24): a grace
-/// period, then a percentage of the score deducted per day late, capped at
-/// `max-percent`. Applied at the Grade stage against a per-student
-/// submission time recorded in `overrides.toml` (see `overrides.rs`) --
-/// never by mutating the persisted raw `EvaluationResult`. Absent
-/// `[scoring.late-penalty]` means no late penalty is ever applied, even if
-/// an `overrides.toml` late entry exists for a student.
+/// A late-submission penalty: a grace period, then a percentage of the
+/// score deducted per day late, capped at `max-percent`. Absent, no late
+/// penalty is ever applied, even with an `overrides.toml` late entry.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LatePenalty {
     #[serde(default = "Duration::zero")]

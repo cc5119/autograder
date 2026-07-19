@@ -109,11 +109,6 @@ fn resolve_deadline(
     }
 }
 
-/// Runs the Fetch stage alone (`autograder fetch`, and the first half of
-/// `autograder grade --fetch`): populates/refreshes
-/// `work_dir/<student_id>/checkout/` for every submission in the roster,
-/// recording each outcome via `fetch::FetchRecord` so a later `grade` (with
-/// or without `--fetch`) can read it back.
 fn run_fetch(
     assignment: &std::path::Path,
     submissions: &std::path::Path,
@@ -219,30 +214,18 @@ fn build_evaluator_for(
     }
 }
 
-/// Student-facing `ci` entrypoint (design §11): Prepare + Build + Evaluate
-/// against the public harness, over the same `ContainerSandbox` grading
-/// uses (`build_container_evaluator`, no custom seccomp profile — see its
-/// doc comment) unless `local_sandbox` opts out, mirroring `grade
-/// --local-sandbox`. No `--harness` flag or separate fetch stage: `ci`
-/// always runs from the repo root `publish` produces (current directory —
-/// where `autograder.public.toml`/`harness/` live), with the student's own
-/// crate found at the sibling directory named after the spec's
-/// `[assignment].id` (see `publish`'s doc comment on that layout). Prints
-/// per-test feedback via `CiReport` and exits non-zero when any public test
-/// fails, mirroring `autograder ci`'s exit code contract (design §11.1).
-/// Never touches `grade::grade`/`Scoring` — evaluation only.
+/// Student-facing `ci` entrypoint: Prepare + Build + Evaluate against the
+/// public harness, always run from the repo root `publish` produces
+/// (current directory). Prints per-test feedback and exits non-zero when
+/// any public test fails.
 fn run_ci(local_sandbox: bool) -> Result<()> {
     let harness_dir = fs::current_dir()?;
     let spec = Spec::load(&harness_dir)?;
     let workspace = harness_dir.join(&spec.assignment.id);
     let run_id = pipeline::generate_run_id();
-    // `library`'s harness is already positioned correctly by `publish`:
-    // `harness_dir.join("harness")` is a real, on-disk sibling of
-    // `workspace`, so there's nothing to copy or redirect (see
-    // `evaluator::library`'s module doc comment) -- `prepare` doesn't make
-    // this decision anymore, so it's made here directly. `binary` has no
-    // separate driver crate at all, so `driver_dir` is never read for it;
-    // any placeholder path satisfies `JobContext`.
+    // `library`'s harness is already positioned correctly by `publish` as
+    // a sibling of `workspace`. `binary` has no separate driver crate, so
+    // `driver_dir` is never read for it; any placeholder satisfies `JobContext`.
     let driver_dir = match spec.assignment.kind {
         AssignmentKind::Library => harness_dir.join("harness"),
         AssignmentKind::Binary => std::env::temp_dir().join(format!("autograder-ci-{run_id}")),
@@ -283,12 +266,9 @@ fn run_publish(assignment: &std::path::Path, out: &std::path::Path) -> Result<()
 }
 
 /// Re-runs **only** the Grade stage from persisted `EvaluationResult`s (no
-/// student code, no evaluator) — design §14, M5 step 23. Applying
-/// `spec.scoring` and `overrides.toml` fresh from disk on every call, rather
-/// than trusting a previously-persisted `Grade`, is what makes this a fast,
-/// idempotent offline recomputation: editing scoring weights or an
-/// override/late-penalty entry and re-running `regrade` always reflects the
-/// current policy, never a stale one baked in at `grade` time.
+/// student code, no evaluator) -- applies `spec.scoring`/`overrides.toml`
+/// fresh from disk every time, so editing either always reflects the
+/// current policy, never one baked in at `grade` time.
 fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Config) -> Result<()> {
     let spec = Spec::load(assignment)?;
     let store = Store::new(&config.storage_dir);
@@ -381,21 +361,11 @@ name = "insert_basic"
 visibility = "public"
 "#;
 
-    /// Real end-to-end short of `cargo-nextest`, over `LocalSandbox` (no
-    /// podman needed, per the ground rules): loads the public spec,
-    /// prepares the workspace, builds the driver, and runs it. This host has
-    /// no `cargo-nextest` installed, so the run stage never produces a junit
-    /// report -- the evaluator correctly reports `HarnessError` rather than
-    /// crashing or silently reporting a pass, exactly the deferred boundary
-    /// the ground rules describe for M2's podman dependency.
+    /// This host has no `cargo-nextest` installed, so the run stage never
+    /// produces a junit report -- the evaluator should report
+    /// `HarnessError`, not crash or silently report a pass.
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
-        // Mirrors the real starter layout `publish` produces: `harness/`
-        // and the student's own crate (`hw3/`) as siblings under the repo
-        // root, with `harness/Cargo.toml` depending on it via a plain path
-        // dependency rather than a patch (see `publish::rewrite_harness_
-        // dependency_to_path`) -- so this exercises the actual production
-        // mechanism, not the old CLI-config-override shortcut.
         let harness_dir = tempfile::tempdir().unwrap();
         write(
             &harness_dir.path().join(spec::PUBLIC_SPEC_FILE),
@@ -418,10 +388,6 @@ visibility = "public"
         write(&workspace.join("src/lib.rs"), "pub fn noop() {}\n");
 
         let spec = Spec::load(harness_dir.path()).unwrap();
-        // `library`'s harness is already positioned correctly by the
-        // starter layout above -- `harness_dir.join("harness")` is a real
-        // sibling of `workspace`, so `driver_dir` is that, directly, with
-        // no scratch copy involved (mirrors `run_ci`).
         let driver_dir = harness_dir.path().join("harness");
         let prepared = prepare::prepare(&workspace, harness_dir.path(), &spec).unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
@@ -467,14 +433,8 @@ visibility = "public"
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
-    /// `grade --local-sandbox` must never touch `ContainerSandbox` (and so
-    /// never require Podman) -- regression guard for the flag added so
-    /// `grade` still works on a host where Podman isn't usable. Real
-    /// end-to-end short of `cargo-nextest`, same as the test above: `run_grade`
-    /// completes (an `Ok(())`, not an `Err` about a missing/broken podman
-    /// binary) and persists a `HarnessError` grade rather than a `BuildFailed`
-    /// one -- `BuildFailed`/podman-preflight errors are exactly what this
-    /// flag is meant to route around.
+    /// `grade --local-sandbox` must never touch `ContainerSandbox` or
+    /// require Podman.
     #[test]
     fn grade_with_local_sandbox_never_requires_podman() {
         let assignment_dir = tempfile::tempdir().unwrap();
@@ -614,9 +574,6 @@ visibility = "private"
         }
     }
 
-    /// Step 23's verify: persist a result, change the scoring policy, call
-    /// `regrade`, and confirm the score updates -- without re-running the
-    /// evaluator (there's no student code or sandbox involved at all here).
     #[test]
     fn regrade_recomputes_scores_from_a_changed_policy_without_reevaluating() {
         let assignment_dir = tempfile::tempdir().unwrap();
@@ -639,8 +596,6 @@ visibility = "private"
         assert_eq!(grades[0].score, 10.0);
         assert_eq!(grades[0].max, 30.0);
 
-        // Change the policy to pass-count and regrade again: 1 of 2 tests
-        // passing, with no re-fetch/build/run of any kind.
         write(
             &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
             &spec_toml("pass-count"),

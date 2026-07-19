@@ -1,144 +1,21 @@
-//! Strips a private reference solution down to a "starter stub". Default
-//! policy is visibility-based: every unrestricted `pub` item survives with
-//! its signature intact and a `todo!()` body; everything else (private
-//! helpers, `#[cfg(test)] mod`s, etc.) is dropped entirely.
+//! Strips a private reference solution down to a "starter stub": every
+//! unrestricted `pub` item keeps its signature with a `todo!()` body;
+//! everything else is dropped. Override the default per item (fn, struct,
+//! enum, union, type alias, const, static, trait, impl block/method, or
+//! trait default method) with `#[doc = "autograder: keep"]` (ship as-is),
+//! `#[doc = "autograder: stub"]` (force a `todo!()` even on a private
+//! item), or `#[doc = "autograder: hide"]` (drop even if `pub`) -- the
+//! marker itself is always stripped from the output.
 //!
-//! Only unrestricted `pub` items are kept by default -- that's exactly the
-//! surface an external crate (the harness/driver) can already see, so
-//! anything narrower (`pub(crate)`, private) is implementation detail
-//! invisible to it and safe to drop.
-//!
-//! For finer control than the visibility default gives you, mark an item
-//! (a fn, struct, enum, union, type alias, const, static, trait, impl
-//! block, impl method, or trait default method) with
-//! `#[doc = "autograder: keep"]`, `#[doc = "autograder: stub"]`, or
-//! `#[doc = "autograder: hide"]`. Each is a no-op in some cases (see
-//! below) and does something new in others:
-//!  - `keep` -- ship this exactly as-is, real body untouched. A no-op on
-//!    anything already kept in full by default (a `pub` struct/enum/
-//!    const/...); does something new on a `pub` fn (skips the automatic
-//!    `todo!()` stubbing -- e.g. boilerplate like `pub fn new()` that
-//!    isn't the graded exercise) or on a private item (rescues it from
-//!    being dropped, with real code -- e.g. a private helper students need
-//!    but shouldn't have to write).
-//!  - `stub` -- ship this with a `todo!()` body, i.e. make it a required
-//!    fill-in-the-blank. A no-op on a `pub` fn (already the default) and
-//!    on anything with no body to blank (struct/enum/const/...); does
-//!    something new on a **private** fn/method: forces it to appear in
-//!    the starter as its own exercise instead of silently vanishing (e.g.
-//!    breaking a big problem into named sub-parts: `partition` as its own
-//!    stub, `quicksort` calling it).
-//!  - `hide` -- never include this, even if `pub`. A no-op on anything
-//!    already dropped by default (private, unmarked); does something new
-//!    on a `pub` item that exists only for the harness to call and isn't
-//!    meant for students to see.
-//!
-//! The marker attribute itself is always stripped from the output. Plain
-//! `#[doc = "..."]` was chosen over `///`-sugar so a marker reads
-//! unambiguously as a directive rather than prose -- both desugar to the
-//! same attribute, so `///` still works if preferred, but this crate's
-//! own examples all use the explicit form.
-//!
-//! ## Statement-level markers
-//!
-//! `keep` on a function/method additionally unlocks statement-level
-//! control *inside* that body: any individual `let` binding, expression
-//! statement, or macro-invocation statement can itself carry `hide` (drop
-//! just that one statement) or `stub` (replace just that one statement
-//! with `todo!()`), independently of its neighbors. `stub`/`hide` on a
-//! statement only do anything inside a `keep`-marked body: a body with no
-//! item-level `keep` is either already fully `todo!()`-ed (nothing left
-//! to mark) or already fully dropped, so a nested marker has nowhere to
-//! attach in the emitted stub either way.
-//!
-//! Hiding an instructor-only invariant check while keeping the rest of a
-//! method real:
-//!
-//! ```ignore
-//! #[doc = "autograder: keep"]
-//! pub fn push(&mut self, value: T) {
-//!     #[doc = "autograder: hide"]
-//!     debug_assert!(self.items.len() < self.capacity, "internal invariant");
-//!
-//!     self.items.push_back(value);
-//! }
-//! ```
-//!
-//! becomes, in the starter:
-//!
-//! ```ignore
-//! pub fn push(&mut self, value: T) {
-//!     self.items.push_back(value);
-//! }
-//! ```
-//!
-//! Stubbing out just the core computation, by marking its tail expression
-//! (no trailing `;`, so the replacement stays in tail position too and
-//! `todo!()`'s bottom type still unifies with the return type):
-//!
-//! ```ignore
-//! #[doc = "autograder: keep"]
-//! pub fn checksum(data: &[u8]) -> u32 {
-//!     if data.is_empty() {
-//!         return 0;
-//!     }
-//!
-//!     #[doc = "autograder: stub"]
-//!     data.iter().fold(0u32, |acc, &b| acc.wrapping_add(b as u32))
-//! }
-//! ```
-//!
-//! becomes:
-//!
-//! ```ignore
-//! pub fn checksum(data: &[u8]) -> u32 {
-//!     if data.is_empty() {
-//!         return 0;
-//!     }
-//!     todo!()
-//! }
-//! ```
-//!
-//! A marker only removes/replaces the one statement it's attached to; it
-//! doesn't truncate the rest of the block. To hide/stub several
-//! *contiguous* statements at once, wrap them in a `{ ... }` block
-//! expression and mark that block -- it's a single statement carrying a
-//! single marker, same as marking a whole `if`/`while`/`match` already
-//! covers everything nested inside it:
-//!
-//! ```ignore
-//! #[doc = "autograder: hide"]
-//! {
-//!     debug_assert!(self.items.len() < self.capacity, "internal invariant");
-//!     self.metrics.record_push();
-//! }
-//! ```
-//!
-//! It's the instructor's job to pick statements/items whose removal still
-//! leaves valid, sensible Rust (don't stub a `let` whose binding a later
-//! statement still references, and remember `keep` isn't transitive -- a
-//! kept item calling an unmarked private helper still loses that helper).
-//!
-//! A marker compiles fine in the reference solution itself (`#[doc =
-//! ...]` is always valid, inert Rust -- no dependency, no dedicated
-//! attribute macro needed), but rustc's `unused_doc_comments` lint fires
-//! on a statement-level one, since docs aren't rendered there. Add
-//! `#![allow(unused_doc_comments)]` at the solution crate's root if the
-//! warning noise bothers you.
-//!
-//! `use` statements are left untouched, deliberately: filtering them down
-//! to only the ones the retained signatures still need would mean
-//! reimplementing name resolution. Instead the caller builds the candidate
-//! in a real crate and runs `cargo fix` on it (see
-//! `publish::run_cargo_fix`) -- the compiler is the actual authority
-//! on which imports are unused, so it prunes them, not us.
-//!
-//! The file's shebang and crate-level attributes (`#!...`, doc comments
-//! included) are carried over verbatim -- if the instructor put something
-//! there, it's their deliberate choice to include it in the starter, not
-//! ours to second-guess. An instructor who doesn't want the solution's
-//! crate-level doc comment shown to students should simply not write one,
-//! or write a student-appropriate one instead.
+//! `keep` on a fn/method also unlocks the same three markers on individual
+//! statements inside its body (only inside a `keep`-marked body -- a
+//! `stub`/`hide` body has nothing left to mark). Wrap several statements in
+//! a `{ ... }` block and mark that to hide/stub them together. `use`
+//! statements always pass through untouched; the caller runs `cargo fix`
+//! on the result to prune whatever became unused (see
+//! `publish::run_cargo_fix`) rather than this module reimplementing name
+//! resolution. The shebang and crate-level attributes are carried over
+//! verbatim.
 
 use std::collections::HashSet;
 
@@ -199,9 +76,6 @@ fn todo_block() -> syn::Block {
     syn::parse_quote! {{ todo!() }}
 }
 
-/// An `#[doc = "autograder: <word>"]` marker, overriding the default
-/// visibility-based keep/drop decision for the item or statement it's
-/// attached to. See this module's doc comment for the full semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Directive {
     Keep,
@@ -209,9 +83,7 @@ enum Directive {
     Hide,
 }
 
-/// Scans `attrs` for a recognized marker, removing and returning it if
-/// found -- the marker never survives into the emitted stub, on items or
-/// statements alike.
+/// Removes and returns the first recognized marker in `attrs`, if any.
 fn take_directive(attrs: &mut Vec<Attribute>) -> Option<Directive> {
     let idx = attrs.iter().position(|a| directive_of(a).is_some())?;
     let attr = attrs.remove(idx);
@@ -245,9 +117,6 @@ fn directive_of(attr: &Attribute) -> Option<Directive> {
     }
 }
 
-/// Keeps an item iff it (or, for `impl`, its self/trait type) is part of
-/// the crate's unrestricted-`pub` surface, stubbing bodies as it goes --
-/// unless a `Directive` on the item overrides that decision outright.
 fn strip_item(mut item: Item, pub_type_names: &HashSet<String>) -> Option<Item> {
     let directive = item_attrs_mut(&mut item).and_then(take_directive);
 
@@ -336,16 +205,8 @@ fn strip_item(mut item: Item, pub_type_names: &HashSet<String>) -> Option<Item> 
                             m.block = todo_block();
                             Some(ImplItem::Fn(m))
                         }
-                        // No marker of its own: included either because
-                        // it's naturally visible (pub method of a pub
-                        // impl) or because the *impl block* forced
-                        // inclusion -- either way its body defaults to
-                        // stubbed, unless the impl-level directive was
-                        // specifically `keep`, in which case an unmarked
-                        // method inherits "keep" too (an impl marked
-                        // `keep` means "this whole impl is real code",
-                        // not "real except for whichever methods I forgot
-                        // to mark").
+                        // Unmarked: an impl-level `keep` means "this whole
+                        // impl is real code", so unmarked methods inherit it.
                         None if is_trait_impl || is_pub(&m.vis) || force_include => {
                             m.block = if directive == Some(Directive::Keep) {
                                 strip_block_statements(m.block)
@@ -366,9 +227,6 @@ fn strip_item(mut item: Item, pub_type_names: &HashSet<String>) -> Option<Item> 
     }
 }
 
-/// `keep`/`stub` both mean "include, as-is" for an item with no body of
-/// its own to blank (struct/enum/union/type/const/static); `hide` always
-/// excludes; absent a directive, falls back to the visibility default.
 fn keep_or_drop(directive: Option<Directive>, is_pub: bool, item: Item) -> Option<Item> {
     match directive {
         Some(Directive::Hide) => None,
@@ -378,8 +236,6 @@ fn keep_or_drop(directive: Option<Directive>, is_pub: bool, item: Item) -> Optio
     }
 }
 
-/// The attrs list of whichever `Item` variant carries a directive marker,
-/// so `strip_item` can extract it once up front regardless of item kind.
 fn item_attrs_mut(item: &mut Item) -> Option<&mut Vec<Attribute>> {
     match item {
         Item::Fn(i) => Some(&mut i.attrs),
@@ -395,9 +251,6 @@ fn item_attrs_mut(item: &mut Item) -> Option<&mut Vec<Attribute>> {
     }
 }
 
-/// Applies statement-level `stub`/`hide` markers within a `keep`-marked
-/// function/method body (see this module's doc comment). Statements
-/// without a marker (the common case) pass through untouched.
 fn strip_block_statements(mut block: Block) -> Block {
     block.stmts = block
         .stmts
@@ -414,10 +267,7 @@ fn strip_block_statements(mut block: Block) -> Block {
     block
 }
 
-/// The attrs list of whichever `Stmt` variant carries a directive marker.
-/// `Stmt::Item` (a nested item declaration) is out of scope -- markers on
-/// nested items aren't supported, only on the fn-body statements around
-/// them.
+/// `Stmt::Item` (a nested item declaration) can't carry a marker.
 fn stmt_attrs_mut(stmt: &mut Stmt) -> Option<&mut Vec<Attribute>> {
     match stmt {
         Stmt::Local(Local { attrs, .. }) => Some(attrs),
@@ -427,15 +277,9 @@ fn stmt_attrs_mut(stmt: &mut Stmt) -> Option<&mut Vec<Attribute>> {
     }
 }
 
-/// `syn::Expr`'s ~40 variants each carry their own `attrs: Vec<Attribute>`
-/// field (no blanket accessor exists in syn's public API); this covers
-/// every statement-position expression a solution realistically uses --
-/// notably `Expr::Block`, which is what makes the "wrap several
-/// statements in `{ }` and mark the block" grouping trick work, since a
-/// block is just another markable expression like any other. `_ => None`
-/// (required: `Expr` is `#[non_exhaustive]`) just means that expression
-/// kind can't carry a marker -- harmless, it's simply never recognized as
-/// one.
+/// `syn::Expr` has no blanket `.attrs` accessor, so this covers each
+/// variant by hand (`_ => None` is required since `Expr` is
+/// `#[non_exhaustive]`; that arm just means that kind can't carry a marker).
 fn expr_attrs_mut(expr: &mut Expr) -> Option<&mut Vec<Attribute>> {
     match expr {
         Expr::Array(e) => Some(&mut e.attrs),
@@ -479,11 +323,8 @@ fn expr_attrs_mut(expr: &mut Expr) -> Option<&mut Vec<Attribute>> {
     }
 }
 
-/// Replaces a statement with `todo!()`, preserving whether it was in tail
-/// position (no trailing `;`, its value *is* the block's value -- so the
-/// replacement must stay a bare tail expression too, letting `todo!()`'s
-/// bottom type unify with whatever the block was supposed to produce) or
-/// ordinary statement position (trailing `;`, replaced with `todo!();`).
+/// Replaces a statement with `todo!()`, preserving tail position (no `;`)
+/// so its bottom type still unifies with whatever the block returns.
 fn todo_stmt(original: &Stmt) -> Stmt {
     let has_semi = match original {
         Stmt::Local(_) => true,
@@ -494,11 +335,8 @@ fn todo_stmt(original: &Stmt) -> Stmt {
     if has_semi {
         syn::parse_quote! { todo!(); }
     } else {
-        // A bare `todo!()` with no trailing `;` doesn't parse as a
-        // standalone `Stmt` -- outside a block, the parser can't tell
-        // whether it's in tail position (no `;` needed) without more
-        // context. Parsing it as a one-statement `Block` instead gives it
-        // that context, then unwrapping recovers the `Stmt`.
+        // A bare `todo!()` doesn't parse as a standalone `Stmt`; parsing a
+        // one-statement `Block` instead and unwrapping it does.
         let block: Block = syn::parse_quote! {{ todo!() }};
         block
             .stmts

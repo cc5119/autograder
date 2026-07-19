@@ -1,9 +1,8 @@
-//! Student-facing CI feedback (design §11.4): per-test pass/fail plus
-//! diagnostics, and an overall public pass/fail summary — **no scores**.
-//! Structurally distinct from the `Reporter` trait (which renders `Grade`s):
-//! the CI tier never computes a score, so there is no `Grade` to report on,
-//! only the raw `EvaluationResult` plus any manifest diagnostics found
-//! before the evaluator ever ran.
+//! Student-facing CI feedback: per-test pass/fail plus diagnostics, and an
+//! overall public pass/fail summary -- **no scores**. Distinct from the
+//! `Reporter` trait (which renders `Grade`s): the CI tier never computes a
+//! score, only the raw `EvaluationResult` plus any manifest diagnostics
+//! found before the evaluator ran.
 
 use std::fmt::Write as _;
 

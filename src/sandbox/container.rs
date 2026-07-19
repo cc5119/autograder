@@ -6,43 +6,34 @@ use crate::model::ResourceUsage;
 use super::exec::run_with_timeout;
 use super::{MountMode, Sandbox, SandboxOutcome, SandboxSpec};
 
-/// Podman exit code convention for a process killed by a signal (128 + signal
-/// number); SIGKILL is 9. cgroup OOM-kills deliver SIGKILL, so `137` is the
-/// best-effort (not certain — any SIGKILL looks the same) signal that memory
-/// was exceeded (design §10).
+/// Podman exit code for a process killed by a signal is 128 + signal
+/// number; SIGKILL is 9, which is what a cgroup OOM-kill delivers -- so
+/// `137` is a best-effort (not certain: any SIGKILL looks the same) signal
+/// that memory was exceeded.
 const OOM_LIKELY_EXIT_CODE: i32 = 137;
 
 /// Default path an operator can drop a hardened seccomp profile at for
-/// `ContainerSandbox::new` to pick up -- see `discover_seccomp_profile`.
+/// `ContainerSandbox::new` to pick up.
 const DEFAULT_SECCOMP_PROFILE: &str = "/etc/autograder/seccomp.json";
 
-/// Rootless-podman shell-out (design §10). Builds a `podman run` argv from a
-/// `SandboxSpec` and runs it as a host child process, reusing the same
-/// timeout/output-cap machinery as `LocalSandbox` — the isolation itself
-/// comes entirely from the podman flags, not from anything this process
-/// does. Live execution needs podman; argv construction and outcome parsing
-/// are pure and unit-tested without it.
+/// Rootless-podman shell-out: builds a `podman run` argv from a
+/// `SandboxSpec` and runs it as a host child process. Live execution needs
+/// podman; argv construction and outcome parsing are pure and unit-tested
+/// without it.
 pub struct ContainerSandbox {
     pub podman_bin: String,
     pub base_image: String,
     /// `--user` value, e.g. `"65534:65534"` for a non-root sandbox user.
     pub user: String,
-    /// A custom seccomp profile to pass via `--security-opt seccomp=...`.
-    /// `None` means podman's own bundled default profile applies instead
-    /// (still denies `mount`, `ptrace`, `unshare`, `keyctl`, etc.) -- a
-    /// custom profile only matters where a motivated adversary is worth
-    /// defending against (grading untrusted student code against an
-    /// authoritative score), not for advisory `ci` runs a student invokes
-    /// against their own code. `new` discovers one automatically if the
-    /// operator has provided it; a caller with no use for one (`ci`) should
-    /// overwrite this field with `None` after construction.
+    /// A custom seccomp profile for `--security-opt seccomp=...`. `None`
+    /// falls back to podman's own bundled default (still denies `mount`,
+    /// `ptrace`, `unshare`, `keyctl`, etc.) -- only worth the custom one
+    /// for authoritative grading of untrusted code, not advisory `ci`
+    /// runs, so a caller like `ci` should overwrite this with `None`.
     pub seccomp_profile: Option<std::path::PathBuf>,
 }
 
 impl ContainerSandbox {
-    /// `seccomp_profile` is populated via `discover_seccomp_profile` -- see
-    /// that field's doc comment for why, and how a caller that doesn't want
-    /// one (`ci`) should override it.
     pub fn new(base_image: impl Into<String>) -> Self {
         Self {
             podman_bin: "podman".into(),
@@ -52,8 +43,7 @@ impl ContainerSandbox {
         }
     }
 
-    /// Builds the `podman run` argv (excluding the `podman` binary itself)
-    /// for `spec`, per design §10's exact flag set.
+    /// Builds the `podman run` argv, excluding the `podman` binary itself.
     pub fn build_argv(&self, spec: &SandboxSpec) -> Vec<String> {
         let mut argv = vec!["run".to_string(), "--rm".to_string()];
 
@@ -111,23 +101,11 @@ impl ContainerSandbox {
 }
 
 impl Sandbox for ContainerSandbox {
-    /// Two checks, run once before any student is touched, so a broken
-    /// environment produces one clear top-level error instead of every
-    /// student in the batch silently scoring a misleading `build_failed`
-    /// (both failure modes below are, to `run`, just "the sandboxed command
-    /// exited non-zero" — indistinguishable from a real `cargo build`
-    /// failure without this check):
-    ///
-    /// 1. `podman version` — catches "podman isn't usable at all" (missing
-    ///    binary, no rootless storage configured, no `/run`, etc.).
-    /// 2. `podman image exists <base_image>` — catches "podman works fine,
-    ///    but the assignment's base image was never built." This is a pure
-    ///    local-storage check (no registry contact), so it fails cleanly
-    ///    instead of surfacing as `podman run`'s much more confusing
-    ///    registry short-name-resolution error when a job actually tries to
-    ///    run against a nonexistent image. Never builds the image itself
-    ///    (that stays a manual/M4-automation step, deliberately) — this
-    ///    only tells you clearly that it's missing.
+    /// Runs `podman version` (is podman usable at all?) and `podman image
+    /// exists` (was the base image ever built, without a registry round
+    /// trip?) once before any student is touched -- so a broken setup is
+    /// one clear top-level error instead of every student silently scoring
+    /// build_failed. Never builds the image itself.
     fn preflight(&self) -> Result<()> {
         let output = Command::new(&self.podman_bin).arg("version").output();
         match output {
@@ -166,9 +144,7 @@ impl Sandbox for ContainerSandbox {
         }
     }
 
-    /// **[deferred: needs podman]** — argv construction (`build_argv`) is
-    /// unit-tested directly; this method shells out and is exercised on a
-    /// provisioned host.
+    /// **[deferred: needs podman]**
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
         let argv = self.build_argv(spec);
         let mut cmd = Command::new(&self.podman_bin);
@@ -196,15 +172,9 @@ impl Sandbox for ContainerSandbox {
     }
 }
 
-/// Looks for an operator-provided seccomp profile at
-/// `DEFAULT_SECCOMP_PROFILE`, warning (not failing) when it's absent —
-/// worthwhile defense-in-depth against a motivated adversary (a student
-/// trying to escape the sandbox during authoritative grading) but not a
-/// hard requirement: podman's own bundled default profile already denies
-/// the dangerous syscalls (`mount`, `ptrace`, `unshare`, `keyctl`, etc.).
-/// Called from `ContainerSandbox::new` -- a caller with no use for the
-/// result (e.g. `ci`) should overwrite `seccomp_profile` with `None`
-/// afterward rather than trying to avoid triggering this.
+/// Looks for an operator-provided seccomp profile, warning (not failing)
+/// when absent -- podman's own bundled default already denies the
+/// dangerous syscalls, so this is defense-in-depth, not a hard requirement.
 fn discover_seccomp_profile() -> Option<std::path::PathBuf> {
     let path = std::path::PathBuf::from(DEFAULT_SECCOMP_PROFILE);
     if path.is_file() {
@@ -285,7 +255,6 @@ mod tests {
         sandbox.seccomp_profile = None;
         let argv = sandbox.build_argv(&spec());
         assert!(!argv.iter().any(|a| a.starts_with("seccomp=")));
-        // no-new-privileges is unaffected -- it's a separate --security-opt.
         assert!(argv.contains(&"no-new-privileges".to_string()));
     }
 
@@ -324,9 +293,6 @@ mod tests {
 
     #[test]
     fn preflight_fails_clearly_when_podman_runs_but_errors() {
-        // `false` always exits non-zero without needing a real podman
-        // install, standing in for a podman binary that runs but can't
-        // actually operate (e.g. this host's real "lstat /run" failure).
         let err = sandbox_with_bin("false").preflight().unwrap_err();
         let message = err.to_string();
         assert!(message.contains("not usable in this environment"));
@@ -334,14 +300,11 @@ mod tests {
 
     #[test]
     fn preflight_succeeds_when_podman_runs_cleanly() {
-        // `true` always exits zero, standing in for a working podman.
         assert!(sandbox_with_bin("true").preflight().is_ok());
     }
 
     /// A fake `podman` that answers `version` successfully but reports
-    /// every `image exists` check as "not found" — standing in for a host
-    /// where podman itself works fine but the assignment's base image was
-    /// never built.
+    /// every `image exists` check as "not found".
     fn fake_podman_missing_image() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("podman");

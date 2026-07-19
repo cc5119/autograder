@@ -1,16 +1,10 @@
-//! Single source of truth for every generated-from-a-template file in this
-//! crate: `init`'s per-kind package skeletons and `publish`'s GitHub
-//! Actions workflow both render through here -- one embed of `templates/`
-//! (compiled into the binary via [`include_dir`]), one substitution
-//! mechanism, one place to add a new template. Neither caller reads
-//! `templates/` any other way.
+//! Single source of truth for every generated-from-a-template file: `init`'s
+//! per-kind package skeletons and `publish`'s GitHub Actions workflow both
+//! render through here, against one embed of `templates/` (via
+//! [`include_dir`]).
 //!
-//! Deliberately does no disk I/O of its own: [`render_file`]/[`render_tree`]
-//! return rendered content, not written files -- writing stays the
-//! caller's job (via `crate::fs`, same as every other file-writing call
-//! site in the crate), so this module's only concern is "resolve a
-//! template and substitute placeholders into it," never "how do we report
-//! a write failure."
+//! Deliberately does no disk I/O: [`render_file`]/[`render_tree`] return
+//! rendered content, not written files -- writing stays the caller's job.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -74,9 +68,8 @@ fn contents_utf8<'a>(file: &'a File<'a>) -> &'a str {
         .unwrap_or_else(|| panic!("template {} is not valid UTF-8", file.path().display()))
 }
 
-/// Every file under `dir`, recursively -- `include_dir`'s `Dir` only
-/// exposes direct children (`files()`/`dirs()`), so this walks the tree
-/// itself.
+/// Every file under `dir`, recursively -- `include_dir`'s `Dir` only exposes
+/// direct children.
 fn walk<'a>(dir: &'a Dir<'a>) -> Vec<&'a File<'a>> {
     let mut files: Vec<&File> = dir.files().collect();
     for subdir in dir.dirs() {
@@ -85,15 +78,12 @@ fn walk<'a>(dir: &'a Dir<'a>) -> Vec<&'a File<'a>> {
     files
 }
 
-/// Single-pass substitution of `{key}` tokens against `placeholders`: a
-/// `{` is only ever treated as the start of a placeholder if the text up
-/// to the *next* `}` exactly matches a known key -- anything else (an
-/// unrelated `{...}`, e.g. TOML's own inline-table syntax like
-/// `{ path = "../{id}" }`) is emitted verbatim, character by character,
-/// which is also exactly why a single multi-key pass (not one `.replace`
-/// call per key run back-to-back) is what's needed here: chained
-/// `.replace` calls risk one substitution's *output* being reinterpreted
-/// by the next call, which a single left-to-right scan never does.
+/// Single-pass substitution of `{key}` tokens: a `{` starts a placeholder
+/// only if the text up to the next `}` exactly matches a known key,
+/// otherwise it's emitted verbatim (so TOML's own `{ path = "../{id}" }`
+/// inline-table syntax survives untouched). A single left-to-right scan,
+/// not chained `.replace` calls, so one substitution's output can never be
+/// reinterpreted by a later replacement.
 fn substitute(text: &str, placeholders: &HashMap<&str, &str>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;

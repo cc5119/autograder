@@ -1,7 +1,7 @@
-//! Diffs a student `Cargo.toml` against `[allowed-crates]`, producing the
-//! three precise diagnostics from design §8.3 instead of letting the
-//! student hit an opaque offline-resolution failure, plus the static
-//! rejections from §8.4 (`[patch]`, git deps, external path deps).
+//! Diffs a student `Cargo.toml` against `[allowed-crates]`, producing
+//! precise diagnostics instead of letting the student hit an opaque
+//! offline-resolution failure, plus static rejections of `[patch]`, git
+//! deps, and external path deps.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -177,10 +177,8 @@ pub fn check_manifest(
             continue;
         }
 
-        // No vendored crate to check the exact pinned version/features
-        // against (not prefetched yet, or crate absent from vendor/): fall
-        // back to a best-effort check against the allowlist's own version
-        // requirement string.
+        // Not vendored yet: fall back to a best-effort check against the
+        // allowlist's own version requirement string.
         if !requested_is_compatible_with_allowed(&requested, allowed_req) {
             diagnostics.push(ManifestDiagnostic::VersionOutsideVendored {
                 name: name.clone(),

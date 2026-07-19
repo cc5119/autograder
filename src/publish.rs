@@ -1,29 +1,12 @@
-//! Publishes the starter/template repo for distribution to students
-//! from the **private instructor package** in one pass: copy everything
-//! real, then strip the sensitive parts in place. No hand-maintained
-//! `public/` sibling repo, and no separately-assembled `Cargo.toml`/`src/`
-//! built up from spec fields in Rust code.
+//! Publishes the starter/template repo for distribution to students from
+//! the **private instructor package** in one pass: copy everything real,
+//! then strip the sensitive parts in place. No hand-maintained `public/`
+//! sibling repo.
 //!
-//! Two independent, mechanical transforms feed the copy pass below — no
-//! name resolution, no judgment calls about what's "safe," just
-//! structural filtering against data the private spec already carries:
-//!
-//! - [`derive_public_spec_toml`]: strips `points` and any non-`public`
-//!   `[[scoring.tests]]` entries out of the private spec's raw TOML via a
-//!   generic `toml::Value` edit — no need to round-trip through `Spec`'s
-//!   typed fields, since points/visibility are already there in the text.
-//! - [`keep_only_named_tests`]: parses a harness test file with `syn` and
-//!   drops any `#[test]` fn not named in the public test list returned by
-//!   the spec transform above — the same "only what's explicitly
-//!   known-safe survives" shape as [`crate::stub`], applied to test
-//!   functions instead of solution code.
-//!
-//! `harness/Cargo.toml` itself needs no transform: it's already a plain
-//! path dependency on the sibling directory named after `[assignment].id`
-//! (see `evaluator::library`'s module doc comment), which means the same
-//! thing whether that sibling is the private reference solution or the
-//! published starter's copy of the student's own crate — `publish` copies
-//! it verbatim.
+//! Two mechanical transforms feed the copy pass below: [`derive_public_spec_toml`]
+//! strips `points` and non-`public` `[[scoring.tests]]` entries from the
+//! private spec's raw TOML; [`keep_only_named_tests`] drops any `#[test]`
+//! fn not named in that public test list.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -92,9 +75,6 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     let spec = Spec::load_file(&private_spec_path)?;
     let id = spec.assignment.id.clone();
 
-    // Derived purely from the private TOML text -- doesn't need anything
-    // copied yet, so it can run before the walk instead of being
-    // interleaved with it.
     let private_toml = fs::read_to_string(&private_spec_path)?;
     let (public_spec_toml, public_test_names) = derive_public_spec_toml(&private_toml)?;
 
@@ -211,11 +191,6 @@ fn validate_manifest(path: &str, file: MatchedFile, ctx: &PublishCtx) -> Result<
     Ok(file)
 }
 
-/// Strips every `.rs` file among the matches to a stub via
-/// [`crate::stub::strip_to_stub`]: pub signatures survive, bodies become
-/// `todo!()`, private items and `#[cfg(test)]` modules are dropped.
-/// Non-`.rs` files (rare, but a solution crate could have one under
-/// `src/`) pass through untouched.
 fn strip_stub(
     _pattern: &str,
     matches: Vec<MatchedFile>,
@@ -237,13 +212,6 @@ fn strip_stub(
         .collect()
 }
 
-/// Filters every `.rs` file among the matches down to just the `#[test]`
-/// fns named in `ctx.public_test_names`, via [`keep_only_named_tests`].
-/// Used for both `library`'s `harness/tests/**` and `binary`'s
-/// `{id}/tests/**` -- the latter is the reference solution's own
-/// (private) judge, but this hook only ever runs against the `tests/**`
-/// rule, never `src/**`, so it can't collide with [`strip_stub`] mangling
-/// real `#[test]` assertions into `todo!()` stubs.
 fn keep_only_public_tests(
     _pattern: &str,
     matches: Vec<MatchedFile>,
@@ -265,15 +233,9 @@ fn keep_only_public_tests(
         .collect()
 }
 
-/// `templates/autograde.yml.tmpl`'s release coordinates (repo, version,
-/// sha256) for the downloaded `autograder` binary (design §11.2) are
-/// themselves placeholders, not substituted here -- the real pinned
-/// version + sha256 come from the release pipeline (M3 step 19,
-/// `.github/workflows/release.yml` in this repo), so an instructor stands
-/// up their own fork/release and edits the template's output directly
-/// before distributing a starter repo. Only `{base_image}` is filled in at
-/// publish time, from `[sandbox].image`, via `crate::template::render_file`
-/// -- the one place every template in this crate renders through.
+/// The template's release coordinates (repo, version, sha256) are
+/// themselves placeholders an instructor edits after publishing, once they
+/// stand up their own fork/release -- only `{base_image}` is filled in here.
 fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
     crate::template::render_file(
         "autograde.yml",
@@ -281,12 +243,8 @@ fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
     )
 }
 
-/// Runs `cargo fix` directly in `student_dir` (already a full, disposable
-/// copy of the solution crate at this point -- no separate scratch copy
-/// needed) to prune whichever `use` lines stub-stripping left unused. The
-/// real compiler is the authority on what's unused, not hand-rolled name
-/// resolution. Cleans up the `target/` directory `cargo fix` leaves behind
-/// afterward, so the shipped starter tree carries no build output.
+/// Runs `cargo fix` to prune `use` lines stub-stripping left unused, then
+/// removes the `target/` dir it leaves behind.
 fn run_cargo_fix(student_dir: &Path) -> Result<()> {
     let output = std::process::Command::new("cargo")
         .args(["fix", "--allow-dirty", "--allow-staged", "--allow-no-vcs"])
@@ -550,15 +508,6 @@ visibility = "private"
         );
     }
 
-    /// Writes a full instructor package, solution included (named after
-    /// `PRIVATE_SPEC`'s `id = "hw3"`) -- a solution is required for
-    /// `publish` to produce anything, so every test that isn't
-    /// specifically about a missing/mismatched solution needs one.
-    /// `harness/src/main.rs` matters here in a way it didn't before this
-    /// module started emitting a `[workspace]`: with `harness` now a real
-    /// workspace member, a `cargo build`/`cargo test` from the starter
-    /// root needs it to actually be a buildable crate, not just a
-    /// manifest.
     fn write_instructor_package(package_dir: &Path) {
         write(&package_dir.join(spec::PRIVATE_SPEC_FILE), PRIVATE_SPEC);
         write(
@@ -587,8 +536,6 @@ visibility = "private"
                 .join(".github/workflows/autograde.yml")
                 .is_file()
         );
-        // The root manifest is now the workspace, not the student's own
-        // package -- that lives at `<id>/`.
         assert!(outcome.out_dir.join("Cargo.toml").is_file());
         assert!(outcome.out_dir.join("hw3/Cargo.toml").is_file());
         assert!(outcome.out_dir.join("hw3/src/lib.rs").is_file());
@@ -623,10 +570,6 @@ visibility = "private"
 
         let manifest = std::fs::read_to_string(out_dir.path().join("harness/Cargo.toml")).unwrap();
         assert!(!manifest.contains("patch"));
-        // `../hw3` now means something real: the student's own crate,
-        // a sibling of `harness/` at the starter root (see
-        // `write_instructor_package`) -- not a dangling reference to a
-        // solution directory that doesn't exist in the starter.
         assert!(manifest.contains("path = \"../hw3\""));
     }
 
@@ -642,7 +585,6 @@ visibility = "private"
             HARNESS_MANIFEST,
         );
         write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
-        // deliberately no `hw3/` solution directory
         let out_dir = tempfile::tempdir().unwrap();
 
         let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
@@ -709,9 +651,6 @@ visibility = "private"
         assert!(matches!(err, Error::InvalidSpec(_)));
     }
 
-    /// The root `[workspace]` manifest is copied from the private package,
-    /// not regenerated -- refuses to guess one if it's missing, same as
-    /// `autograder.toml` or the solution directory.
     #[test]
     fn publish_rejects_a_package_dir_without_a_root_workspace_manifest() {
         let package_dir = tempfile::tempdir().unwrap();
@@ -723,11 +662,6 @@ visibility = "private"
         assert!(matches!(err, Error::InvalidSpec(_)));
     }
 
-    /// End-to-end: given the real solution crate `write_instructor_package`
-    /// puts at `package_dir/<id>`, the emitted starter's `<id>/` crate
-    /// builds on its own (implying `cargo fix` left it in a compiling
-    /// state), exposes the pub API, stubs bodies to `todo!()`, and never
-    /// leaks the private helper or its now-unused import.
     #[test]
     fn publish_derives_a_building_stub_from_the_id_named_solution_dir() {
         let package_dir = tempfile::tempdir().unwrap();
@@ -756,12 +690,6 @@ visibility = "private"
         );
     }
 
-    /// The whole point of the new layout: a plain `cargo test` run from
-    /// the starter's own root -- no `autograder` involvement, no `cd`,
-    /// no flags -- builds and runs the public harness's judge tests
-    /// (`insert_basic`, since `balance_adversarial` was filtered out as
-    /// hidden) against the student's stub, via the `[workspace]` manifest
-    /// and the harness's plain path dependency on `hw3`.
     #[test]
     fn cargo_test_at_the_starter_root_runs_the_public_harness() {
         let package_dir = tempfile::tempdir().unwrap();
@@ -802,7 +730,7 @@ visibility = "private"
         write_instructor_package(package_dir.path());
         write(
             &package_dir.path().join("hw3/vendor/some-crate/src/lib.rs"),
-            "// prefetch output, never checked into the starter\n",
+            "not checked into the starter\n",
         );
         let out_dir = tempfile::tempdir().unwrap();
 
@@ -863,9 +791,6 @@ visibility = "private"
         }
     "#;
 
-    /// `binary`-kind has no separate `harness/` crate at all -- the private
-    /// judge lives directly inside the reference solution's own `tests/`
-    /// (see `evaluator::binary`'s module doc comment).
     fn write_binary_instructor_package(package_dir: &Path) {
         write(
             &package_dir.join(spec::PRIVATE_SPEC_FILE),
@@ -905,9 +830,6 @@ visibility = "private"
         );
     }
 
-    /// The reference solution's own private judge tests must never get
-    /// mangled by the stub-stripping pass meant for implementation code --
-    /// confirms the public test's real assertion survives, not a `todo!()`.
     #[test]
     fn publish_never_stubs_the_binary_judges_test_bodies() {
         let package_dir = tempfile::tempdir().unwrap();
@@ -921,9 +843,6 @@ visibility = "private"
         assert!(!judge.contains("todo!"));
     }
 
-    /// Mirrors `cargo_test_at_the_starter_root_runs_the_public_harness` for
-    /// `binary`-kind: no `autograder` involvement, just the workspace
-    /// manifest plus the judge tests already sitting in `wc/tests/`.
     #[test]
     fn cargo_test_at_the_binary_starter_root_runs_the_public_judge() {
         let package_dir = tempfile::tempdir().unwrap();

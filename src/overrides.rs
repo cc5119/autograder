@@ -1,24 +1,12 @@
-//! Grade-stage overrides (design §14, §18.2 -- M5 step 24): manual
-//! per-student score overrides and a late-penalty policy, both applied
-//! *after* `grade::grade` produces a normal `Grade` from a persisted
-//! `EvaluationResult` -- never by mutating the raw `EvaluationResult`
-//! itself, so raw judge output stays an untouched audit trail (design §14)
-//! no matter how many times a course re-grades or an appeal changes a
-//! student's score. Both `grade` and `regrade` apply the same
-//! `overrides.toml` through `apply`, so re-grading with a changed
-//! `[scoring]` policy or an edited override file both take effect the same
-//! way: recomputed fresh from the persisted eval, never patched in place.
+//! Grade-stage overrides: manual per-student score overrides and a
+//! late-penalty policy, both applied *after* `grade::grade` produces a
+//! `Grade` from a persisted `EvaluationResult` -- never by mutating the
+//! raw `EvaluationResult` itself, so it stays an untouched audit trail no
+//! matter how many times a course re-grades or an appeal changes a score.
 //!
-//! `crate::fetch`'s `Fetchable for GitRepo` resolves *which commit* gets
-//! graded from the deadline (design §7.1), but doesn't surface that
-//! commit's own push/commit timestamp anywhere `apply` can read -- so
-//! `submitted_at` here is still operator-supplied, the same way a manual
-//! score override already is: an instructor/TA fills in `overrides.toml`
-//! after checking the real submission time. Threading a real timestamp
-//! through automatically (from `FetchRecord` or the resolved commit's own
-//! metadata) would remove the need for this file entry, but the
-//! late-penalty *calculation* itself (grace period, then a percentage per
-//! day late, capped) wouldn't change.
+//! `submitted_at` is operator-supplied, not derived from the resolved
+//! commit's own timestamp: an instructor/TA fills in `overrides.toml`
+//! after checking the real submission time.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -39,8 +27,7 @@ pub struct ManualOverride {
     pub score: f64,
     #[serde(default)]
     pub status: Option<String>,
-    /// Required: a manual override always needs a recorded reason (design
-    /// §14 -- overrides must be auditable, not silent).
+    /// Required: overrides must be auditable, not silent.
     pub reason: String,
 }
 

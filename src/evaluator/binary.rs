@@ -1,37 +1,22 @@
-//! The `binary` `Evaluator` (design §9.2): the student repo builds a
-//! **binary** (target named `[assignment].id`); the trusted judge —
-//! instructor-authored integration tests — spawns that binary as a child
-//! and asserts on its observable behavior (stdout/files/exit code), never
-//! on anything the student's own process self-reports.
+//! The `binary` `Evaluator`: the student repo builds a **binary** (target
+//! named `[assignment].id`); the trusted judge -- instructor-authored
+//! integration tests -- spawns it as a child and asserts on its observable
+//! behavior (stdout/files/exit code), never on anything the student's own
+//! process self-reports.
 //!
-//! Unlike `library`, there is no separate driver crate at all: the judge
-//! tests live directly inside `[assignment].id`'s own package, both in the
-//! private repo (the reference solution's `tests/*.rs`, containing every
-//! test, public and hidden) and in the published starter (`publish`
-//! derives just the public-visibility subset into the student's own
-//! `tests/`, the same way it derives `library`'s public harness). At
-//! grading time, the caller (`pipeline::grade_batch`, `Authoritative` only
-//! -- `Ci` needs nothing, the starter already has the public tests baked
-//! in) overlays the private set onto the submission's `tests/` before this
-//! evaluator ever runs; this module has no involvement in that and doesn't
-//! need to. A plain `cargo build` produces the binary and `cargo nextest
-//! run` builds+runs whatever's sitting in `tests/` as part of the *same*
-//! package, which is what lets it locate the built binary via Cargo's
-//! standard `env!("CARGO_BIN_EXE_<name>")` mechanism with no extra wiring
-//! from this module -- that env var is only ever populated for a package's
-//! own binaries, never across a dependency edge, which is exactly why
-//! there's no separate harness crate for `binary`-kind the way there is
-//! for `library`. Because build and run both happen directly in
-//! `ctx.workspace` (not a sibling scratch dir), `Prepare`'s own
-//! `.cargo/config.toml` (written into `workspace` when the package has
-//! been prefetched) is discovered by Cargo's ordinary directory-based
-//! config lookup, so this evaluator only needs to set `CARGO_NET_OFFLINE`
-//! -- no `--config` flags to reproduce it, unlike `library` (see that
-//! module's doc comment for why *it* can't rely on the file).
-//!
-//! Run **process-per-session under `cargo nextest`**, exactly like
-//! `library`: verdicts come from parsing nextest's JUnit report, not from
-//! any output the harness/child process claims for itself.
+//! Unlike `library`, there is no separate driver crate: the judge tests
+//! live directly inside `[assignment].id`'s own package (`tests/*.rs`),
+//! both in the private repo (every test) and the published starter
+//! (`publish` derives just the public subset). A plain `cargo build`
+//! produces the binary and `cargo nextest run` builds+runs `tests/` as
+//! part of the *same* package, which is what lets nextest locate the
+//! built binary via `env!("CARGO_BIN_EXE_<name>")` with no extra wiring --
+//! that env var only populates for a package's own binaries, never across
+//! a dependency edge, which is why there's no harness crate here the way
+//! there is for `library`. Build and run both happen directly in
+//! `ctx.workspace`, so `Prepare`'s `.cargo/config.toml` is discovered by
+//! Cargo's ordinary directory-based lookup -- no `--config` flags needed,
+//! unlike `library`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -60,13 +45,6 @@ pub struct Binary<S> {
 impl<S: Sandbox> Binary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
-        // For `Authoritative`, `package_dir` is the private repo, so this
-        // is the reference solution's own (private, unfiltered) judge
-        // tests -- the source `grade_batch` copies from. For `Ci`,
-        // `package_dir` is the student's own checkout, so this is
-        // `workspace/tests` itself, which `publish` already populated
-        // with the public subset -- nothing to copy, just confirming it's
-        // there.
         let tests_dir = package_dir.join(&spec.assignment.id).join("tests");
         if !tests_dir.is_dir() {
             return Err(Error::InvalidSpec(format!(
@@ -165,9 +143,6 @@ impl<S: Sandbox> Evaluator for Binary<S> {
 
         let junit_path = workspace.join("target/nextest/default/junit.xml");
         let Ok(xml) = std::fs::read_to_string(&junit_path) else {
-            // No report written: a crash before any session completed, or a
-            // nextest/config mismatch. Never treat missing results as a pass
-            // (design §9: every test defaults to fail).
             return Ok(terminal_result(
                 ctx,
                 Stage::Run,
@@ -365,8 +340,6 @@ visibility = "public"
         }
     }
 
-    /// Writes the judge tests directly into `<id>/tests/`, matching the
-    /// current layout: no separate `harness/` for `binary`-kind.
     fn write_judge_tests(package_dir: &std::path::Path) {
         std::fs::create_dir_all(package_dir.join("wc/tests")).unwrap();
         std::fs::write(

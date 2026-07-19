@@ -1,8 +1,7 @@
-//! Child-process execution shared by `LocalSandbox` (runs `spec.program`
-//! directly) and `ContainerSandbox` (runs `podman` with a constructed argv):
-//! both are, at bottom, "spawn a host child process, enforce a wall-clock
-//! timeout, and cap captured output" — the only difference is which argv is
-//! built from the `SandboxSpec`.
+//! Child-process execution shared by `LocalSandbox` and `ContainerSandbox`:
+//! both spawn a host child process, enforce a wall-clock timeout, and cap
+//! captured output -- the only difference is which argv is built from the
+//! `SandboxSpec`.
 
 use std::io::Read;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -77,9 +76,9 @@ pub fn run_with_timeout(
 }
 
 /// Reads `source` to completion but stops accumulating once `cap` bytes have
-/// been read, so a chatty/adversarial child can't force unbounded memory use
-/// (design §10, `max-output-bytes`). Still drains the pipe past the cap so
-/// the child doesn't block writing to a full pipe buffer.
+/// been read, so a chatty/adversarial child can't force unbounded memory
+/// use. Still drains the pipe past the cap so the child doesn't block
+/// writing to a full pipe buffer.
 fn read_capped<R: Read>(mut source: R, cap: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];

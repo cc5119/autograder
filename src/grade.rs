@@ -2,16 +2,11 @@ use crate::model::{EvaluationResult, Grade, StageStatus, TestStatus};
 use crate::spec::{ScoredTest, Scoring, ScoringModel};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
-/// untrusted code runs here (design §7.4). Not behind a trait -- there is
-/// exactly one scoring policy this codebase implements (`[scoring].model`
-/// itself already selects weighted/pass-count/pass-fail), so a swappable
-/// `Grader` abstraction would have exactly one implementation to swap.
+/// untrusted code runs here.
 pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
-    // Terminal failure states score zero, never better than a normal
-    // fail: a stage-level failure (build_failed, harness_error,
-    // timeout, oom, disallowed_dependency, fetch_failed) means every
-    // scored test is treated as failing, even if student code managed
-    // to dodge a specific assertion by crashing the driver instead.
+    // A stage-level failure means every scored test is treated as failing,
+    // even if student code dodged a specific assertion by crashing the
+    // driver instead.
     let stage_failed = eval.stages.fetch.status != StageStatus::Ok
         || eval.stages.build.status != StageStatus::Ok
         || eval.stages.run.status != StageStatus::Ok;

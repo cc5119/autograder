@@ -3,13 +3,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// A single student's submission as reported by a `SubmissionsSource`,
-/// generic over the fetchable type `F`, which implements `Fetchable`
-/// itself. A `SubmissionsSource<F>`'s submissions can only be fetched
-/// through that same `F`'s `Fetchable` impl, so it is a compile error to
-/// hand a `CsvRoster`'s (`GitRepo`-fetching) submissions to code that only
-/// knows how to fetch a `LocalPath` — `fetchable` is a typed value, not an
-/// untyped string whose meaning depends on which code happens to read it.
+/// Generic over the fetchable type `F`, so it's a compile error to hand a
+/// `CsvRoster`'s (`GitRepo`-fetching) submissions to code that only knows
+/// how to fetch a `LocalPath`.
 #[derive(Debug, Clone)]
 pub struct Submission<F> {
     pub student_id: String,
@@ -38,31 +34,17 @@ pub struct JobContext {
     pub assignment_id: String,
     pub student_id: String,
     pub run_id: String,
-    /// Where the code being evaluated actually is. For `grade`, this is
-    /// **not** the raw fetch destination -- `pipeline::grade_batch` fetches
-    /// the whole submitted checkout into a `checkout/` directory that's
-    /// never touched again, then extracts just the `<id>/` crate into this
-    /// (ephemeral, scratch) location, so nothing ever gets written into
-    /// the student's actual submitted checkout. For `ci`, this is the
-    /// current directory's `<id>/` subdirectory, the real live checkout
-    /// (no separate fetch stage at all). Named after `[assignment].id`,
-    /// not e.g. "student" -- the `library` driver crate's checked-in
-    /// `Cargo.toml` depends on that exact sibling name (see
-    /// `evaluator::library`'s module doc comment), so this naming is what
-    /// lets that dependency resolve correctly with no patch/`--config`
-    /// override needed, for every tier. Never written into by an
-    /// evaluator — only read, as the target of that path dependency.
+    /// Where the code being evaluated actually is: for `grade`, an
+    /// ephemeral scratch copy of just the `<id>/` crate extracted from the
+    /// fetched checkout (never the checkout itself); for `ci`, the current
+    /// directory's `<id>/` subdirectory directly. Named after
+    /// `[assignment].id`, not e.g. "student", because the `library` driver
+    /// crate's checked-in `Cargo.toml` depends on that exact sibling name.
     pub workspace: PathBuf,
-    /// Where a `library` driver crate is built — always a *sibling* of
-    /// `workspace`, not nested inside it, so nothing an evaluator builds
-    /// ever lands inside the student's own checkout. What that sibling
-    /// *is* differs by tier (see `prepare::prepare`'s doc comment for the
-    /// full reasoning): a fresh, per-job scratch copy for
-    /// `Tier::Authoritative`; `package_dir/harness` itself, built **in
-    /// place** with no copy at all, for `Tier::Ci` (the starter repo
-    /// `publish` produces already has `harness/` positioned as a real
-    /// sibling of the checkout). Unused by `binary`, which builds the
-    /// student's own binary directly in `workspace`.
+    /// Where a `library` driver crate is built -- always a *sibling* of
+    /// `workspace`, never nested inside it. A fresh per-job scratch copy
+    /// for authoritative grading; `package_dir/harness` itself, built in
+    /// place, for `ci`. Unused by `binary`.
     pub driver_dir: PathBuf,
 }
 
@@ -151,7 +133,7 @@ pub struct StageReports {
     pub run: StageReport,
 }
 
-/// The sole contract between untrusted execution and scoring (design §12).
+/// The sole contract between untrusted execution and scoring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
     pub schema_version: u32,
@@ -181,9 +163,9 @@ pub struct Grade {
     pub status: String,
     #[serde(default)]
     pub failing_tests: Vec<String>,
-    /// Set when a manual `overrides.toml` entry replaced the policy-computed
-    /// score for this student (design §14: recorded on the `Grade`, never by
-    /// mutating the persisted raw `EvaluationResult`). See `overrides.rs`.
+    /// Set when a manual `overrides.toml` entry replaced the
+    /// policy-computed score for this student -- recorded here, never by
+    /// mutating the persisted raw `EvaluationResult`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reason: Option<String>,
     /// Set when a late-penalty policy docked this student's score; the

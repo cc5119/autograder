@@ -1,49 +1,22 @@
-//! The `library` `Evaluator` (design §9.1): builds the trusted
-//! **driver** crate (depends on the student library via a plain path
-//! dependency) and runs the instructor-authored **judge** —
-//! process-per-session under `cargo nextest` — under a `Sandbox`. Both
-//! build and run stages happen inside the sandbox with `[limits.build]` /
-//! `[limits.run]` respectively.
+//! The `library` `Evaluator`: builds the trusted **driver** crate (depends
+//! on the student library via a plain path dependency) and runs the
+//! instructor-authored **judge** under `cargo nextest`, both under a
+//! `Sandbox`. The judge lives permanently at `harness/`, never generated or
+//! rewritten by this tool; this module just drives `cargo build` then
+//! `cargo nextest run` and turns the JUnit report into `TestResult`s.
 //!
-//! This module is deliberately agnostic to the op-sequence protocol a given
-//! assignment's judge speaks to its driver: that's instructor-authored test
-//! code living permanently at `harness/` (Cargo.toml, `src/`, `tests/`) —
-//! no `driver/` subdirectory, and never generated or rewritten by this
-//! tool. This module's job is mechanical: (1) drive `cargo build` then
-//! `cargo nextest run` through the sandbox with the right limits/offline
-//! env, (2) turn nextest's JUnit report into `TestResult`s. No dependency
-//! redirection to do at evaluate-time at all (see below).
-//!
-//! `harness/Cargo.toml` declares a plain `<assignment-id> = { path =
-//! "../<assignment-id>" }` dependency — no `"*"` placeholder, no
-//! `[patch.crates-io]`. That works unmodified in every context this crate
-//! runs the harness in, because whoever assembles the job (this crate's
-//! `pipeline`/`Prepare`, or an instructor invoking Cargo directly) always
-//! positions the code being tested at that exact sibling location: the
-//! reference solution for standalone testing (`cd harness && cargo nextest
-//! run`, no autograder involvement), a fresh per-job copy of the submission
-//! for authoritative grading, or the student's own checkout for `ci` (see
-//! `crate::publish`). Same manifest, no per-tier rewriting, no
-//! `--config`-injected override to keep in sync with it.
-//!
-//! Before Prepare runs, `harness/` is overlaid into `ctx.driver_dir`: a
-//! *fresh, per-job* directory that is a **sibling** of `ctx.workspace`, not
-//! nested inside it (never built in place either) — see `JobContext`'s doc
-//! comment. Freshness is still required even though the two are separate:
-//! Cargo needs to rewrite `Cargo.lock` whenever the path-dependency's
-//! contents change between jobs, so sharing one `harness/` directory across
-//! concurrent or sequential jobs would race different students' builds
-//! against the same `Cargo.lock`/`target/`. The per-job copy is what the
-//! design's "fresh, disk-backed, per-job target volume" (§10/§13) already
-//! calls for.
-//!
-//! Because `driver_dir` and `workspace` no longer share an ancestor
-//! directory, Cargo's directory-based config discovery can't find
-//! `workspace`'s offline-vendoring `.cargo/config.toml` (written by
-//! `Prepare` for a future `binary` evaluator, which builds directly
-//! in `workspace`) from `driver_dir`. This evaluator instead passes the
-//! equivalent `[source]` override as `--config` flags directly — verified
-//! working, fully offline, with a real (non-empty) vendored crate.
+//! `harness/Cargo.toml` declares a plain `<id> = { path = "../<id>" }`
+//! dependency, no `[patch.crates-io]`, because whoever assembles the job
+//! always positions the code under test at that exact sibling location.
+//! `harness/` is overlaid into `ctx.driver_dir`, a *fresh, per-job* sibling
+//! of `ctx.workspace` (never built in place): freshness matters because
+//! Cargo rewrites `Cargo.lock` whenever the path-dependency's contents
+//! change, so sharing one `harness/` across jobs would race different
+//! students' builds against the same lockfile/target dir. Since
+//! `driver_dir` and `workspace` don't share an ancestor, Cargo's
+//! directory-based config discovery can't find `workspace`'s offline
+//! vendoring config from `driver_dir` -- this evaluator passes the
+//! equivalent `[source]` override as `--config` flags directly instead.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -127,13 +100,9 @@ impl<S: Sandbox> Library<S> {
         mounts
     }
 
-    /// The `--config` arguments for one `cargo`/`cargo nextest` invocation:
-    /// just the offline vendored-source override, only when the package has
-    /// been prefetched (mirrors `Prepare`'s own file-based version, see
-    /// this module's doc comment for why this evaluator can't rely on that
-    /// file). No dependency redirection here — `harness/Cargo.toml`'s plain
-    /// path dependency on the sibling directory is already correct by
-    /// construction, for every tier (see this module's doc comment).
+    /// The offline vendored-source `--config` override, only when the
+    /// package has been prefetched (see this module's doc comment for why
+    /// `--config` rather than a `.cargo/config.toml` `Prepare` writes).
     fn config_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         let vendor_dir = self.vendor_dir();
@@ -205,9 +174,8 @@ impl<S: Sandbox> Evaluator for Library<S> {
 
         let junit_path = driver_dir.join("target/nextest/default/junit.xml");
         let Ok(xml) = std::fs::read_to_string(&junit_path) else {
-            // The judge never wrote a report: a crash before any session
-            // completed, or a nextest/config mismatch. Never treat missing
-            // results as a pass (design §9: every test defaults to fail).
+            // No report means the judge crashed before any session
+            // completed -- never treat that as a pass.
             return Ok(terminal_result(
                 ctx,
                 Stage::Run,
@@ -304,10 +272,9 @@ fn capped_utf8(bytes: &[u8]) -> String {
 }
 
 /// Parses `cargo nextest`'s JUnit XML report into `TestResult`s. `tests` is
-/// the spec's scored-test list, consulted only to recover each test's
-/// `visibility` (JUnit doesn't carry it) — matched by exact name first,
-/// falling back to the name's last `::`-separated segment (nextest reports
-/// `<binary>::<test_fn>`-style names).
+/// consulted only to recover each test's `visibility` (JUnit doesn't carry
+/// it), matched by name or by its last `::`-separated segment (nextest
+/// reports `<binary>::<test_fn>`-style names).
 pub fn parse_junit_report(xml: &str, tests: &[ScoredTest]) -> Result<Vec<TestResult>> {
     let doc = roxmltree::Document::parse(xml)
         .map_err(|e| Error::Other(format!("failed to parse junit report: {e}")))?;
@@ -419,10 +386,7 @@ mod tests {
         );
     }
 
-    /// A `Sandbox` double that returns canned outcomes for the build then
-    /// run invocation, in order — lets orchestration (build-then-run,
-    /// short-circuit on build failure, junit parsing) be tested without a
-    /// live sandbox/nextest.
+    /// Returns canned outcomes for the build then run invocation, in order.
     struct ScriptedSandbox {
         outcomes: Mutex<Vec<SandboxOutcome>>,
     }
@@ -512,10 +476,7 @@ visibility = "public"
         }
     }
 
-    /// A minimal but real `harness/Cargo.toml` -- `Library::new` now
-    /// requires this to exist (no generated fallback), even for tests that
-    /// never actually invoke real cargo (`ScriptedSandbox` ignores the
-    /// `SandboxSpec` content).
+    /// `Library::new` requires a real `harness/Cargo.toml` to exist.
     fn write_harness_manifest(package_dir: &std::path::Path) {
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(

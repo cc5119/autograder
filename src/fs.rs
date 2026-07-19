@@ -31,9 +31,7 @@ pub fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     std::fs::write(path, contents).map_err(|source| io_err(path, source))
 }
 
-/// `std::env::current_dir()`, with the error reported against `.` -- the
-/// same shape of problem as every other bare `io::Error` in this module,
-/// just from `std::env` rather than `std::fs`.
+/// `std::env::current_dir()`, with the error reported against `.`.
 pub fn current_dir() -> Result<std::path::PathBuf> {
     std::env::current_dir().map_err(|source| io_err(Path::new("."), source))
 }
@@ -72,10 +70,7 @@ pub fn read_dir(path: &Path) -> Result<ReadDir> {
 
 /// Reads every entry of `dir` eagerly, reporting any midstream failure
 /// against `dir` itself -- the OS gives no more specific path than that
-/// for a failed readdir() step, since the failure isn't tied to one
-/// particular entry. Replaces the common
-/// `read_dir(dir)?.map(|e| e.map_err(...))` loop at each call site with a
-/// single call.
+/// for a failed readdir() step.
 pub fn read_dir_entries(dir: &Path) -> Result<Vec<DirEntry>> {
     read_dir(dir)?
         .map(|entry| entry.map_err(|source| io_err(dir, source)))
@@ -96,27 +91,17 @@ pub fn entry_metadata(entry: &DirEntry) -> Result<Metadata> {
         .map_err(|source| io_err(&entry.path(), source))
 }
 
-/// Whether `dir` exists and has no entries. Absent entirely -- not just
-/// empty -- is *not* the same thing: callers that need to distinguish
-/// "doesn't exist" from "exists but empty" should check `dir.is_dir()`
-/// separately first, since a missing `dir` fails here with `Error::Io`
-/// rather than reading as `true`.
+/// Whether `dir` exists and has no entries. A missing `dir` is an error
+/// here, not `true` -- callers needing "doesn't exist" vs. "empty" should
+/// check `dir.is_dir()` first.
 pub fn is_empty_dir(dir: &Path) -> Result<bool> {
     Ok(read_dir(dir)?.next().is_none())
 }
 
 /// Recursively copies `src`'s tree onto `dst`, path-for-path, overwriting
 /// any file already at a given path but never removing one that isn't
-/// present in `src`. `dst` is assumed to contain nothing at all for most
-/// callers -- a freshly-created scratch directory that's never reused
-/// across jobs -- so the overwrite behavior rarely matters in practice.
-/// One caller does rely on it (see `pipeline::grade_batch`'s `binary`
-/// judge overlay onto `workspace/tests/`, which wipes that directory with
-/// `remove_dir_all` immediately beforehand precisely so this function's
-/// "leaves unrelated files alone" behavior can't leave a stray
-/// student-supplied file sitting there uncleared -- see that call site's
-/// comment for why that matters for grading integrity, not just
-/// tidiness).
+/// present in `src`. Callers relying on a clean copy should wipe `dst`
+/// first (see `pipeline::grade_batch`'s `binary` judge overlay).
 pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     create_dir_all(dst)?;
     for entry in read_dir_entries(src)? {
@@ -132,9 +117,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Recursively collects every regular file under `root`, as paths relative
-/// to `root` itself. A missing `root` yields an empty list rather than an
-/// error -- the same "hasn't gotten far enough to have anything yet" logic
-/// as [`directory_size_bytes`]'s zero-for-missing case.
+/// to `root` itself. A missing `root` yields an empty list, not an error.
 pub fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     walk_files_into(root, root, &mut out)?;

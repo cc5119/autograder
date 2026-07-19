@@ -73,34 +73,12 @@ pub(crate) fn generate_run_id() -> String {
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
 /// Prepare -> Evaluate -> persist -> Grade -> apply overrides, one student
-/// at a time. Fetch is deliberately *not* one of these stages -- it runs
-/// separately, either via `autograder fetch` or `autograder grade --fetch`
-/// (see `crate::fetch::fetch_batch`), so re-running just this part (e.g.
-/// after fixing a harness bug) never needs network access. This function
-/// only ever *reads* what a prior fetch left behind: `job_root/checkout/`
-/// and the [`crate::fetch::FetchRecord`] describing it. A student with no
-/// such record (fetch never ran for them) gets a `FetchFailed` result, the
-/// same as one whose fetch itself failed -- the batch never aborts for one
-/// student either way.
-///
-/// Not generic over a fetchable type -- `source` only needs to yield the
-/// roster (`student_id`/`metadata`), since this function never fetches.
-///
-/// The `checkout/` a prior fetch left behind mirrors `publish`'s starter
-/// layout (the crate under `[assignment].id`, possibly a `harness/`
-/// alongside it that this pipeline never trusts or reads) and is kept on
-/// disk indefinitely as the record of what was actually submitted --
-/// never written into by anything past this point. This function extracts
-/// just the `<id>/` subdirectory into an ephemeral `job_root/build/`
-/// alongside a fresh copy of the *private* harness (see
-/// `prepare::prepare`), which is what Prepare/Evaluate actually operate
-/// on. `build/` is deleted after every run regardless of outcome, so the
-/// private harness's test source never lingers on disk.
-///
-/// `overrides` (design §14, §18.2 -- M5 step 24) is applied to the `Grade`
-/// after `grade::grade` runs, never touching the persisted `eval` -- see
-/// `overrides::apply`'s doc comment for why a manual override or late
-/// penalty is recomputed here rather than baked into the raw result.
+/// at a time. Fetch is a separate stage (`crate::fetch::fetch_batch`, run
+/// via `autograder fetch` or `grade --fetch`); this function only *reads*
+/// what a prior fetch left behind (`job_root/checkout/` and its
+/// `FetchRecord`) -- a student with no record gets the same `FetchFailed`
+/// result as one whose fetch itself failed, and the batch never aborts for
+/// one student either way.
 #[allow(clippy::too_many_arguments)]
 pub fn grade_batch<F>(
     source: &dyn SubmissionsSource<F>,
@@ -117,19 +95,10 @@ pub fn grade_batch<F>(
     for submission in submissions {
         let run_id = generate_run_id();
         let job_root = work_dir.join(&submission.student_id);
-        // The raw fetched checkout a prior `fetch_batch` run left behind.
-        // Never written into by anything past this point.
         let checkout_dir = job_root.join("checkout");
-        // The ephemeral combined copy actually used to build/test: just
-        // the extracted `<id>/` crate plus a fresh copy of the *private*
-        // harness (never the student's own, even if their checkout has
-        // one -- see `prepare::prepare`). Deleted after every run (success
-        // or failure) so the private harness's test source never lingers
-        // on disk. `workspace` is named after `[assignment].id`, not e.g.
-        // "student": the harness's checked-in `Cargo.toml` depends on that
-        // exact sibling name (see `evaluator::library`'s module doc
-        // comment), so this naming is what lets that dependency resolve
-        // correctly with no patch/`--config` override needed.
+        // `workspace` is named after `[assignment].id`, not e.g. "student":
+        // the harness's checked-in Cargo.toml depends on that exact sibling
+        // name (see `evaluator::library`'s module doc comment).
         let build_dir = job_root.join("build");
         let workspace = build_dir.join(&spec.assignment.id);
         let driver_dir = build_dir.join("harness");
@@ -169,37 +138,16 @@ pub fn grade_batch<F>(
                     )),
                 )
             } else {
-                // Extract just the submitted crate into the scratch build
-                // dir, then Prepare/Evaluate exactly as before -- but
-                // always clean up `build_dir` afterward, whether this
-                // closure succeeded or hit a hard error, before letting
-                // that error propagate.
                 let outcome: Result<EvaluationResult> = (|| {
                     crate::fs::copy_dir_all(&submitted_crate, &workspace)?;
-                    // Both kinds need the *private* judge overlaid onto
-                    // this submission -- `package_dir`'s own `<id>/` is
-                    // the reference solution, not this submission, and
-                    // `Authoritative` never shares one copy across
-                    // students -- but the shape differs (see
-                    // `evaluator::library`'s and `evaluator::binary`'s
-                    // module doc comments): `library`'s harness is a
-                    // separate crate copied to a sibling `driver_dir`;
-                    // `binary` has no separate crate at all, so its judge
-                    // tests get merged directly into `workspace`'s own
-                    // `tests/`. That `tests/` dir is wiped first, not just
-                    // overlaid onto: `copy_dir_all` only overwrites paths
-                    // that exist in its source, so simply copying on top
-                    // would leave any *other* file the submission already
-                    // had there (e.g. the public judge `publish` baked
-                    // into the starter, which a normal submission still
-                    // has) -- and since `grade::grade` matches a
-                    // `TestResult` to a scored test by name alone, with no
-                    // regard for which file/binary it came from
-                    // (`grade.rs`), a stray leftover file defining a
-                    // same-named, trivially-passing test would be a real
-                    // way to fake a hidden test's result. Wiping first
-                    // guarantees the private judge is the *only* thing
-                    // `cargo nextest` ever finds in `tests/`.
+                    // `binary`'s judge tests merge directly into
+                    // `workspace/tests/`, so that dir is wiped first, not
+                    // just overlaid onto: `copy_dir_all` only overwrites
+                    // paths present in its source, and a same-named decoy
+                    // test left over from the submission's own public judge
+                    // could otherwise fake a hidden test's result (`grade`
+                    // matches by name alone, not by which file it came
+                    // from).
                     match spec.assignment.kind {
                         AssignmentKind::Library => {
                             let harness_dir = package_dir.join("harness");
@@ -278,11 +226,8 @@ mod tests {
         }
     }
 
-    /// `grade_batch` no longer fetches -- it only reads what a prior
-    /// `fetch_batch` run left at `work_dir/<student_id>/checkout/` plus
-    /// its `FetchRecord`. Every test below needs that populated first,
-    /// exactly as a real `grade --fetch` (or a separate `autograder
-    /// fetch`) would.
+    /// `grade_batch` only reads what a prior fetch left behind, so every
+    /// test needs one run first.
     fn fetch_first(source: &FixedSource, work_dir: &std::path::Path) {
         let deadline = "2026-02-14T23:59:59-08:00".parse().unwrap();
         crate::fetch::fetch_batch(source, work_dir, deadline).unwrap();
@@ -336,9 +281,6 @@ visibility = "public"
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
-        // The submission source is a whole checkout, matching `publish`'s
-        // starter layout: the crate lives under a subdirectory named after
-        // `[assignment].id`, not flattened at the source root.
         write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
@@ -377,9 +319,6 @@ visibility = "public"
         let persisted_grades = store.latest_grades("hw3").unwrap();
         assert_eq!(persisted_grades.len(), 1);
 
-        // The raw checkout survives as the record of what was submitted;
-        // the ephemeral combined build dir (submission + private harness
-        // copy) is cleaned up after grading.
         assert!(
             work_dir
                 .path()
@@ -396,8 +335,6 @@ visibility = "public"
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
-        // A checkout with no `hw3/` subdirectory at all -- e.g. a
-        // flattened submission, no longer the expected shape.
         write(&submission_src.path().join("src/lib.rs"), "// student code");
 
         let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
@@ -428,11 +365,8 @@ visibility = "public"
         assert!(!work_dir.path().join("alice/build").exists());
     }
 
-    /// An `Evaluator` double that, instead of scoring anything, just
-    /// records the sorted file names it finds in `ctx.workspace/tests/` at
-    /// evaluate-time -- lets a test observe exactly what `cargo nextest`
-    /// would have seen, before `grade_batch` deletes the scratch `build/`
-    /// dir afterward.
+    /// Records the sorted file names in `ctx.workspace/tests/` at
+    /// evaluate-time, before `grade_batch` deletes the scratch dir.
     struct CapturingEvaluator<'a> {
         seen: &'a std::sync::Mutex<Option<Vec<String>>>,
     }
@@ -466,13 +400,9 @@ visibility = "public"
         }
     }
 
-    /// A submission that still has the publish-baked public judge (same
-    /// filename the private judge will overlay onto) *and* a decoy file
-    /// with a same-named, trivially-passing stand-in for the hidden test
-    /// -- confirms `workspace/tests/` is wiped before the private judge is
-    /// copied in, so the decoy never reaches `cargo nextest` at all (see
-    /// the `AssignmentKind::Binary` arm's comment in `grade_batch` for why
-    /// this matters for grading integrity, not just tidiness).
+    /// Confirms `workspace/tests/` is wiped before the private judge is
+    /// copied in, so a decoy test left in the submission never reaches
+    /// `cargo nextest`.
     #[test]
     fn grade_batch_wipes_binary_workspace_tests_before_overlaying_the_private_judge() {
         let package_dir = tempfile::tempdir().unwrap();
@@ -546,9 +476,6 @@ visibility = "public"
             fetchable: LocalPath(submission_src.path().to_path_buf()),
             metadata: Default::default(),
         }]);
-        // A StubEvaluator that would score everything as passing if it ever
-        // ran — the assertion below only holds if the pipeline actually
-        // short-circuits before reaching it.
         let evaluator = crate::evaluator::StubEvaluator {
             tests: spec.scoring.tests.clone(),
         };
@@ -667,8 +594,6 @@ visibility = "public"
         assert_eq!(grades[0].status, "manual-review");
         assert!(grades[0].override_reason.is_some());
 
-        // The raw persisted eval is untouched by the override -- only the
-        // derived Grade reflects it.
         let persisted = store.latest_evals("hw3").unwrap();
         assert_eq!(persisted[0].tests[0].status, crate::model::TestStatus::Pass);
     }

@@ -1,31 +1,14 @@
-//! The Fetch stage (design §7.1): pulls each student's submission onto
-//! disk at `work_dir/<student_id>/checkout/`, independently of grading --
+//! The Fetch stage: pulls each student's submission onto disk at
+//! `work_dir/<student_id>/checkout/`, independently of grading --
 //! `fetch_batch` is what `autograder fetch` runs directly, and what
 //! `autograder grade --fetch` runs before Prepare/Evaluate/Grade. Grading
-//! without `--fetch` never touches this module at all; it just reads the
-//! [`FetchRecord`] a prior `fetch_batch` run left behind (see
-//! `crate::pipeline::grade_batch`), so re-running just Prepare/Evaluate/
-//! Grade (e.g. after fixing a harness bug) needs no network access.
+//! without `--fetch` never touches this module; it just reads the
+//! [`FetchRecord`] a prior `fetch_batch` run left behind.
 //!
-//! Each `Fetchable` type has exactly one way to fetch itself, so there is
-//! no separate swappable "fetcher" object -- the pluggable axis is
-//! `SubmissionsSource<F>` (where submissions come from), not how a given
-//! `Fetchable` resolves. Every `Fetchable` takes the grading deadline,
-//! even `LocalPath` (which ignores it -- there's no server-side push time
-//! for a local directory to compare against): a single, uniform `fetch`
-//! signature for every fetchable type is simpler than an associated
-//! per-type context that only `GitRepo` actually needs.
-//!
-//! `GitRepo::fetch` shells out to `git` (assumed to be on `PATH`, same as
-//! every other tool boundary in this codebase) -- a full, fresh `git
-//! clone` into `dest` on every call, no shared bare-clone cache. That
-//! *would* help students whose repos share ancestry (e.g. everyone forked
-//! the same template), but only if the roster's `repo_url`s actually
-//! coincide (an unusual roster shape) -- for the common one-fork-per-
-//! student case it buys nothing, since a cache keyed by `repo_url` never
-//! sees the same URL twice. A full clone is also what the deadline-based
-//! ref search below needs anyway (it walks commit history), so there's no
-//! shallow-clone shortcut being left on the table by skipping the cache.
+//! `GitRepo::fetch` shells out to `git` on `PATH` -- a full, fresh clone
+//! into `dest` on every call, no shared bare-clone cache (a cache keyed by
+//! `repo_url` never helps the common one-fork-per-student case, and a full
+//! clone is what the deadline-based ref search needs anyway).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,16 +53,11 @@ impl FetchOutcome {
     }
 }
 
-/// A type that knows how to fetch its own submission into a job workspace,
-/// given the grading deadline (see this module's doc comment for why every
-/// impl takes it, even ones that ignore it).
 pub trait Fetchable {
     fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome>;
 }
 
 impl Fetchable for LocalPath {
-    /// Copies the local directory wholesale into `dest`. Does not enforce
-    /// push-time deadlines -- there is no server for a local path.
     fn fetch(&self, dest: &Path, _deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
         let src = &self.0;
 
@@ -109,17 +87,11 @@ impl Fetchable for LocalPath {
 }
 
 impl Fetchable for GitRepo {
-    /// **[deferred: needs network]** -- clones `self.url` fresh into
-    /// `dest` (wiping any prior checkout there first), then resolves the
-    /// commit to check out: `self.ref` if the roster pinned one
-    /// (`rev-parse`d to a full SHA, so `FetchOutcome::graded_commit`
-    /// always reports a real hash, never a symbolic name); otherwise the
-    /// last commit at or before `deadline` on the repo's default branch
-    /// (push-time deadline selection, design §7.1). Every failure mode
-    /// here (clone/resolve/checkout) degrades to `FetchOutcome::failed`
-    /// rather than a hard `Err`, matching `LocalPath`'s shape -- one
-    /// unreachable/private/misconfigured repo shouldn't abort the whole
-    /// batch.
+    /// **[deferred: needs network]** -- clones `self.url` into `dest`, then
+    /// checks out `self.ref` if pinned, else the last commit at or before
+    /// `deadline` on the default branch. Every failure degrades to
+    /// `FetchOutcome::failed` rather than a hard `Err`, so one bad repo
+    /// doesn't abort the batch.
     fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
         if dest.exists() {
             fs::remove_dir_all(dest)?;
@@ -179,17 +151,13 @@ impl Fetchable for GitRepo {
 }
 
 impl<F: Fetchable> Submission<F> {
-    /// Fetches this submission into `dest`. Shorthand for
-    /// `self.fetchable.fetch(dest, deadline)` so call sites don't have to
-    /// reach through the field.
     pub fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
         self.fetchable.fetch(dest, deadline)
     }
 }
 
-/// A `SubmissionsSource<LocalPath>` that treats each subdirectory of `root` as one
-/// student's submission (`student_id` = directory name), so a full run
-/// needs only a folder of sample submissions -- no CSV, no network.
+/// Treats each subdirectory of `root` as one student's submission
+/// (`student_id` = directory name).
 pub struct DirectorySource {
     root: PathBuf,
 }
@@ -226,9 +194,7 @@ impl SubmissionsSource<LocalPath> for DirectorySource {
 
 /// Durable record of the last fetch attempt for one student, written by
 /// `fetch_batch` alongside `job_root/checkout/` and read back by
-/// `crate::pipeline::grade_batch` -- so grading can reuse a checkout
-/// without re-fetching, and still know what it's grading (`graded_commit`)
-/// without re-deriving it.
+/// `crate::pipeline::grade_batch`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRecord {
     pub status: StageStatus,
@@ -245,9 +211,7 @@ fn write_fetch_record(job_root: &Path, record: &FetchRecord) -> Result<()> {
     write_json(&fetch_record_path(job_root), record)
 }
 
-/// The record of the most recent `fetch_batch` run for the student at
-/// `job_root`, or `None` if `fetch_batch` has never run for them (a clean
-/// `autograder grade` with no prior `fetch`, no `--fetch`).
+/// `None` if `fetch_batch` has never run for this student.
 pub fn read_fetch_record(job_root: &Path) -> Result<Option<FetchRecord>> {
     let path = fetch_record_path(job_root);
     if !path.is_file() {
@@ -256,12 +220,9 @@ pub fn read_fetch_record(job_root: &Path) -> Result<Option<FetchRecord>> {
     read_json(&path)
 }
 
-/// Runs the Fetch stage alone, for every submission `source` yields: lands
-/// each one at `work_dir/<student_id>/checkout/` and durably records the
-/// outcome (see [`FetchRecord`]) so a later `grade` (with or without
-/// `--fetch`) knows what's there without re-fetching. Always overwrites
-/// both -- safe, and expected, to run again (a later `--as-of` cutoff, a
-/// resubmission window, just picking up new commits).
+/// Runs the Fetch stage alone: lands each submission at
+/// `work_dir/<student_id>/checkout/` and records the outcome. Safe to run
+/// again -- always overwrites both.
 pub fn fetch_batch<F: Fetchable>(
     source: &dyn SubmissionsSource<F>,
     work_dir: &Path,
@@ -367,12 +328,9 @@ fn checkout_argv(dest: &Path, sha: &str) -> Vec<String> {
     ]
 }
 
-/// Runs `<git_bin> <argv>`, returning trimmed stdout on success.
-/// **[deferred: needs network]** for the clone/fetch-touching argv above --
-/// `git_bin` stays a parameter (rather than always `GIT_BIN`) purely so
-/// tests can exercise the failure path with a binary that doesn't exist,
-/// without needing real git or network access, matching the convention
-/// `cache.rs` established for this codebase's other network boundary.
+/// Runs `<git_bin> <argv>`, returning trimmed stdout on success. `git_bin`
+/// stays a parameter (not always `GIT_BIN`) so tests can exercise the
+/// failure path with a nonexistent binary, no network needed.
 fn run_git(git_bin: &str, argv: &[String]) -> Result<String> {
     let output = Command::new(git_bin)
         .args(argv)
@@ -541,11 +499,6 @@ mod tests {
         assert!(err.to_string().contains("failed to run"));
     }
 
-    // `GitRepo::fetch`'s live clone/resolve/checkout sequence needs a real
-    // `git` binary and network access -- **[deferred: needs network]**,
-    // matching every other network boundary in this codebase (see
-    // `run_git`, and `cache.rs`'s equivalent convention before it was
-    // removed in favor of this module). The argv-construction functions
-    // above and `run_git`'s own failure path are what's exercised without
-    // it.
+    // `GitRepo::fetch`'s live clone/resolve/checkout sequence needs real
+    // git + network -- [deferred: needs network].
 }

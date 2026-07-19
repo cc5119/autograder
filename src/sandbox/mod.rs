@@ -12,10 +12,9 @@ use crate::model::ResourceUsage;
 pub use container::ContainerSandbox;
 pub use local::LocalSandbox;
 
-/// Runs a command under resource limits and isolation (design §4, §10). v1
-/// impls: `LocalSandbox` (limits-only, runner-isolated — used by the CI
-/// tier and wherever podman isn't available) and `ContainerSandbox`
-/// (rootless podman shell-out, authoritative tier).
+/// Runs a command under resource limits and isolation. Impls:
+/// `LocalSandbox` (limits-only, used wherever podman isn't available) and
+/// `ContainerSandbox` (rootless podman shell-out).
 pub trait Sandbox {
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome>;
 
@@ -55,10 +54,9 @@ pub struct SandboxLimits {
     pub max_output_bytes: u64,
 }
 
-/// What to run and under what isolation/limits. Deliberately runtime-agnostic:
-/// `LocalSandbox` runs `program`/`args` directly on the host (mounts/network
-/// are no-ops there); `ContainerSandbox` maps every field onto `podman run`
-/// flags (design §10).
+/// What to run and under what isolation/limits. `LocalSandbox` runs
+/// `program`/`args` directly on the host (mounts/network are no-ops there);
+/// `ContainerSandbox` maps every field onto `podman run` flags.
 #[derive(Debug, Clone)]
 pub struct SandboxSpec {
     pub program: String,

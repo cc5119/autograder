@@ -10,7 +10,7 @@ use crate::sandbox::SandboxLimits;
 use crate::spec::{BuildLimits, RunLimits, ScoredTest};
 
 /// Shared by both evaluators: `[limits.build]` carries no `max-output-bytes`
-/// of its own (design §5.3), so compiler output reuses the run stage's cap.
+/// of its own, so compiler output reuses the run stage's cap.
 pub(crate) fn build_sandbox_limits(build: &BuildLimits, run: &RunLimits) -> SandboxLimits {
     SandboxLimits {
         wall_clock: build.wall_clock.0,
@@ -32,8 +32,8 @@ pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
 }
 
 /// Turns a prepared workspace into a raw evaluation result. Real impls
-/// (`Library`, `Binary`, M2/M4) launch a trusted judge process
-/// against a `Sandbox`; that seam is added in M2 (design §4, §9).
+/// (`Library`, `Binary`) launch a trusted judge process against a
+/// `Sandbox`.
 pub trait Evaluator {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult>;
 }

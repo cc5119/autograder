@@ -1,28 +1,15 @@
 //! Scaffolds a brand-new **private instructor package** from nothing --
-//! `publish`'s inverse: that module derives the public starter tree from
-//! an existing private package (design §5.1); this one originates the
-//! private package itself, so there's something for `publish` to derive
-//! from in the first place.
+//! `publish`'s inverse, which derives the public starter tree from an
+//! existing private package.
 //!
-//! Declarative in the most literal sense: the layout to generate *is* a
-//! real directory tree, `templates/<kind>/` (rendered via
-//! [`crate::template`], the single place every template in this crate goes
-//! through), not a Rust table describing one. Adding, renaming, or
-//! restructuring a generated file is an edit to that tree -- real
-//! TOML/Rust source with normal syntax highlighting, not a Rust string
-//! literal -- never a change to this module's code. `init` just asks
-//! [`crate::template::render_tree`] for whichever kind's subtree, already
-//! substituted and with the `.tmpl` suffix stripped, and writes the
-//! result.
+//! The layout to generate *is* a real directory tree, `templates/<kind>/`
+//! (rendered via [`crate::template`]), not a Rust table describing one.
+//! Adding or restructuring a generated file is an edit to that tree, never
+//! a change to this module's code.
 //!
-//! What's generated is a *template* to edit, not a finished package:
-//! `{deadline}` renders to "now + one week" (a plausible, obviously-
-//! provisional starting point, not a permanent-looking artifact like a
-//! hardcoded far-future date) and `[assignment].name` is a literal
-//! `"TODO: ..."` marker -- both meant to be replaced. `[sandbox].image`,
-//! `[limits]`, and `[scoring].model` are ordinary, reusable defaults that
-//! don't need editing to be correct, mirroring the values already used
-//! throughout this crate's own test fixtures.
+//! What's generated is a template to edit, not a finished package:
+//! `{deadline}` renders to "now + one week" and `[assignment].name` is a
+//! literal `"TODO: ..."` marker, both meant to be replaced.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,10 +25,8 @@ pub struct InitOutcome {
     pub dir: PathBuf,
 }
 
-/// Writes a fresh private instructor package at `dir` (must not already
-/// exist, or must be empty -- `init` refuses to write into a directory
-/// that might already hold something, same "refuse to guess" posture
-/// `publish` takes toward its own required inputs).
+/// Writes a fresh private instructor package at `dir`, which must not
+/// already exist or must be empty.
 pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
     if !is_valid_id(id) {
         return Err(Error::InvalidSpec(format!(
@@ -61,8 +46,8 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         AssignmentKind::Binary => "binary",
     };
 
-    // Truncated to whole seconds -- a placeholder with nanosecond noise
-    // reads as generated cruft rather than a value meant to be edited.
+    // Truncated to whole seconds so it reads as an editable value, not
+    // generated cruft.
     let deadline = (Local::now() + Duration::weeks(1))
         .trunc_subsecs(0)
         .to_rfc3339();

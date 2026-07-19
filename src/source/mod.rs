@@ -7,9 +7,8 @@ use crate::fetch::DirectorySource;
 use crate::model::Submission;
 
 /// Where submissions come from, generic over the fetchable type `F` its
-/// submissions carry. v1 impls: `CsvRoster` (`SubmissionsSource<GitRepo>`),
-/// `DirectorySource` (`SubmissionsSource<LocalPath>`). Future: GitHub
-/// Classroom, a web portal.
+/// submissions carry. Impls: `CsvRoster` (`SubmissionsSource<GitRepo>`),
+/// `DirectorySource` (`SubmissionsSource<LocalPath>`).
 pub trait SubmissionsSource<F> {
     fn submissions(&self) -> Result<Vec<Submission<F>>>;
 }
@@ -17,15 +16,10 @@ pub trait SubmissionsSource<F> {
 pub use csv::CsvRoster;
 
 /// The `--submissions` path resolved to a concrete, correctly-typed
-/// `SubmissionsSource`. There is deliberately no separate flag to pick the
-/// kind — it's inferred from what's on disk: a directory means one
-/// subdirectory per student (`DirectorySource`, fetchable `LocalPath`); a
-/// file means a roster CSV (`CsvRoster`, fetchable `GitRepo`).
-///
-/// Each variant carries its own fetchable type, and each fetchable type
-/// implements `Fetchable` itself, so there is no code path that can hand a
-/// `CsvRoster`'s `GitRepo` submissions to code that only knows how to fetch
-/// a `LocalPath`.
+/// `SubmissionsSource`. There is no separate flag to pick the kind -- it's
+/// inferred from what's on disk: a directory means one subdirectory per
+/// student (`DirectorySource`, fetchable `LocalPath`); a file means a
+/// roster CSV (`CsvRoster`, fetchable `GitRepo`).
 pub enum Submissions {
     Directory(DirectorySource),
     Csv(CsvRoster),

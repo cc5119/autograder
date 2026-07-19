@@ -6,10 +6,8 @@ use crate::spec::Spec;
 use crate::vendor;
 
 /// The offline cargo environment installed into the workspace so the build
-/// stage can only resolve vendored crates (design §8.2). `vendor_dir` is
-/// `None` when the assignment package hasn't been prefetched yet (or has an
-/// empty allowlist) — `env` is then empty and no `.cargo/config.toml` is
-/// written.
+/// stage can only resolve vendored crates. `vendor_dir` is `None` when the
+/// assignment hasn't been prefetched yet (or has an empty allowlist).
 #[derive(Debug, Clone, Default)]
 pub struct OfflineEnv {
     pub vendor_dir: Option<std::path::PathBuf>,
@@ -20,36 +18,19 @@ pub struct OfflineEnv {
 pub struct PrepareOutcome {
     pub offline_env: OfflineEnv,
     /// Allowlist/`[patch]`/git/path violations found in the student
-    /// `Cargo.toml`, in the order found (design §8.3, §8.4). Non-empty means
-    /// the batch should record `DisallowedDependency` and skip Evaluate —
-    /// wired in the pipeline (step 15) rather than here, since Prepare stays
-    /// a pure "assemble + diagnose" stage.
+    /// `Cargo.toml`, in the order found. Non-empty means the batch should
+    /// record `DisallowedDependency` and skip Evaluate -- wired in the
+    /// pipeline rather than here, since Prepare stays a pure
+    /// "assemble + diagnose" stage.
     pub manifest_diagnostics: Vec<ManifestDiagnostic>,
 }
 
-/// Installs the offline cargo env (if the package has been prefetched) and
-/// diagnoses the student's `Cargo.toml` against the allowlist. Nothing
-/// else: this function has no involvement in wiring the judge/harness to
-/// `workspace` at all, for either `AssignmentKind` --
-///
-/// - **`library`**: the harness is a separate crate, wired to `workspace`
-///   entirely through a checked-in path dependency. The caller positions
-///   it correctly *before* calling this (copying `package_dir/harness` to
-///   a fresh per-job `driver_dir` next to a copied submission, for
-///   `Authoritative`; pointing at `package_dir/harness` in place, for
-///   `Ci`, since the starter repo already has it positioned correctly --
-///   see `evaluator::library`'s module doc comment for why a plain path
-///   dependency resolves correctly either way with no patch or `--config`
-///   override).
-/// - **`binary`**: the judge tests live directly inside `workspace`'s own
-///   `tests/` -- for `Ci` they're already there (`publish` baked the
-///   public subset into the starter), for `Authoritative` the caller
-///   overlays the private set onto the copied submission before calling
-///   this (see `evaluator::binary`'s module doc comment).
-///
-/// Both of those are tier-dependent decisions the caller has already made
-/// by the time this runs, so this function doesn't need to know the tier,
-/// the assignment kind, or anything about the harness at all.
+/// Installs the offline cargo env (if prefetched) and diagnoses the
+/// student's `Cargo.toml` against the allowlist. Has no involvement in
+/// wiring the judge/harness to `workspace` -- the caller has already
+/// positioned that correctly by the time this runs (see
+/// `evaluator::library`'s and `evaluator::binary`'s module doc comments),
+/// so this function doesn't need to know the tier or assignment kind.
 pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<PrepareOutcome> {
     let offline_env = install_offline_env(workspace, package_dir)?;
     let manifest_diagnostics =
@@ -62,19 +43,13 @@ pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<Prep
 }
 
 /// Writes `workspace/.cargo/config.toml` to replace the crates.io source
-/// with the assignment's vendored crates, and returns the `CARGO_NET_OFFLINE`
-/// env var the build/run sandbox spec must set (design §8.2). A no-op when
-/// the package hasn't been prefetched (no `vendor/` dir yet).
-///
-/// `library`'s actual build no longer discovers this file — its
-/// `driver_dir` is a sibling of `workspace`, not a descendant, so Cargo's
-/// directory-based config discovery never reaches it; `Library`
-/// passes the equivalent `[source]` override directly via `--config`
-/// instead (verified working with real vendored crates, offline). This
-/// function's return value is still consulted for `diagnose_manifest`
-/// below (a plain filesystem read, unrelated to Cargo's own config
-/// resolution) and still applies as-is to a future `binary`
-/// evaluator, which builds directly in `workspace`.
+/// with the assignment's vendored crates, and returns the
+/// `CARGO_NET_OFFLINE` env var the sandbox spec must set. A no-op when the
+/// package hasn't been prefetched. `library`'s build doesn't discover this
+/// file (its `driver_dir` is a sibling of `workspace`, not a descendant --
+/// `Library` passes the equivalent `--config` override directly instead),
+/// but `diagnose_manifest` below still reads it, and `binary` still uses
+/// it as-is since it builds directly in `workspace`.
 fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEnv> {
     let vendor_dir = package_dir.join("vendor");
     if !vendor_dir.is_dir() {
@@ -98,11 +73,10 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
     })
 }
 
-/// Diffs the student's `Cargo.toml` (now at the workspace root) against
-/// `[allowed-crates]`, so a disallowed dependency produces a precise
-/// diagnostic (design §8.3) instead of an opaque offline-resolution
-/// failure at build time. Absent manifest -> no diagnostics (the build
-/// stage will fail on its own with a clear "no Cargo.toml" error).
+/// Diffs the student's `Cargo.toml` against `[allowed-crates]`, so a
+/// disallowed dependency produces a precise diagnostic instead of an
+/// opaque offline-resolution failure at build time. Absent manifest -> no
+/// diagnostics (the build stage fails on its own with a clear error).
 fn diagnose_manifest(
     workspace: &Path,
     spec: &Spec,
@@ -217,13 +191,8 @@ model = "weighted"
         assert!(!workspace.path().join(".cargo/config.toml").exists());
     }
 
-    /// `prepare` makes no decision about wiring the judge/harness to
-    /// `workspace` at all, for either `AssignmentKind` -- the *caller*
-    /// positions it correctly before calling this (see
-    /// `pipeline::grade_batch` for `Authoritative`, `run_ci` for `Ci`).
-    /// This confirms `prepare` stays out of the way entirely: it never
-    /// touches `package_dir/harness` or `package_dir/<id>/tests`,
-    /// regardless of kind or whether either even exists.
+    /// Confirms `prepare` never touches `package_dir/harness` or
+    /// `package_dir/<id>/tests`, for either kind.
     #[test]
     fn prepare_never_touches_the_harness_for_either_kind() {
         let workspace = tempfile::tempdir().unwrap();
@@ -242,8 +211,6 @@ model = "weighted"
             prepare(workspace.path(), package.path(), &spec).unwrap();
         }
 
-        // Untouched: still exactly what was written above, nothing copied
-        // out of it or into it, for either kind.
         assert_eq!(
             std::fs::read_to_string(package.path().join("harness/Cargo.toml")).unwrap(),
             "[package]\nname = \"driver\"\n"
