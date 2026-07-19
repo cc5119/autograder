@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use chrono::{DateTime, FixedOffset, Utc};
+use jiff::{Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -54,11 +54,11 @@ impl FetchOutcome {
 }
 
 pub trait Fetchable {
-    fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome>;
+    fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome>;
 }
 
 impl Fetchable for LocalPath {
-    fn fetch(&self, dest: &Path, _deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
+    fn fetch(&self, dest: &Path, _deadline: &Zoned) -> Result<FetchOutcome> {
         let src = &self.0;
 
         if !src.exists() {
@@ -92,7 +92,7 @@ impl Fetchable for GitRepo {
     /// `deadline` on the default branch. Every failure degrades to
     /// `FetchOutcome::failed` rather than a hard `Err`, so one bad repo
     /// doesn't abort the batch.
-    fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
+    fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
         if dest.exists() {
             fs::remove_dir_all(dest)?;
         }
@@ -151,7 +151,7 @@ impl Fetchable for GitRepo {
 }
 
 impl<F: Fetchable> Submission<F> {
-    pub fn fetch(&self, dest: &Path, deadline: DateTime<FixedOffset>) -> Result<FetchOutcome> {
+    pub fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
         self.fetchable.fetch(dest, deadline)
     }
 }
@@ -200,7 +200,7 @@ pub struct FetchRecord {
     pub status: StageStatus,
     pub graded_commit: Option<String>,
     pub message: Option<String>,
-    pub fetched_at: DateTime<Utc>,
+    pub fetched_at: Timestamp,
 }
 
 fn fetch_record_path(job_root: &Path) -> PathBuf {
@@ -226,7 +226,7 @@ pub fn read_fetch_record(job_root: &Path) -> Result<Option<FetchRecord>> {
 pub fn fetch_batch<F: Fetchable>(
     source: &dyn SubmissionsSource<F>,
     work_dir: &Path,
-    deadline: DateTime<FixedOffset>,
+    deadline: &Zoned,
 ) -> Result<Vec<(String, FetchRecord)>> {
     let submissions = source.submissions()?;
     let mut records = Vec::new();
@@ -238,7 +238,7 @@ pub fn fetch_batch<F: Fetchable>(
             status: outcome.status,
             graded_commit: outcome.graded_commit,
             message: outcome.message,
-            fetched_at: Utc::now(),
+            fetched_at: Timestamp::now(),
         };
         write_fetch_record(&job_root, &record)?;
         records.push((submission.student_id, record));
@@ -291,16 +291,12 @@ fn default_branch_argv(dest: &Path) -> Vec<String> {
 /// the SHA of the last commit at or before `deadline` on `branch` (push-time
 /// deadline selection). Empty stdout means nothing was pushed before the
 /// deadline.
-fn last_commit_before_argv(
-    dest: &Path,
-    branch: &str,
-    deadline: DateTime<FixedOffset>,
-) -> Vec<String> {
+fn last_commit_before_argv(dest: &Path, branch: &str, deadline: &Zoned) -> Vec<String> {
     vec![
         "-C".to_string(),
         dest.display().to_string(),
         "log".to_string(),
-        format!("--before={}", deadline.to_rfc3339()),
+        format!("--before={}", deadline.timestamp()),
         "-1".to_string(),
         "--format=%H".to_string(),
         branch.to_string(),
@@ -354,8 +350,10 @@ mod tests {
 
     /// `LocalPath::fetch` ignores the deadline entirely -- this stands in
     /// for it in tests that don't care what it is.
-    fn test_deadline() -> DateTime<FixedOffset> {
-        "2026-02-14T23:59:59-08:00".parse().unwrap()
+    fn test_deadline() -> Zoned {
+        "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+            .parse()
+            .unwrap()
     }
 
     #[test]
@@ -366,7 +364,7 @@ mod tests {
         let workspace = dest.path().join("job");
 
         let outcome = local_path(src.path())
-            .fetch(&workspace, test_deadline())
+            .fetch(&workspace, &test_deadline())
             .unwrap();
 
         assert_eq!(outcome.status, StageStatus::Ok);
@@ -380,7 +378,7 @@ mod tests {
         let workspace = dest.path().join("job");
 
         let outcome = local_path("/nonexistent/path/for/sure")
-            .fetch(&workspace, test_deadline())
+            .fetch(&workspace, &test_deadline())
             .unwrap();
 
         assert_eq!(outcome.status, StageStatus::FetchFailed);
@@ -394,7 +392,7 @@ mod tests {
         let workspace = dest.path().join("job");
 
         let outcome = local_path(src.path())
-            .fetch(&workspace, test_deadline())
+            .fetch(&workspace, &test_deadline())
             .unwrap();
 
         assert_eq!(outcome.status, StageStatus::FetchFailed);
@@ -421,7 +419,7 @@ mod tests {
         let source = DirectorySource::new(root.path());
         let work_dir = tempfile::tempdir().unwrap();
 
-        let records = fetch_batch(&source, work_dir.path(), test_deadline()).unwrap();
+        let records = fetch_batch(&source, work_dir.path(), &test_deadline()).unwrap();
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].0, "alice");
@@ -465,15 +463,17 @@ mod tests {
 
     #[test]
     fn last_commit_before_argv_searches_the_given_branch_up_to_the_deadline() {
-        let deadline: DateTime<FixedOffset> = "2026-02-14T23:59:59-08:00".parse().unwrap();
-        let argv = last_commit_before_argv(Path::new("/tmp/dest"), "main", deadline);
+        let deadline: Zoned = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+            .parse()
+            .unwrap();
+        let argv = last_commit_before_argv(Path::new("/tmp/dest"), "main", &deadline);
         assert_eq!(
             argv,
             vec![
                 "-C",
                 "/tmp/dest",
                 "log",
-                "--before=2026-02-14T23:59:59-08:00",
+                "--before=2026-02-15T07:59:59Z",
                 "-1",
                 "--format=%H",
                 "main",

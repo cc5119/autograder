@@ -66,7 +66,7 @@ pub(crate) fn generate_run_id() -> String {
     let n = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!(
         "{}-{:04x}",
-        chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ"),
+        jiff::Timestamp::now().strftime("%Y-%m-%dT%H-%M-%SZ"),
         n
     )
 }
@@ -203,7 +203,7 @@ pub fn grade_batch<F>(
         let grade = overrides::apply(
             grade,
             overrides,
-            spec.assignment.deadline,
+            &spec.assignment.deadline,
             spec.scoring.late_penalty.as_ref(),
         );
         store.save_grade(&ctx.assignment_id, &ctx.run_id, &grade)?;
@@ -229,8 +229,10 @@ mod tests {
     /// `grade_batch` only reads what a prior fetch left behind, so every
     /// test needs one run first.
     fn fetch_first(source: &FixedSource, work_dir: &std::path::Path) {
-        let deadline = "2026-02-14T23:59:59-08:00".parse().unwrap();
-        crate::fetch::fetch_batch(source, work_dir, deadline).unwrap();
+        let deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+            .parse()
+            .unwrap();
+        crate::fetch::fetch_batch(source, work_dir, &deadline).unwrap();
     }
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -243,7 +245,7 @@ mod tests {
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 
 [sandbox]

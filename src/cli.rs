@@ -47,7 +47,9 @@ pub enum Command {
         /// whether the path is a file or a directory.
         #[arg(long)]
         submissions: PathBuf,
-        /// Override the deadline used for push-time commit selection (RFC3339)
+        /// Override the deadline used for push-time commit selection
+        /// ("<datetime>[<IANA zone>]", e.g.
+        /// "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long)]
         as_of: Option<String>,
     },
@@ -69,7 +71,9 @@ pub enum Command {
         /// on disk and never touches the network.
         #[arg(long)]
         fetch: bool,
-        /// Override the deadline used for push-time commit selection (RFC3339)
+        /// Override the deadline used for push-time commit selection
+        /// ("<datetime>[<IANA zone>]", e.g.
+        /// "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long, requires = "fetch")]
         as_of: Option<String>,
         /// Grade using the host-process "local sandbox" instead of podman

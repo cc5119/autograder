@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{Duration, Local, SubsecRound};
+use jiff::{ToSpan, Unit, Zoned, ZonedRound};
 
 use crate::error::{Error, Result};
 use crate::fs;
@@ -47,10 +47,13 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
     };
 
     // Truncated to whole seconds so it reads as an editable value, not
-    // generated cruft.
-    let deadline = (Local::now() + Duration::weeks(1))
-        .trunc_subsecs(0)
-        .to_rfc3339();
+    // generated cruft. Uses the host's own time zone (via `Zoned::now`), so
+    // the placeholder is meaningful as-is rather than needing a manual
+    // zone edit before it's even a plausible value.
+    let deadline = (&Zoned::now() + 1.week())
+        .round(ZonedRound::new().smallest(Unit::Second))
+        .expect("rounding to the nearest second never fails")
+        .to_string();
     let placeholders = HashMap::from([("id", id), ("deadline", deadline.as_str())]);
 
     for (rel_path, content) in crate::template::render_tree(kind_name, &placeholders)? {
@@ -93,7 +96,7 @@ mod tests {
         let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
         assert_eq!(spec.assignment.kind, AssignmentKind::Library);
-        assert!(spec.assignment.deadline > chrono::Local::now());
+        assert!(spec.assignment.deadline > Zoned::now());
     }
 
     #[test]

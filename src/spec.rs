@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset};
+use jiff::Zoned;
 use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
@@ -26,7 +26,7 @@ pub struct Assignment {
     pub id: String,
     pub name: String,
     pub kind: AssignmentKind,
-    pub deadline: DateTime<FixedOffset>,
+    pub deadline: Zoned,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -220,7 +220,7 @@ mod tests {
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 
 [sandbox]
@@ -256,7 +256,7 @@ visibility = "public"
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 
 [sandbox]

@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset};
+use jiff::{Timestamp, Zoned};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -33,7 +33,7 @@ pub struct ManualOverride {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LateSubmission {
-    pub submitted_at: DateTime<FixedOffset>,
+    pub submitted_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -73,7 +73,7 @@ impl Overrides {
 pub fn apply(
     grade: Grade,
     overrides: &Overrides,
-    deadline: DateTime<FixedOffset>,
+    deadline: &Zoned,
     late_policy: Option<&LatePenalty>,
 ) -> Grade {
     if let Some(manual) = overrides.manual.get(&grade.student_id) {
@@ -100,17 +100,17 @@ fn apply_manual_override(mut grade: Grade, over: &ManualOverride) -> Grade {
 /// the grace period, capped at `max_percent`.
 fn apply_late_penalty(
     mut grade: Grade,
-    submitted_at: DateTime<FixedOffset>,
-    deadline: DateTime<FixedOffset>,
+    submitted_at: Timestamp,
+    deadline: &Zoned,
     policy: &LatePenalty,
 ) -> Grade {
-    let grace = chrono::Duration::from_std(policy.grace.0).unwrap_or(chrono::Duration::zero());
-    let late_by = submitted_at.signed_duration_since(deadline) - grace;
-    if late_by <= chrono::Duration::zero() {
+    let deadline_with_grace = deadline.timestamp() + policy.grace.0;
+    let late_by = submitted_at.duration_since(deadline_with_grace);
+    if late_by.as_secs() <= 0 {
         return grade;
     }
 
-    let days_late = (late_by.num_seconds() as f64 / 86_400.0).ceil().max(1.0);
+    let days_late = (late_by.as_secs() as f64 / 86_400.0).ceil().max(1.0);
     let penalty_percent = (policy.per_day_percent * days_late).min(policy.max_percent);
     let factor = (1.0 - penalty_percent / 100.0).max(0.0);
 
@@ -135,8 +135,10 @@ mod tests {
         }
     }
 
-    fn deadline() -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339("2026-02-14T23:59:59-08:00").unwrap()
+    fn deadline() -> Zoned {
+        "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+            .parse()
+            .unwrap()
     }
 
     fn policy() -> LatePenalty {
@@ -175,7 +177,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
         assert_eq!(overrides.manual["alice"].score, 45.0);
         assert_eq!(
             overrides.late["bob"].submitted_at,
-            DateTime::parse_from_rfc3339("2026-02-16T10:00:00-08:00").unwrap()
+            "2026-02-16T10:00:00-08:00".parse::<Timestamp>().unwrap()
         );
     }
 
@@ -191,7 +193,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             late: BTreeMap::new(),
         };
 
-        let result = apply(grade(10.0), &overrides, deadline(), None);
+        let result = apply(grade(10.0), &overrides, &deadline(), None);
 
         assert_eq!(result.score, 45.0);
         assert_eq!(result.status, "manual-pass");
@@ -208,12 +210,12 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             late: BTreeMap::from([(
                 "alice".to_string(),
                 LateSubmission {
-                    submitted_at: deadline() - chrono::Duration::hours(1),
+                    submitted_at: deadline().timestamp() - std::time::Duration::from_secs(3600),
                 },
             )]),
         };
 
-        let result = apply(grade(80.0), &overrides, deadline(), Some(&policy()));
+        let result = apply(grade(80.0), &overrides, &deadline(), Some(&policy()));
 
         assert_eq!(result.score, 80.0);
         assert!(result.late_penalty_percent.is_none());
@@ -228,12 +230,13 @@ submitted_at = "2026-02-16T10:00:00-08:00"
                 LateSubmission {
                     // just over 2 days late -> 3 days rounded up -> 30%,
                     // under the 50% cap.
-                    submitted_at: deadline() + chrono::Duration::hours(49),
+                    submitted_at: deadline().timestamp()
+                        + std::time::Duration::from_secs(49 * 3600),
                 },
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, deadline(), Some(&policy()));
+        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()));
 
         assert_eq!(result.late_penalty_percent, Some(30.0));
         assert_eq!(result.score, 70.0);
@@ -246,12 +249,13 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             late: BTreeMap::from([(
                 "alice".to_string(),
                 LateSubmission {
-                    submitted_at: deadline() + chrono::Duration::days(30),
+                    submitted_at: deadline().timestamp()
+                        + std::time::Duration::from_secs(30 * 86_400),
                 },
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, deadline(), Some(&policy()));
+        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()));
 
         assert_eq!(result.late_penalty_percent, Some(50.0));
         assert_eq!(result.score, 50.0);
@@ -264,12 +268,13 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             late: BTreeMap::from([(
                 "alice".to_string(),
                 LateSubmission {
-                    submitted_at: deadline() + chrono::Duration::days(5),
+                    submitted_at: deadline().timestamp()
+                        + std::time::Duration::from_secs(5 * 86_400),
                 },
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, deadline(), None);
+        let result = apply(grade(100.0), &overrides, &deadline(), None);
 
         assert_eq!(result.score, 100.0);
         assert!(result.late_penalty_percent.is_none());
@@ -289,12 +294,13 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             late: BTreeMap::from([(
                 "alice".to_string(),
                 LateSubmission {
-                    submitted_at: deadline() + chrono::Duration::days(5),
+                    submitted_at: deadline().timestamp()
+                        + std::time::Duration::from_secs(5 * 86_400),
                 },
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, deadline(), Some(&policy()));
+        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()));
 
         assert_eq!(result.score, 90.0);
         assert!(result.late_penalty_percent.is_none());

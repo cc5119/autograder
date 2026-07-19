@@ -341,7 +341,7 @@ mod tests {
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 
 [sandbox]
@@ -423,7 +423,7 @@ visibility = "private"
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 
 [sandbox]
@@ -744,7 +744,7 @@ visibility = "private"
 id = "wc"
 name = "Word count"
 kind = "binary"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 [sandbox]
 image = "autograder-base:1.86.0"

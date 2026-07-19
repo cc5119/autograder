@@ -91,21 +91,20 @@ fn run_prefetch(assignment: &std::path::Path) -> Result<()> {
 }
 
 /// The deadline used for push-time commit selection: `--as-of` if given
-/// (RFC3339), otherwise `[assignment].deadline`. A parse failure is an
+/// (`"<datetime>[<IANA zone>]"`, same format as `[assignment].deadline`),
+/// otherwise `[assignment].deadline` itself. A parse failure is an
 /// `InvalidSpec`, not a panic or a silent fallback to the spec's deadline
 /// -- a typo'd `--as-of` should fail loudly, not quietly grade against the
 /// wrong cutoff.
-fn resolve_deadline(
-    spec: &Spec,
-    as_of: Option<&str>,
-) -> Result<chrono::DateTime<chrono::FixedOffset>> {
+fn resolve_deadline(spec: &Spec, as_of: Option<&str>) -> Result<jiff::Zoned> {
     match as_of {
-        Some(raw) => chrono::DateTime::parse_from_rfc3339(raw).map_err(|source| {
+        Some(raw) => raw.parse::<jiff::Zoned>().map_err(|source| {
             Error::InvalidSpec(format!(
-                "--as-of {raw:?} is not a valid RFC3339 timestamp: {source}"
+                "--as-of {raw:?} is not a valid zoned timestamp (expected \
+                 \"<datetime>[<IANA zone>]\"): {source}"
             ))
         }),
-        None => Ok(spec.assignment.deadline),
+        None => Ok(spec.assignment.deadline.clone()),
     }
 }
 
@@ -120,8 +119,8 @@ fn run_fetch(
     let work_dir = config.storage_dir.join(".work");
 
     let records = match Submissions::open(submissions)? {
-        Submissions::Directory(source) => fetch::fetch_batch(&source, &work_dir, deadline)?,
-        Submissions::Csv(source) => fetch::fetch_batch(&source, &work_dir, deadline)?,
+        Submissions::Directory(source) => fetch::fetch_batch(&source, &work_dir, &deadline)?,
+        Submissions::Csv(source) => fetch::fetch_batch(&source, &work_dir, &deadline)?,
     };
 
     for (student_id, record) in &records {
@@ -281,7 +280,7 @@ fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Confi
         let grade = overrides::apply(
             grade,
             &overrides,
-            spec.assignment.deadline,
+            &spec.assignment.deadline,
             spec.scoring.late_penalty.as_ref(),
         );
         store.save_grade(&eval.assignment_id, &eval.run_id, &grade)?;
@@ -333,7 +332,7 @@ mod ci_tests {
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -502,7 +501,7 @@ mod regrade_tests {
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
-deadline = "2026-02-14T23:59:59-08:00"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 
 [sandbox]
 image = "autograder-base:1.86.0"
