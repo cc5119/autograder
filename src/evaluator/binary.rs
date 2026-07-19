@@ -333,7 +333,6 @@ base = 0.0
             student_id: "alice".into(),
             run_id: "run-1".into(),
             workspace,
-            driver_dir: PathBuf::from("/tmp/unused-for-binary"),
         }
     }
 

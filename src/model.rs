@@ -42,12 +42,13 @@ pub struct JobContext {
     /// directory's `<id>/` subdirectory directly. Named after
     /// `[assignment].id`, not e.g. "student", because the `library` driver
     /// crate's checked-in `Cargo.toml` depends on that exact sibling name.
+    /// `library`'s driver crate itself always lives at the sibling
+    /// `harness/` directory (`workspace.parent().join("harness")`) -- a
+    /// fresh per-job scratch copy for authoritative grading,
+    /// `package_dir/harness` itself, built in place, for `ci`. There is no
+    /// separate field for it since it's derivable from `workspace` alone,
+    /// and `binary` has no use for it at all.
     pub workspace: PathBuf,
-    /// Where a `library` driver crate is built -- always a *sibling* of
-    /// `workspace`, never nested inside it. A fresh per-job scratch copy
-    /// for authoritative grading; `package_dir/harness` itself, built in
-    /// place, for `ci`. Unused by `binary`.
-    pub driver_dir: PathBuf,
 }
 
 /// Verdict for a single test, as observed by the trusted judge.

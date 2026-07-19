@@ -226,18 +226,14 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
     let workspace = harness_dir.join(spec.assignment.id.as_str());
     let run_id = pipeline::generate_run_id();
     // `library`'s harness is already positioned correctly by `publish` as
-    // a sibling of `workspace`. `binary` has no separate driver crate, so
-    // `driver_dir` is never read for it; any placeholder satisfies `JobContext`.
-    let driver_dir = match spec.assignment.kind {
-        AssignmentKind::Library => harness_dir.join("harness"),
-        AssignmentKind::Binary => std::env::temp_dir().join(format!("autograder-ci-{run_id}")),
-    };
+    // a sibling of `workspace` (`repo_root/harness`, derived from
+    // `workspace`'s parent by `evaluator::library` -- no separate
+    // `JobContext` field needed, and `binary` has no use for it at all).
     let ctx = JobContext {
         assignment_id: spec.assignment.id,
         student_id: StudentId::new("local"),
         run_id,
         workspace: workspace.clone(),
-        driver_dir,
     };
 
     let prepared = prepare::prepare(&workspace, &harness_dir, &spec)?;
@@ -397,7 +393,6 @@ base = 0.0
         write(&workspace.join("src/lib.rs"), "pub fn noop() {}\n");
 
         let spec = Spec::load(harness_dir.path()).unwrap();
-        let driver_dir = harness_dir.path().join("harness");
         let prepared = prepare::prepare(&workspace, harness_dir.path(), &spec).unwrap();
         assert!(prepared.manifest_diagnostics.is_empty());
 
@@ -407,7 +402,6 @@ base = 0.0
             student_id: "local".into(),
             run_id: "run-1".into(),
             workspace,
-            driver_dir,
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 

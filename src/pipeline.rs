@@ -138,13 +138,11 @@ pub fn grade_batch<F>(
         // name (see `evaluator::library`'s module doc comment).
         let build_dir = job_root.join("build");
         let workspace = build_dir.join(spec.assignment.id.as_str());
-        let driver_dir = build_dir.join("harness");
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
             student_id: submission.student_id,
             run_id,
             workspace: workspace.clone(),
-            driver_dir: driver_dir.clone(),
         };
 
         let fetch_record = read_fetch_record(&job_root)?;

@@ -109,7 +109,6 @@ mod tests {
             student_id: "alice".into(),
             run_id: "run-1".into(),
             workspace: PathBuf::from("/tmp/does-not-matter"),
-            driver_dir: PathBuf::from("/tmp/does-not-matter-either"),
         };
 
         let eval = evaluator.evaluate(&ctx).unwrap();

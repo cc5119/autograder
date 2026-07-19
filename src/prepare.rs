@@ -46,8 +46,9 @@ pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<Prep
 /// with the assignment's vendored crates, and returns the
 /// `CARGO_NET_OFFLINE` env var the sandbox spec must set. A no-op when the
 /// package hasn't been prefetched. `library`'s build doesn't discover this
-/// file (its `driver_dir` is a sibling of `workspace`, not a descendant --
-/// `Library` passes the equivalent `--config` override directly instead),
+/// file (it always runs with `workdir` at the shared `repo_root`, never a
+/// descendant of `workspace` -- `Library` passes the equivalent `--config`
+/// override directly instead),
 /// but `diagnose_manifest` below still reads it, and `binary` still uses
 /// it as-is since it builds directly in `workspace`.
 fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEnv> {
