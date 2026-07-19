@@ -1,38 +1,39 @@
 //! The `library` `Evaluator`: builds the trusted **driver** crate (depends
 //! on the student library via a plain path dependency) and runs the
 //! instructor-authored **judge** under `cargo nextest`, both under a
-//! `Sandbox`. The judge lives permanently at `harness/`, never generated or
-//! rewritten by this tool; this module just drives `cargo build` then
-//! `cargo nextest run` and turns the JUnit report into `TestResult`s.
+//! `Sandbox`. The judge lives permanently at `[assignment].harness`'s
+//! directory, never generated or rewritten by this tool; this module just
+//! drives `cargo build` then `cargo nextest run` and turns the JUnit report
+//! into `TestResult`s.
 //!
-//! `harness/Cargo.toml` declares a plain `<id> = { path = "../<id>" }`
+//! `<harness>/Cargo.toml` declares a plain `<id> = { path = "../<id>" }`
 //! dependency, no `[patch.crates-io]`, because whoever assembles the job
 //! always positions the code under test at that exact sibling location.
-//! `harness/` is overlaid into `repo_root/harness` (`repo_root` being
-//! `ctx.workspace`'s parent -- there's no separate `JobContext` field for
-//! it, since it's always at that fixed, derivable location), a *fresh,
-//! per-job* sibling of `ctx.workspace` (never built in place): freshness
-//! matters because Cargo rewrites `Cargo.lock` whenever the
-//! path-dependency's contents change, so sharing one `harness/` across
-//! jobs would race different students' builds against the same
-//! lockfile/target dir.
+//! `<harness>/` (named by `[assignment].harness`) is overlaid into
+//! `repo_root/<harness>` (`repo_root` being `ctx.workspace`'s parent --
+//! there's no separate `JobContext` field for it, since it's always at that
+//! fixed, derivable location), a *fresh, per-job* sibling of `ctx.workspace`
+//! (never built in place): freshness matters because Cargo rewrites
+//! `Cargo.lock` whenever the path-dependency's contents change, so sharing
+//! one harness dir across jobs would race different students' builds
+//! against the same lockfile/target dir.
 //!
 //! `repo_root` (the caller's job-build directory for `grade`, or the
 //! published repo root for `ci`) also carries the same root `[workspace]`
-//! manifest `publish` ships to students, listing both `harness` and
+//! manifest `publish` ships to students, listing both the harness and
 //! `workspace` as members -- build and run both happen with `workdir =
-//! repo_root` (never `cd`ed into `harness/`) and `-p <harness_package>`
-//! (`harness/Cargo.toml`'s own `[package].name`, read once at
-//! construction -- an instructor can name the crate anything, it needn't
-//! be `"harness"`), so Cargo resolves one shared `Cargo.lock`/`target/`
+//! repo_root` (never `cd`ed into the harness dir) and `-p <harness_package>`
+//! (`[assignment].harness`, which names both the sibling directory and its
+//! own `[package].name` -- the two must agree), so Cargo resolves one
+//! shared `Cargo.lock`/`target/`
 //! exactly as a student's own `cargo test` would, while `-p` still scopes
-//! package selection to just `harness` regardless of cwd, never sweeping
+//! package selection to just the harness regardless of cwd, never sweeping
 //! in the student's own crate's tests (`grade` trusts every test an `eval`
 //! reports with no name allowlist, so accidentally running the student's
 //! own tests would let them inflate their own score -- the same class of
 //! attack `pipeline.rs` guards against for `binary` via `Rule::Clean`; see
 //! `attic/same-name-test-target-repro` for a working repro of exactly this
-//! with no package scoping at all). No `--test` filter -- `harness` may
+//! with no package scoping at all). No `--test` filter -- the harness may
 //! define more than one test target, and every one of them should run.
 //! (`-p`, unlike `--manifest-path`, needs an ambient `Cargo.toml` at or
 //! above `workdir`; `repo_root` always has one here, so this is safe.)
@@ -53,9 +54,7 @@ use crate::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec}
 use crate::spec::Spec;
 use crate::vendor;
 
-use super::{
-    Evaluator, build_sandbox_limits, harness_package_name, run_sandbox_limits, write_nextest_config,
-};
+use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
 /// writes to; mirrors `vendor::prefetch`'s output layout.
@@ -66,17 +65,18 @@ pub struct Library<S> {
     package_dir: PathBuf,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
-    /// `[package].name` from `harness/Cargo.toml` -- the harness's own
-    /// crate name, not necessarily `"harness"` (an instructor can name it
-    /// anything). Read once at construction so `evaluate` can pass `-p
-    /// <harness_package>` and never needs to touch the manifest again.
+    /// `[assignment].harness` -- names both the harness's sibling directory
+    /// and its own `[package].name`, which must agree. Cloned once at
+    /// construction so `evaluate` can pass `-p <harness_package>`.
     harness_package: String,
 }
 
 impl<S: Sandbox> Library<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
-        let harness_manifest = package_dir.join("harness/Cargo.toml");
+        let harness_manifest = package_dir
+            .join(&spec.assignment.harness)
+            .join("Cargo.toml");
         if !harness_manifest.is_file() {
             return Err(Error::InvalidSpec(format!(
                 "library assignment missing {} -- the harness must be a real, \
@@ -84,13 +84,12 @@ impl<S: Sandbox> Library<S> {
                 harness_manifest.display()
             )));
         }
-        let harness_package = harness_package_name(&harness_manifest)?;
         Ok(Self {
             sandbox,
             package_dir,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
-            harness_package,
+            harness_package: spec.assignment.harness.clone(),
         })
     }
 
@@ -106,10 +105,11 @@ impl<S: Sandbox> Library<S> {
         env
     }
 
-    /// `repo_root` (containing both `workspace` and `harness/`) is mounted
-    /// read-write, since a workspace build's `Cargo.lock`/`target/` land at
-    /// its root, not under `harness/`. `workspace` is then mounted again,
-    /// more specifically and read-only, which shadows just that subtree of
+    /// `repo_root` (containing both `workspace` and the harness dir) is
+    /// mounted read-write, since a workspace build's `Cargo.lock`/`target/`
+    /// land at its root, not under the harness dir. `workspace` is then
+    /// mounted again, more specifically and read-only, which shadows just
+    /// that subtree of
     /// the broader mount -- the student's own submitted source must never
     /// be writable inside the sandbox, even though the judge crate and
     /// build artifacts around it are.
@@ -518,6 +518,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -572,7 +573,7 @@ base = 0.0
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
             package_dir.join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         )
         .unwrap();
     }
@@ -682,10 +683,7 @@ base = 0.0
         let build_spec = &specs[0];
         assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
         assert!(build_spec.args.contains(&"-p".to_string()));
-        // `write_harness_manifest` names the harness crate "driver", not
-        // "harness" -- confirms the real `[package].name` is used, not the
-        // directory name.
-        assert!(build_spec.args.contains(&"driver".to_string()));
+        assert!(build_spec.args.contains(&"harness".to_string()));
         // Never runs nextest at all here (build failed), but never a
         // `--test` filter on the build step either way -- `--test` is
         // gone entirely now, from either step.
@@ -709,24 +707,61 @@ base = 0.0
         let specs = specs.lock().unwrap();
         let run_spec = &specs[1];
         assert!(run_spec.args.contains(&"-p".to_string()));
-        assert!(run_spec.args.contains(&"driver".to_string()));
+        assert!(run_spec.args.contains(&"harness".to_string()));
         // No `--test` filter: every test target the harness package
         // defines should run, not just one.
         assert!(!run_spec.args.contains(&"--test".to_string()));
     }
 
     #[test]
-    fn new_errors_clearly_when_the_harness_manifest_has_no_package_name() {
+    fn a_custom_assignment_harness_name_drives_both_the_directory_and_the_p_arg() {
         let package_dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(package_dir.path().join("harness")).unwrap();
+        std::fs::create_dir_all(package_dir.path().join("driver")).unwrap();
         std::fs::write(
-            package_dir.path().join("harness/Cargo.toml"),
-            "[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            package_dir.path().join("driver/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         )
         .unwrap();
+        let toml = r#"
+[assignment]
+id = "hw3"
+name = "Binary search tree"
+kind = "library"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "driver"
 
-        let result = Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+[sandbox]
+image = "autograder-base:1.86.0"
 
-        assert!(matches!(result, Err(Error::InvalidSpec(_))));
+[allowed-crates]
+
+[limits.build]
+wall-clock = "120s"
+cpus = 2
+memory = "2GiB"
+pids = 256
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "512MiB"
+pids = 128
+max-output-bytes = "1MiB"
+
+[scoring]
+formula = "sum"
+base = 0.0
+"#;
+        let spec: Spec = toml::from_str(toml).unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
+        let evaluator = Library::new(&spec, package_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(workspace)).unwrap();
+
+        let specs = specs.lock().unwrap();
+        assert!(specs[0].args.contains(&"driver".to_string()));
     }
 }

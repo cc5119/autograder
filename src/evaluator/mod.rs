@@ -3,7 +3,7 @@ pub mod library;
 
 use std::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
@@ -46,29 +46,6 @@ pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
         &config_dir.join("nextest.toml"),
         "[profile.default]\nstore-success-output = true\n",
     )
-}
-
-/// Reads `[package].name` out of a harness manifest -- both `Library` and
-/// `Binary` need this, since the harness's own crate name is
-/// instructor-chosen and not necessarily `"harness"` (mirrors
-/// `publish::validate_manifest`'s parse of the student's own manifest).
-pub(crate) fn harness_package_name(harness_manifest: &Path) -> Result<String> {
-    let contents = crate::fs::read_to_string(harness_manifest)?;
-    let value: toml::Value = toml::from_str(&contents).map_err(|source| Error::Toml {
-        path: harness_manifest.to_path_buf(),
-        source: Box::new(source),
-    })?;
-    value
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            Error::InvalidSpec(format!(
-                "{} has no [package].name",
-                harness_manifest.display()
-            ))
-        })
 }
 
 /// `repo_root` (containing both `workspace` and `harness/`) is mounted

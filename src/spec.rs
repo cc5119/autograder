@@ -20,13 +20,19 @@ pub enum AssignmentKind {
 }
 
 /// `id` doubles as the student-facing crate name: the dependency name for
-/// `library`, the expected binary target name for `binary`.
+/// `library`, the expected binary target name for `binary`. `harness`
+/// likewise names both the sibling harness package's directory (relative to
+/// the assignment package dir) and that package's own `[package].name` in
+/// `<harness>/Cargo.toml` -- the two must agree, since this one value drives
+/// both the on-disk path autograder reads and the `-p` argument it passes to
+/// cargo. No default: every assignment must set it explicitly.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
     pub id: AssignmentId,
     pub name: String,
     pub kind: AssignmentKind,
     pub deadline: Zoned,
+    pub harness: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -258,6 +264,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 
 [sandbox]
@@ -292,6 +299,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 
 [sandbox]

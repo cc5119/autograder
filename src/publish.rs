@@ -35,9 +35,9 @@ fn rules() -> Vec<Rule> {
         Rule::File("Cargo.toml", None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
         Rule::Glob("{id}/src/**", Some(strip_stub)),
-        Rule::File("harness/Cargo.toml", None),
-        Rule::Glob("harness/src/**", None),
-        Rule::Glob("harness/tests/**", Some(strip_stub)),
+        Rule::File("{harness}/Cargo.toml", None),
+        Rule::Glob("{harness}/src/**", None),
+        Rule::Glob("{harness}/tests/**", Some(strip_stub)),
     ]
 }
 
@@ -55,7 +55,10 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
 
     let ctx = Context {
         source_root: package_dir.to_path_buf(),
-        substitutions: HashMap::from([("id", id.to_string())]),
+        substitutions: HashMap::from([
+            ("id", id.to_string()),
+            ("harness", spec.assignment.harness.clone()),
+        ]),
     };
 
     overlay::apply(&ctx, out_dir, &rules())?;
@@ -177,6 +180,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 
 [sandbox]
@@ -488,6 +492,7 @@ id = "wc"
 name = "Word count"
 kind = "binary"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 [sandbox]
 image = "autograder-base:1.86.0"

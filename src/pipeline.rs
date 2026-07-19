@@ -27,7 +27,7 @@ fn checkout_rules() -> Vec<Rule> {
 fn package_rules() -> Vec<Rule> {
     vec![
         Rule::File("Cargo.toml", None),
-        Rule::Glob("harness/**", None),
+        Rule::Glob("{harness}/**", None),
     ]
 }
 
@@ -153,7 +153,10 @@ pub fn grade_batch<F>(
                 )
             } else {
                 let outcome: Result<EvaluationResult> = (|| {
-                    let subs = HashMap::from([("id", spec.assignment.id.to_string())]);
+                    let subs = HashMap::from([
+                        ("id", spec.assignment.id.to_string()),
+                        ("harness", spec.assignment.harness.clone()),
+                    ]);
                     overlay::apply(
                         &Context {
                             source_root: checkout_dir.clone(),
@@ -250,6 +253,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 
 [sandbox]

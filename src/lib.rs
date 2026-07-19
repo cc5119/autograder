@@ -340,6 +340,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -381,7 +382,7 @@ base = 0.0
         );
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
             &harness_dir.path().join("harness/src/main.rs"),
@@ -426,7 +427,7 @@ base = 0.0
         let harness_dir = tempfile::tempdir().unwrap();
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
         );
         let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
         assert!(result.is_ok());
@@ -457,7 +458,7 @@ base = 0.0
         );
         write(
             &assignment_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
             &assignment_dir.path().join("harness/src/main.rs"),
@@ -516,6 +517,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 [sandbox]
 image = "autograder-base:1.86.0"

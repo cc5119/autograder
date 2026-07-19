@@ -5,12 +5,13 @@
 //! process self-reports.
 //!
 //! Mirrors `library`'s shape: the judge lives permanently in a separate
-//! `harness/` package, a sibling of `workspace` (`[assignment].id`'s own
-//! crate) under one shared `repo_root`, never generated or rewritten by
-//! this tool. Build and run both happen with `workdir = repo_root`,
-//! `-p <harness_package>` (`harness/Cargo.toml`'s own `[package].name`,
-//! read once at construction) for `run`, and `-p <harness_package> -p
-//! <id>` for `build` -- unlike `library`, there's no Cargo dependency edge
+//! harness package, a sibling of `workspace` (`[assignment].id`'s own
+//! crate) under one shared `repo_root`, at the directory named by
+//! `[assignment].harness` -- which also names that package's own
+//! `[package].name`, the two must agree. Build and run both happen with
+//! `workdir = repo_root`, `-p <harness_package>` for `run`, and `-p
+//! <harness_package> -p <id>` for `build` -- unlike `library`, there's no
+//! Cargo dependency edge
 //! from `harness` to `workspace` (a plain `[dependencies]` entry can only
 //! link a *library* target, and `workspace` here is bin-only; Cargo's
 //! artifact-dependencies feature would fix this but is still nightly-gated
@@ -44,9 +45,7 @@ use crate::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec}
 use crate::spec::Spec;
 
 use super::library::parse_junit_report;
-use super::{
-    Evaluator, build_sandbox_limits, harness_package_name, run_sandbox_limits, write_nextest_config,
-};
+use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
 
 const VENDOR_DIR_NAME: &str = "vendor";
 
@@ -55,15 +54,18 @@ pub struct Binary<S> {
     package_dir: PathBuf,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
-    /// `[package].name` from `harness/Cargo.toml` -- see this module's doc
-    /// comment for why it isn't assumed to be `"harness"`.
+    /// `[assignment].harness` -- names both the harness's sibling directory
+    /// and its own `[package].name`, which must agree. Cloned once at
+    /// construction so `evaluate` can pass `-p <harness_package>`.
     harness_package: String,
 }
 
 impl<S: Sandbox> Binary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
-        let harness_manifest = package_dir.join("harness/Cargo.toml");
+        let harness_manifest = package_dir
+            .join(&spec.assignment.harness)
+            .join("Cargo.toml");
         if !harness_manifest.is_file() {
             return Err(Error::InvalidSpec(format!(
                 "binary assignment missing {} -- the harness must be a real, \
@@ -71,13 +73,12 @@ impl<S: Sandbox> Binary<S> {
                 harness_manifest.display()
             )));
         }
-        let harness_package = harness_package_name(&harness_manifest)?;
         Ok(Self {
             sandbox,
             package_dir,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
-            harness_package,
+            harness_package: spec.assignment.harness.clone(),
         })
     }
 
@@ -339,6 +340,7 @@ id = "wc"
 name = "Word count"
 kind = "binary"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "harness"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -380,7 +382,7 @@ base = 0.0
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
             package_dir.join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
     }
@@ -406,14 +408,55 @@ base = 0.0
     }
 
     #[test]
-    fn new_errors_clearly_when_the_harness_manifest_has_no_package_name() {
+    fn a_custom_assignment_harness_name_drives_both_the_directory_and_the_p_arg() {
         let package_dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(package_dir.path().join("harness")).unwrap();
-        std::fs::write(package_dir.path().join("harness/Cargo.toml"), "").unwrap();
+        std::fs::create_dir_all(package_dir.path().join("driver")).unwrap();
+        std::fs::write(
+            package_dir.path().join("driver/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        let toml = r#"
+[assignment]
+id = "wc"
+name = "Word count"
+kind = "binary"
+deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
+harness = "driver"
 
-        let result = Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+[sandbox]
+image = "autograder-base:1.86.0"
 
-        assert!(matches!(result, Err(Error::InvalidSpec(_))));
+[allowed-crates]
+
+[limits.build]
+wall-clock = "120s"
+cpus = 2
+memory = "2GiB"
+pids = 256
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "512MiB"
+pids = 128
+max-output-bytes = "1MiB"
+
+[scoring]
+formula = "sum"
+base = 0.0
+"#;
+        let spec: Spec = toml::from_str(toml).unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
+        let evaluator = Binary::new(&spec, package_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(workspace)).unwrap();
+
+        let specs = specs.lock().unwrap();
+        assert!(specs[0].args.contains(&"driver".to_string()));
     }
 
     #[test]
@@ -489,17 +532,14 @@ base = 0.0
         let build_spec = &specs[0];
         let run_spec = &specs[1];
         assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
-        // `write_harness_manifest` names the harness crate "driver", not
-        // "harness" -- confirms the real `[package].name` is used, not the
-        // directory name.
         assert_eq!(
             build_spec.args,
-            vec!["build", "--offline", "-p", "driver", "-p", "wc"]
+            vec!["build", "--offline", "-p", "harness", "-p", "wc"]
         );
         assert_eq!(run_spec.workdir.as_deref(), Some(repo_root.path()));
         assert_eq!(
             run_spec.args,
-            vec!["nextest", "run", "--offline", "-p", "driver"]
+            vec!["nextest", "run", "--offline", "-p", "harness"]
         );
     }
 

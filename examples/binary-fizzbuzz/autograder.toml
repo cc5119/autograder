@@ -18,6 +18,7 @@ id = "fizzbuzz"
 name = "FizzBuzz (binary example)"
 kind = "binary"
 deadline = "2099-01-01T00:00:00[UTC]"
+harness = "harness"
 
 [sandbox]
 image = "autograder-base:1.86.0"
