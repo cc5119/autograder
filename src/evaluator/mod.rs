@@ -3,11 +3,11 @@ pub mod library;
 
 use std::path::Path;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
-use crate::sandbox::SandboxLimits;
+use crate::sandbox::{Mount, MountMode, SandboxLimits};
 use crate::spec::{BuildLimits, RunLimits};
 
 /// Shared by both evaluators: `[limits.build]` carries no `max-output-bytes`
@@ -46,6 +46,64 @@ pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
         &config_dir.join("nextest.toml"),
         "[profile.default]\nstore-success-output = true\n",
     )
+}
+
+/// Reads `[package].name` out of a harness manifest -- both `Library` and
+/// `Binary` need this, since the harness's own crate name is
+/// instructor-chosen and not necessarily `"harness"` (mirrors
+/// `publish::validate_manifest`'s parse of the student's own manifest).
+pub(crate) fn harness_package_name(harness_manifest: &Path) -> Result<String> {
+    let contents = crate::fs::read_to_string(harness_manifest)?;
+    let value: toml::Value = toml::from_str(&contents).map_err(|source| Error::Toml {
+        path: harness_manifest.to_path_buf(),
+        source: Box::new(source),
+    })?;
+    value
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            Error::InvalidSpec(format!(
+                "{} has no [package].name",
+                harness_manifest.display()
+            ))
+        })
+}
+
+/// `repo_root` (containing both `workspace` and `harness/`) is mounted
+/// read-write, since a workspace build's `Cargo.lock`/`target/` land at
+/// its root, not under `harness/`. `workspace` is then mounted again, more
+/// specifically and read-only, which shadows just that subtree of the
+/// broader mount -- the student's own submitted source must never be
+/// writable inside the sandbox, even though the judge crate and build
+/// artifacts around it are. `vendor_dir`, if it exists on disk, is mounted
+/// read-only alongside (both evaluators' offline-vendoring layout).
+pub(crate) fn repo_root_mounts(
+    repo_root: &Path,
+    workspace: &Path,
+    vendor_dir: &Path,
+) -> Vec<Mount> {
+    let mut mounts = vec![
+        Mount {
+            host_path: repo_root.to_path_buf(),
+            container_path: repo_root.to_path_buf(),
+            mode: MountMode::ReadWrite,
+        },
+        Mount {
+            host_path: workspace.to_path_buf(),
+            container_path: workspace.to_path_buf(),
+            mode: MountMode::ReadOnly,
+        },
+    ];
+    if vendor_dir.is_dir() {
+        mounts.push(Mount {
+            host_path: vendor_dir.to_path_buf(),
+            container_path: vendor_dir.to_path_buf(),
+            mode: MountMode::ReadOnly,
+        });
+    }
+    mounts
 }
 
 /// Turns a prepared workspace into a raw evaluation result. Real impls

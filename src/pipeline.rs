@@ -13,43 +13,22 @@ use crate::model::{
 use crate::overlay::{self, Context, Rule};
 use crate::overrides::{self, Overrides};
 use crate::source::SubmissionsSource;
-use crate::spec::{AssignmentKind, Spec};
+use crate::spec::Spec;
 use crate::store::Store;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// Everything copied from the student's own fetched checkout: just their
-/// `{id}/` crate, whatever it contains -- never `harness/`, never their own
-/// spec, both of which the checkout might carry from the published starter
-/// but which grading must never trust.
+/// Everything copied from the student's own fetched checkout: the untrusted submission.
 fn checkout_rules() -> Vec<Rule> {
     vec![Rule::Glob("{id}/**", None)]
 }
 
-/// Everything copied from the instructor's private package: the trusted
-/// judge, always overwriting whatever (if anything) the student's own
-/// checkout had at the same paths.
-fn package_rules(kind: AssignmentKind) -> Vec<Rule> {
-    match kind {
-        // The root `[workspace]` manifest too, so `harness` and `{id}`
-        // build as real workspace members sharing one `Cargo.lock`/
-        // `target/` -- the same shape `publish` ships to students, so
-        // grading resolves dependencies exactly as their own `cargo test`
-        // would (see `evaluator::library`'s module doc comment).
-        AssignmentKind::Library => vec![
-            Rule::File("Cargo.toml", None),
-            Rule::Glob("harness/**", None),
-        ],
-        AssignmentKind::Binary => vec![
-            // `{id}/tests/**` is wiped first, not just overlaid onto: a
-            // same-named decoy test left over from the submission's own
-            // public judge could otherwise fake a hidden test's result
-            // (`grade` matches by name alone, not by which file it came
-            // from).
-            Rule::Clean("{id}/tests"),
-            Rule::Glob("{id}/tests/**", None),
-        ],
-    }
+/// Everything copied from the instructor's private package: the trusted judge.
+fn package_rules() -> Vec<Rule> {
+    vec![
+        Rule::File("Cargo.toml", None),
+        Rule::Glob("harness/**", None),
+    ]
 }
 
 /// Builds an `EvaluationResult` for a stage that failed before Evaluate
@@ -189,7 +168,7 @@ pub fn grade_batch<F>(
                             substitutions: subs,
                         },
                         &build_dir,
-                        &package_rules(spec.assignment.kind),
+                        &package_rules(),
                     )?;
                     let prepared = crate::prepare::prepare(&workspace, package_dir, spec)?;
                     if !prepared.manifest_diagnostics.is_empty() {
@@ -271,7 +250,6 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 
 [sandbox]
@@ -407,15 +385,17 @@ base = 0.0
         assert!(!work_dir.path().join("alice/build").exists());
     }
 
-    /// Records the sorted file names in `ctx.workspace/tests/` at
-    /// evaluate-time, before `grade_batch` deletes the scratch dir.
+    /// Records the sorted file names in `harness/tests/` (a sibling of
+    /// `ctx.workspace`) at evaluate-time, before `grade_batch` deletes the
+    /// scratch dir.
     struct CapturingEvaluator<'a> {
         seen: &'a std::sync::Mutex<Option<Vec<String>>>,
     }
 
     impl Evaluator for CapturingEvaluator<'_> {
         fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
-            let mut names: Vec<String> = std::fs::read_dir(ctx.workspace.join("tests"))
+            let harness_tests = ctx.workspace.parent().unwrap().join("harness/tests");
+            let mut names: Vec<String> = std::fs::read_dir(harness_tests)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
@@ -442,27 +422,40 @@ base = 0.0
         }
     }
 
-    /// Confirms `workspace/tests/` is wiped before the private judge is
-    /// copied in, so a decoy test left in the submission never reaches
-    /// `cargo nextest`.
+    /// Confirms a submission's checkout can never reach `harness/`, even if
+    /// it ships its own same-named `harness/` directory at its root, hoping
+    /// to overwrite the trusted judge: `checkout_rules()` only ever globs
+    /// `{id}/**`, so `harness/` in `build_dir` always comes from the
+    /// trusted `package_dir`, never the student.
     #[test]
-    fn grade_batch_wipes_binary_workspace_tests_before_overlaying_the_private_judge() {
+    fn grade_batch_never_lets_the_submission_checkout_reach_the_harness_package() {
         let package_dir = tempfile::tempdir().unwrap();
         let submission_src = tempfile::tempdir().unwrap();
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
         write(
-            &package_dir.path().join("wc/tests/judge.rs"),
-            "#[test]\nfn counts_words() {}\n",
+            &package_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"harness\", \"wc\"]\n",
         );
         write(
-            &submission_src.path().join("wc/tests/judge.rs"),
-            "#[test]\nfn counts_words() {}\n",
+            &package_dir.path().join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
         );
         write(
-            &submission_src.path().join("wc/tests/decoy.rs"),
-            "#[test]\nfn counts_zero_for_empty_input() { assert!(true); }\n",
+            &package_dir.path().join("harness/tests/judge.rs"),
+            "#[test]\nfn counts_words() {}\n",
+        );
+
+        write(
+            &submission_src.path().join("wc/src/main.rs"),
+            "fn main() {}\n",
+        );
+        // A malicious submission tries to ship its own `harness/`, hoping
+        // to overwrite the trusted judge.
+        write(
+            &submission_src.path().join("harness/tests/decoy.rs"),
+            "#[test]\nfn fake_pass() { assert!(true); }\n",
         );
 
         let toml = SPEC_TOML

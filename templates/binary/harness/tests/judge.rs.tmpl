@@ -1,0 +1,34 @@
+use std::path::PathBuf;
+use std::process::Command;
+
+/// The compiled `{id}` binary, built as an ordinary workspace member
+/// alongside this harness. `env!("CARGO_BIN_EXE_<name>")` only resolves
+/// within a test's own package, never across a dependency edge, so this
+/// walks up from `harness`'s own `CARGO_MANIFEST_DIR` to the workspace
+/// root's shared `target/` instead. (One way to do this, not the only
+/// one -- `escargot`, a `build.rs`, or anything else that locates the
+/// built binary works just as well.)
+///
+/// `cargo build -p {id}` first: unlike `cargo test`, which only builds
+/// `{id}` far enough to satisfy the workspace graph, `cargo build` reliably
+/// leaves the usual `target/debug/{id}` convenience copy behind -- a no-op
+/// if it's already up to date, so safe to call from every test.
+fn student_binary() -> PathBuf {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("harness has a parent (the workspace root)");
+    let status = Command::new("cargo")
+        .args(["build", "-p", "{id}"])
+        .current_dir(repo_root)
+        .status()
+        .expect("run cargo build -p {id}");
+    assert!(status.success(), "cargo build -p {id} failed");
+    repo_root.join("target/debug/{id}")
+}
+
+/// autograder: keep
+#[test]
+fn example_test() {
+    let _binary = Command::new(student_binary());
+    todo!();
+}

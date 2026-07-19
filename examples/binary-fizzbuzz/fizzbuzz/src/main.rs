@@ -2,10 +2,10 @@
 //! assignment (see the top-level README's "Try it" section): prints
 //! FizzBuzz for `1..=n`, where `n` is the sole CLI argument. This directory
 //! is named after `[assignment].id` in `../autograder.toml` (`fizzbuzz`) --
-//! `autograder scaffold` requires that to derive the starter's `src/` from
-//! it, and the built binary target must be named `fizzbuzz` to match, since
-//! the judge (`tests/judge.rs`, right alongside this file -- see its own
-//! doc comment) spawns it via `env!("CARGO_BIN_EXE_fizzbuzz")`.
+//! `autograder init` requires that to derive the starter's `src/` from it,
+//! and the built binary target must be named `fizzbuzz` to match, since
+//! the judge (`../harness/tests/judge.rs`, a sibling package -- see its
+//! own doc comment) locates and spawns it by that name.
 
 use std::env;
 

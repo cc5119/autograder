@@ -4,33 +4,49 @@
 //! behavior (stdout/files/exit code), never on anything the student's own
 //! process self-reports.
 //!
-//! Unlike `library`, there is no separate driver crate: the judge tests
-//! live directly inside `[assignment].id`'s own package (`tests/*.rs`),
-//! both in the private repo (every test) and the published starter
-//! (`publish` derives just the public subset). A plain `cargo build`
-//! produces the binary and `cargo nextest run` builds+runs `tests/` as
-//! part of the *same* package, which is what lets nextest locate the
-//! built binary via `env!("CARGO_BIN_EXE_<name>")` with no extra wiring --
-//! that env var only populates for a package's own binaries, never across
-//! a dependency edge, which is why there's no harness crate here the way
-//! there is for `library`. Build and run both happen directly in
-//! `ctx.workspace`, so `Prepare`'s `.cargo/config.toml` is discovered by
-//! Cargo's ordinary directory-based lookup -- no `--config` flags needed,
-//! unlike `library`.
+//! Mirrors `library`'s shape: the judge lives permanently in a separate
+//! `harness/` package, a sibling of `workspace` (`[assignment].id`'s own
+//! crate) under one shared `repo_root`, never generated or rewritten by
+//! this tool. Build and run both happen with `workdir = repo_root`,
+//! `-p <harness_package>` (`harness/Cargo.toml`'s own `[package].name`,
+//! read once at construction) for `run`, and `-p <harness_package> -p
+//! <id>` for `build` -- unlike `library`, there's no Cargo dependency edge
+//! from `harness` to `workspace` (a plain `[dependencies]` entry can only
+//! link a *library* target, and `workspace` here is bin-only; Cargo's
+//! artifact-dependencies feature would fix this but is still nightly-gated
+//! as of this writing), so `build` must name both packages explicitly to
+//! get `workspace`'s binary built at all. `run`'s `-p <harness_package>`
+//! alone is what keeps a same-named decoy test in the student's own crate
+//! from ever executing (`grade` trusts every test an `eval` reports with
+//! no name allowlist -- see `attic/same-name-test-target-repro` for a
+//! working repro of exactly this with no package scoping).
+//!
+//! How the harness's own test code then locates and invokes the built
+//! binary (`env!("CARGO_BIN_EXE_<name>")` only resolves within a test's
+//! *own* package, never across a dependency edge, so it can't be used
+//! here) is entirely up to the instructor's own code -- a hand-computed
+//! path via `env!("CARGO_MANIFEST_DIR")` into the shared `target/` dir, the
+//! `escargot` crate, a `build.rs`, whatever. This module has no opinion and
+//! needs none: either a bare `cargo test` (a student/instructor working
+//! without `autograder` at all) or this evaluator's own `-p`-scoped
+//! invocation already guarantees a complete, ordinary build has happened
+//! before any test runs, which is all any of those techniques need.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
 };
-use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
+use crate::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::Spec;
 
 use super::library::parse_junit_report;
-use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
+use super::{
+    Evaluator, build_sandbox_limits, harness_package_name, run_sandbox_limits, write_nextest_config,
+};
 
 const VENDOR_DIR_NAME: &str = "vendor";
 
@@ -39,24 +55,29 @@ pub struct Binary<S> {
     package_dir: PathBuf,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
+    /// `[package].name` from `harness/Cargo.toml` -- see this module's doc
+    /// comment for why it isn't assumed to be `"harness"`.
+    harness_package: String,
 }
 
 impl<S: Sandbox> Binary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
-        let tests_dir = package_dir.join(spec.assignment.id.as_str()).join("tests");
-        if !tests_dir.is_dir() {
+        let harness_manifest = package_dir.join("harness/Cargo.toml");
+        if !harness_manifest.is_file() {
             return Err(Error::InvalidSpec(format!(
-                "binary assignment missing {} -- the judge must be real, \
-                 instructor-authored integration tests (no default is generated)",
-                tests_dir.display()
+                "binary assignment missing {} -- the harness must be a real, \
+                 instructor-authored crate (no default is generated)",
+                harness_manifest.display()
             )));
         }
+        let harness_package = harness_package_name(&harness_manifest)?;
         Ok(Self {
             sandbox,
             package_dir,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
+            harness_package,
         })
     }
 
@@ -72,33 +93,37 @@ impl<S: Sandbox> Binary<S> {
         env
     }
 
-    fn mounts(&self, workspace: &std::path::Path) -> Vec<Mount> {
-        let mut mounts = vec![Mount {
-            host_path: workspace.to_path_buf(),
-            container_path: workspace.to_path_buf(),
-            mode: MountMode::ReadWrite,
-        }];
-        let vendor_dir = self.vendor_dir();
-        if vendor_dir.is_dir() {
-            mounts.push(Mount {
-                host_path: vendor_dir.clone(),
-                container_path: vendor_dir,
-                mode: MountMode::ReadOnly,
-            });
-        }
-        mounts
+    fn mounts(&self, repo_root: &Path, workspace: &Path) -> Vec<Mount> {
+        super::repo_root_mounts(repo_root, workspace, &self.vendor_dir())
     }
 }
 
 impl<S: Sandbox> Evaluator for Binary<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
-        let workspace = &ctx.workspace;
+        let repo_root = ctx
+            .workspace
+            .parent()
+            .expect(
+                "workspace always has a parent (repo_root); see model.rs's JobContext doc comment",
+            )
+            .to_path_buf();
         let env = self.offline_env();
-        let mounts = self.mounts(workspace);
+        let mounts = self.mounts(&repo_root, &ctx.workspace);
 
+        // `build` names both packages explicitly (no dependency edge ties
+        // them together, see this module's doc comment); `run` only ever
+        // selects `harness`, so the student's own crate's tests -- if it
+        // even has any -- never execute.
         let mut build_spec = SandboxSpec::new("cargo", self.build_limits.clone());
-        build_spec.args = vec!["build".into(), "--offline".into()];
-        build_spec.workdir = Some(workspace.clone());
+        build_spec.args = vec![
+            "build".into(),
+            "--offline".into(),
+            "-p".into(),
+            self.harness_package.clone(),
+            "-p".into(),
+            ctx.assignment_id.to_string(),
+        ];
+        build_spec.workdir = Some(repo_root.clone());
         build_spec.env = env.clone();
         build_spec.mounts = mounts.clone();
 
@@ -115,11 +140,17 @@ impl<S: Sandbox> Evaluator for Binary<S> {
             ));
         }
 
-        write_nextest_config(workspace)?;
+        write_nextest_config(&repo_root)?;
 
         let mut run_spec = SandboxSpec::new("cargo", self.run_limits.clone());
-        run_spec.args = vec!["nextest".into(), "run".into(), "--offline".into()];
-        run_spec.workdir = Some(workspace.clone());
+        run_spec.args = vec![
+            "nextest".into(),
+            "run".into(),
+            "--offline".into(),
+            "-p".into(),
+            self.harness_package.clone(),
+        ];
+        run_spec.workdir = Some(repo_root.clone());
         run_spec.env = env;
         run_spec.mounts = mounts;
 
@@ -141,7 +172,7 @@ impl<S: Sandbox> Evaluator for Binary<S> {
             ));
         }
 
-        let junit_path = workspace.join("target/nextest/default/junit.xml");
+        let junit_path = repo_root.join("target/nextest/default/junit.xml");
         let Ok(xml) = std::fs::read_to_string(&junit_path) else {
             return Ok(terminal_result(
                 ctx,
@@ -254,18 +285,27 @@ mod tests {
 
     struct ScriptedSandbox {
         outcomes: Mutex<Vec<SandboxOutcome>>,
+        specs: std::sync::Arc<Mutex<Vec<SandboxSpec>>>,
     }
 
     impl ScriptedSandbox {
         fn new(outcomes: Vec<SandboxOutcome>) -> Self {
             Self {
                 outcomes: Mutex::new(outcomes),
+                specs: std::sync::Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn spy(outcomes: Vec<SandboxOutcome>) -> (Self, std::sync::Arc<Mutex<Vec<SandboxSpec>>>) {
+            let sandbox = Self::new(outcomes);
+            let specs = sandbox.specs.clone();
+            (sandbox, specs)
         }
     }
 
     impl Sandbox for ScriptedSandbox {
-        fn run(&self, _spec: &SandboxSpec) -> Result<SandboxOutcome> {
+        fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
+            self.specs.lock().unwrap().push(spec.clone());
             Ok(self.outcomes.lock().unwrap().remove(0))
         }
     }
@@ -299,7 +339,6 @@ id = "wc"
 name = "Word count"
 kind = "binary"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -336,18 +375,41 @@ base = 0.0
         }
     }
 
-    fn write_judge_tests(package_dir: &std::path::Path) {
-        std::fs::create_dir_all(package_dir.join("wc/tests")).unwrap();
+    /// `Binary::new` requires a real `harness/Cargo.toml` to exist.
+    fn write_harness_manifest(package_dir: &Path) {
+        std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
-            package_dir.join("wc/tests/judge.rs"),
-            "#[test]\nfn echoes_input() {}\n",
+            package_dir.join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
     }
 
+    /// `workspace` and `harness/` as real siblings under one `repo_root`,
+    /// matching the invariant `Binary::evaluate` relies on in production
+    /// (see this module's doc comment).
+    fn job_dirs(repo_root: &Path) -> (PathBuf, PathBuf) {
+        let workspace = repo_root.join("wc");
+        let harness_dir = repo_root.join("harness");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&harness_dir).unwrap();
+        (workspace, harness_dir)
+    }
+
     #[test]
-    fn new_errors_clearly_when_the_judge_tests_are_missing() {
+    fn new_errors_clearly_when_the_harness_is_missing() {
         let package_dir = tempfile::tempdir().unwrap();
+
+        let result = Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+
+        assert!(matches!(result, Err(Error::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn new_errors_clearly_when_the_harness_manifest_has_no_package_name() {
+        let package_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(package_dir.path().join("harness")).unwrap();
+        std::fs::write(package_dir.path().join("harness/Cargo.toml"), "").unwrap();
 
         let result = Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
 
@@ -357,15 +419,14 @@ base = 0.0
     #[test]
     fn build_failure_short_circuits_before_running_nextest() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_judge_tests(package_dir.path());
-        let workspace = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
         let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator
-            .evaluate(&ctx(workspace.path().to_path_buf()))
-            .unwrap();
+        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
         assert!(eval.diagnostics.compiler_errors.unwrap().contains("E0433"));
@@ -375,15 +436,14 @@ base = 0.0
     #[test]
     fn missing_junit_report_after_a_successful_run_is_a_harness_error() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_judge_tests(package_dir.path());
-        let workspace = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
         let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator
-            .evaluate(&ctx(workspace.path().to_path_buf()))
-            .unwrap();
+        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
         assert_eq!(eval.stages.run.status, StageStatus::HarnessError);
     }
@@ -391,18 +451,19 @@ base = 0.0
     #[test]
     fn a_junit_report_on_disk_is_parsed_into_the_eval_result() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_judge_tests(package_dir.path());
-        let workspace = tempfile::tempdir().unwrap();
-        let junit_path = workspace.path().join("target/nextest/default/junit.xml");
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        // Workspace builds land `target/` at the workspace root, not under
+        // `harness/` -- see this module's doc comment.
+        let junit_path = repo_root.path().join("target/nextest/default/junit.xml");
         std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome()]);
         let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator
-            .evaluate(&ctx(workspace.path().to_path_buf()))
-            .unwrap();
+        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::Ok);
         assert_eq!(eval.stages.run.status, StageStatus::Ok);
@@ -411,17 +472,58 @@ base = 0.0
     }
 
     #[test]
-    fn build_and_run_mount_the_workspace_read_write_not_read_only() {
+    fn build_names_both_packages_and_run_scopes_to_only_the_harness() {
         let package_dir = tempfile::tempdir().unwrap();
-        write_judge_tests(package_dir.path());
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        let junit_path = repo_root.path().join("target/nextest/default/junit.xml");
+        std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
+        std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
+
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome()]);
+        let evaluator = Binary::new(&spec(), package_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(workspace)).unwrap();
+
+        let specs = specs.lock().unwrap();
+        let build_spec = &specs[0];
+        let run_spec = &specs[1];
+        assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
+        // `write_harness_manifest` names the harness crate "driver", not
+        // "harness" -- confirms the real `[package].name` is used, not the
+        // directory name.
+        assert_eq!(
+            build_spec.args,
+            vec!["build", "--offline", "-p", "driver", "-p", "wc"]
+        );
+        assert_eq!(run_spec.workdir.as_deref(), Some(repo_root.path()));
+        assert_eq!(
+            run_spec.args,
+            vec!["nextest", "run", "--offline", "-p", "driver"]
+        );
+    }
+
+    #[test]
+    fn build_and_run_mount_repo_root_read_write_and_workspace_read_only() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
         let evaluator =
             Binary::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
-        let mounts = evaluator.mounts(std::path::Path::new("/tmp/some-workspace"));
+        let repo_root = std::path::Path::new("/tmp/some-repo-root");
+        let workspace = repo_root.join("wc");
+        let mounts = evaluator.mounts(repo_root, &workspace);
+
+        let repo_root_mount = mounts
+            .iter()
+            .find(|m| m.container_path == repo_root)
+            .unwrap();
+        assert_eq!(repo_root_mount.mode, crate::sandbox::MountMode::ReadWrite);
+
         let workspace_mount = mounts
             .iter()
-            .find(|m| m.container_path == std::path::Path::new("/tmp/some-workspace"))
+            .find(|m| m.container_path == workspace)
             .unwrap();
-        assert_eq!(workspace_mount.mode, MountMode::ReadWrite);
+        assert_eq!(workspace_mount.mode, crate::sandbox::MountMode::ReadOnly);
     }
 }

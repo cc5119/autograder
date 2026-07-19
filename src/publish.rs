@@ -5,12 +5,14 @@
 //!
 //! A test's presence in the published package *is* its visibility -- there
 //! is no separate visibility flag or declared test list to consult.
-//! [`strip_stub`] (already used for `src/**`) strips `harness/tests/**` and
-//! `{id}/tests/**` too, via the exact same `keep`/`stub`/`hide` doc-comment
-//! convention `crate::stub` applies to ordinary items: an unmarked
-//! `#[test]` fn is private and non-`main`, so it's dropped by default like
-//! any other unmarked private item, and only ships when the instructor
-//! marks it `keep` or `stub`.
+//! [`strip_stub`] (already used for `src/**`) strips `harness/tests/**`
+//! too, via the exact same `keep`/`stub`/`hide` doc-comment convention
+//! `crate::stub` applies to ordinary items: an unmarked `#[test]` fn is
+//! private and non-`main`, so it's dropped by default like any other
+//! unmarked private item, and only ships when the instructor marks it
+//! `keep` or `stub`. The judge always lives in `harness/`, a sibling
+//! package of `{id}`, for both `library` and `binary` (see
+//! `evaluator::library`'s and `evaluator::binary`'s module doc comments).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,30 +20,25 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::fs;
 use crate::overlay::{self, Context, MatchedFile, Rule};
-use crate::spec::{self, AssignmentKind, Spec};
+use crate::spec::{self, Spec};
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
     pub out_dir: PathBuf,
 }
 
-fn rules(kind: AssignmentKind) -> Vec<Rule> {
-    match kind {
-        AssignmentKind::Library => vec![
-            Rule::File("Cargo.toml", None),
-            Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
-            Rule::Glob("{id}/src/**", Some(strip_stub)),
-            Rule::File("harness/Cargo.toml", None),
-            Rule::Glob("harness/src/**", None),
-            Rule::Glob("harness/tests/**", Some(strip_stub)),
-        ],
-        AssignmentKind::Binary => vec![
-            Rule::File("Cargo.toml", None),
-            Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
-            Rule::Glob("{id}/src/**", Some(strip_stub)),
-            Rule::Glob("{id}/tests/**", Some(strip_stub)),
-        ],
-    }
+/// Same shape for both `library` and `binary`: `harness/` always holds the
+/// judge, as a sibling package of `{id}` (see `evaluator::library`'s and
+/// `evaluator::binary`'s module doc comments).
+fn rules() -> Vec<Rule> {
+    vec![
+        Rule::File("Cargo.toml", None),
+        Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
+        Rule::Glob("{id}/src/**", Some(strip_stub)),
+        Rule::File("harness/Cargo.toml", None),
+        Rule::Glob("harness/src/**", None),
+        Rule::Glob("harness/tests/**", Some(strip_stub)),
+    ]
 }
 
 pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
@@ -61,7 +58,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
         substitutions: HashMap::from([("id", id.to_string())]),
     };
 
-    overlay::apply(&ctx, out_dir, &rules(spec.assignment.kind))?;
+    overlay::apply(&ctx, out_dir, &rules())?;
 
     let student_dir = out_dir.join(id.as_str());
     run_cargo_fix(&student_dir)?;
@@ -180,7 +177,6 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 
 [sandbox]
@@ -492,7 +488,6 @@ id = "wc"
 name = "Word count"
 kind = "binary"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -518,6 +513,9 @@ formula = "sum"
 base = 0.0
 "#;
 
+    const BINARY_HARNESS_MANIFEST: &str =
+        "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n";
+
     const BINARY_JUDGE_RS: &str = r#"
         /// autograder: keep
         #[test]
@@ -538,7 +536,7 @@ base = 0.0
         );
         write(
             &package_dir.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"wc\"]\n",
+            "[workspace]\nmembers = [\"harness\", \"wc\"]\n",
         );
         write(
             &package_dir.join("wc/Cargo.toml"),
@@ -548,25 +546,33 @@ base = 0.0
             &package_dir.join("wc/src/main.rs"),
             "pub fn count(s: &str) -> usize { s.split_whitespace().count() }\nfn main() {}\n",
         );
-        write(&package_dir.join("wc/tests/judge.rs"), BINARY_JUDGE_RS);
+        write(
+            &package_dir.join("harness/Cargo.toml"),
+            BINARY_HARNESS_MANIFEST,
+        );
+        write(&package_dir.join("harness/src/main.rs"), "fn main() {}\n");
+        write(&package_dir.join("harness/tests/judge.rs"), BINARY_JUDGE_RS);
     }
 
     #[test]
-    fn publish_derives_a_public_binary_judge_with_no_separate_harness_dir() {
+    fn publish_derives_a_public_binary_judge_alongside_a_separate_harness_dir() {
         let package_dir = tempfile::tempdir().unwrap();
         write_binary_instructor_package(package_dir.path());
         let out_dir = tempfile::tempdir().unwrap();
 
         publish(package_dir.path(), out_dir.path()).unwrap();
 
-        let judge = std::fs::read_to_string(out_dir.path().join("wc/tests/judge.rs")).unwrap();
+        let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
         assert!(judge.contains("fn counts_words"));
         assert!(!judge.contains("counts_zero_for_empty_input"));
 
-        assert!(!out_dir.path().join("harness").exists());
+        assert_eq!(
+            std::fs::read_to_string(out_dir.path().join("harness/Cargo.toml")).unwrap(),
+            BINARY_HARNESS_MANIFEST
+        );
         assert_eq!(
             std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap(),
-            "[workspace]\nmembers = [\"wc\"]\n"
+            "[workspace]\nmembers = [\"harness\", \"wc\"]\n"
         );
     }
 
@@ -578,7 +584,7 @@ base = 0.0
 
         publish(package_dir.path(), out_dir.path()).unwrap();
 
-        let judge = std::fs::read_to_string(out_dir.path().join("wc/tests/judge.rs")).unwrap();
+        let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
         assert!(judge.contains("assert!(true)"));
         assert!(!judge.contains("todo!"));
     }

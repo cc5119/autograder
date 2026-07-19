@@ -55,9 +55,6 @@ pub enum Rule {
     /// Every file under `source_root` matching this glob (`ignore`-crate
     /// syntax); zero matches is not an error.
     Glob(&'static str, Option<GlobHook>),
-    /// Removes this dest-relative path (if present) before whatever rule
-    /// follows -- for wiping a stale overlay target before it's replaced.
-    Clean(&'static str),
 }
 
 pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
@@ -65,12 +62,6 @@ pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
 
     for rule in rules {
         match rule {
-            Rule::Clean(path) => {
-                let target = dest.join(ctx.resolve(path));
-                if target.is_dir() {
-                    fs::remove_dir_all(&target)?;
-                }
-            }
             Rule::File(path, hook) => {
                 let rel_path = PathBuf::from(ctx.resolve(path));
                 if !ctx.source_root.join(&rel_path).is_file() {
@@ -201,29 +192,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
-    }
-
-    #[test]
-    fn clean_rule_removes_an_existing_dest_path_but_tolerates_a_missing_one() {
-        let src = tempfile::tempdir().unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        write(&dest.path().join("wc/tests/decoy.rs"), "decoy");
-
-        apply(
-            &ctx(src.path(), &[("id", "wc")]),
-            dest.path(),
-            &[Rule::Clean("{id}/tests")],
-        )
-        .unwrap();
-        assert!(!dest.path().join("wc/tests").exists());
-
-        // A second pass over an already-clean dest must not error.
-        apply(
-            &ctx(src.path(), &[("id", "wc")]),
-            dest.path(),
-            &[Rule::Clean("{id}/tests")],
-        )
-        .unwrap();
     }
 
     #[test]

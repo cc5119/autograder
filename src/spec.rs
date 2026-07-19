@@ -27,12 +27,6 @@ pub struct Assignment {
     pub name: String,
     pub kind: AssignmentKind,
     pub deadline: Zoned,
-    /// The nextest test-binary target to run (the file name under
-    /// `harness/tests/` minus `.rs`, e.g. `"judge"` for
-    /// `harness/tests/judge.rs`), passed as `cargo nextest run --test
-    /// <target>`.
-    #[serde(rename = "judge-target")]
-    pub judge_target: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -264,7 +258,6 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 
 [sandbox]
@@ -299,7 +292,6 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 
 [sandbox]
@@ -396,13 +388,6 @@ scale-max = 7.0
     #[test]
     fn missing_sandbox_table_is_a_clear_parse_error() {
         let toml = PUBLIC_TOML.replace("[sandbox]\nimage = \"autograder-base:1.86.0\"\n", "");
-        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn missing_judge_target_is_a_clear_parse_error() {
-        let toml = PUBLIC_TOML.replace("judge-target = \"judge\"\n", "");
         let result: std::result::Result<Spec, _> = toml::from_str(&toml);
         assert!(result.is_err());
     }

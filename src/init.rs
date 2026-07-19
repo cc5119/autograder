@@ -100,19 +100,20 @@ mod tests {
     }
 
     #[test]
-    fn init_produces_a_loadable_binary_package_with_no_harness_dir() {
+    fn init_produces_a_loadable_binary_package_with_a_harness_dir() {
         let dir = tempfile::tempdir().unwrap();
         let outcome = init(dir.path(), "wc", AssignmentKind::Binary).unwrap();
 
         assert!(outcome.dir.join("wc/src/main.rs").is_file());
-        assert!(outcome.dir.join("wc/tests/judge.rs").is_file());
-        assert!(!outcome.dir.join("harness").exists());
+        assert!(outcome.dir.join("harness/Cargo.toml").is_file());
+        assert!(outcome.dir.join("harness/src/main.rs").is_file());
+        assert!(outcome.dir.join("harness/tests/judge.rs").is_file());
 
         let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();
         assert_eq!(spec.assignment.kind, AssignmentKind::Binary);
         assert_eq!(
             std::fs::read_to_string(outcome.dir.join("Cargo.toml")).unwrap(),
-            "[workspace]\nresolver = \"3\"\nmembers = [\"wc\"]\n"
+            "[workspace]\nresolver = \"3\"\nmembers = [\"harness\", \"wc\"]\n"
         );
     }
 

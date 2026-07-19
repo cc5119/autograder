@@ -340,7 +340,6 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -375,6 +374,10 @@ base = 0.0
         write(
             &harness_dir.path().join(spec::PUBLIC_SPEC_FILE),
             PUBLIC_SPEC,
+        );
+        write(
+            &harness_dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
         );
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
@@ -421,7 +424,10 @@ base = 0.0
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
-        write(&harness_dir.path().join("hw3/tests/judge.rs"), "");
+        write(
+            &harness_dir.path().join("harness/Cargo.toml"),
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        );
         let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
         assert!(result.is_ok());
     }
@@ -510,7 +516,6 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-judge-target = "judge"
 
 [sandbox]
 image = "autograder-base:1.86.0"
