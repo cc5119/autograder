@@ -13,7 +13,7 @@ use std::process::Command;
 
 use crate::cargo_lock::sha256_hex;
 use crate::error::{Error, Result};
-use crate::spec::{PRIVATE_SPEC_FILE, Spec};
+use crate::spec::{SPEC_FILE, Spec};
 
 #[derive(Debug, Clone)]
 pub struct LockOutcome {
@@ -56,14 +56,13 @@ pub fn lock(package_dir: &Path) -> Result<LockOutcome> {
 /// round-trip, so every other line (including the instructor's own
 /// comments) survives untouched.
 fn write_sha_into_spec(package_dir: &Path, sha256: &str) -> Result<()> {
-    let spec_path = package_dir.join(PRIVATE_SPEC_FILE);
+    let spec_path = package_dir.join(SPEC_FILE);
     let contents = crate::fs::read_to_string(&spec_path)?;
-    let mut doc = contents.parse::<toml_edit::DocumentMut>().map_err(|source| {
-        Error::Other(format!(
-            "failed to parse {}: {source}",
-            spec_path.display()
-        ))
-    })?;
+    let mut doc = contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|source| {
+            Error::Other(format!("failed to parse {}: {source}", spec_path.display()))
+        })?;
     doc["assignment"]["cargo-lock-sha256"] = toml_edit::value(sha256);
     crate::fs::write(&spec_path, doc.to_string())
 }
@@ -158,7 +157,10 @@ base = 0.0
     #[test]
     fn verify_reports_a_mismatched_hash() {
         let package_dir = tempfile::tempdir().unwrap();
-        write(&package_dir.path().join("Cargo.lock"), "edited by a student\n");
+        write(
+            &package_dir.path().join("Cargo.lock"),
+            "edited by a student\n",
+        );
         let spec = spec_with_sha(&sha256_hex("original\n"));
 
         let message = verify(package_dir.path(), &spec).unwrap();
@@ -178,14 +180,13 @@ base = 0.0
     fn write_sha_into_spec_preserves_comments_and_other_fields() {
         let package_dir = tempfile::tempdir().unwrap();
         write(
-            &package_dir.path().join(PRIVATE_SPEC_FILE),
+            &package_dir.path().join(SPEC_FILE),
             "# a helpful comment\n[assignment]\nid = \"hw3\"\ncargo-lock-sha256 = \"stale\"\n",
         );
 
         write_sha_into_spec(package_dir.path(), "fresh-hash").unwrap();
 
-        let updated =
-            std::fs::read_to_string(package_dir.path().join(PRIVATE_SPEC_FILE)).unwrap();
+        let updated = std::fs::read_to_string(package_dir.path().join(SPEC_FILE)).unwrap();
         assert!(updated.contains("# a helpful comment"));
         assert!(updated.contains("id = \"hw3\""));
         assert!(updated.contains("cargo-lock-sha256 = \"fresh-hash\""));

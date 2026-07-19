@@ -27,16 +27,11 @@ pub struct PublishOutcome {
     pub out_dir: PathBuf,
 }
 
-/// Same shape for both `library` and `binary`: `harness/` always holds the
-/// judge, as a sibling package of `{id}` (see `evaluator::library`'s and
-/// `evaluator::binary`'s module doc comments). The workspace-root
-/// `Cargo.lock` ships too -- it's what makes a student's own plain `cargo
-/// build`/`cargo test` resolve the same dependency versions grading does
-/// (see `crate::lock`'s module doc comment).
 fn rules() -> Vec<Rule> {
     vec![
         Rule::File("Cargo.toml", None),
         Rule::File("Cargo.lock", None),
+        Rule::File(spec::SPEC_FILE, None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
         Rule::Glob("{id}/src/**", Some(strip_stub)),
         Rule::File("{harness}/Cargo.toml", None),
@@ -46,11 +41,11 @@ fn rules() -> Vec<Rule> {
 }
 
 pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
-    let private_spec_path = package_dir.join(spec::PRIVATE_SPEC_FILE);
+    let private_spec_path = package_dir.join(spec::SPEC_FILE);
     if !private_spec_path.is_file() {
         return Err(Error::InvalidSpec(format!(
             "publish requires {} in {} (the private instructor package)",
-            spec::PRIVATE_SPEC_FILE,
+            spec::SPEC_FILE,
             package_dir.display()
         )));
     }
@@ -80,9 +75,6 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
 
     let student_dir = out_dir.join(id.as_str());
     run_cargo_fix(&student_dir)?;
-
-    let public_spec_path = out_dir.join(spec::PUBLIC_SPEC_FILE);
-    fs::copy(&private_spec_path, &public_spec_path)?;
 
     let workflow_dir = out_dir.join(".github/workflows");
     fs::create_dir_all(&workflow_dir)?;
@@ -289,7 +281,7 @@ base = 0.0
     }
 
     fn write_instructor_package(package_dir: &Path) {
-        write(&package_dir.join(spec::PRIVATE_SPEC_FILE), &private_spec());
+        write(&package_dir.join(spec::SPEC_FILE), &private_spec());
         write(&package_dir.join("Cargo.lock"), HW3_LOCK);
         write(
             &package_dir.join("Cargo.toml"),
@@ -309,7 +301,7 @@ base = 0.0
         let out_dir = tempfile::tempdir().unwrap();
         let outcome = publish(package_dir.path(), out_dir.path()).unwrap();
 
-        assert!(outcome.out_dir.join(spec::PUBLIC_SPEC_FILE).is_file());
+        assert!(outcome.out_dir.join(spec::SPEC_FILE).is_file());
         assert!(outcome.out_dir.join("harness/tests/judge.rs").is_file());
         assert!(
             outcome
@@ -323,16 +315,15 @@ base = 0.0
     }
 
     #[test]
-    fn publish_derives_a_public_spec_matching_the_private_spec() {
+    fn publish_ships_the_spec_file_verbatim_under_the_same_name() {
         let package_dir = tempfile::tempdir().unwrap();
         write_instructor_package(package_dir.path());
         let out_dir = tempfile::tempdir().unwrap();
 
         publish(package_dir.path(), out_dir.path()).unwrap();
 
-        let public_spec =
-            std::fs::read_to_string(out_dir.path().join(spec::PUBLIC_SPEC_FILE)).unwrap();
-        assert_eq!(public_spec, private_spec());
+        let shipped_spec = std::fs::read_to_string(out_dir.path().join(spec::SPEC_FILE)).unwrap();
+        assert_eq!(shipped_spec, private_spec());
     }
 
     #[test]
@@ -364,7 +355,7 @@ base = 0.0
 
         let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
-        assert!(!out_dir.path().join(spec::PUBLIC_SPEC_FILE).exists());
+        assert!(!out_dir.path().join(spec::SPEC_FILE).exists());
     }
 
     #[test]
@@ -387,10 +378,7 @@ base = 0.0
     #[test]
     fn publish_errors_clearly_when_the_solution_directory_is_missing() {
         let package_dir = tempfile::tempdir().unwrap();
-        write(
-            &package_dir.path().join(spec::PRIVATE_SPEC_FILE),
-            &private_spec(),
-        );
+        write(&package_dir.path().join(spec::SPEC_FILE), &private_spec());
         write(&package_dir.path().join("Cargo.lock"), HW3_LOCK);
         write(
             &package_dir.path().join("harness/Cargo.toml"),
@@ -610,10 +598,7 @@ base = 0.0
     "#;
 
     fn write_binary_instructor_package(package_dir: &Path) {
-        write(
-            &package_dir.join(spec::PRIVATE_SPEC_FILE),
-            &binary_private_spec(),
-        );
+        write(&package_dir.join(spec::SPEC_FILE), &binary_private_spec());
         write(&package_dir.join("Cargo.lock"), WC_LOCK);
         write(
             &package_dir.join("Cargo.toml"),

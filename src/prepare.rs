@@ -166,7 +166,9 @@ base = 0.0
     /// it -- exactly what `crate::lock::lock` would have left behind, but
     /// hand-crafted so these tests don't need a real `cargo update`.
     fn spec_with_lock(package_dir: &Path, deps: &[(&str, &str)]) -> Spec {
-        let mut lock = String::from("version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\ndependencies = [\n");
+        let mut lock = String::from(
+            "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\ndependencies = [\n",
+        );
         for (name, _) in deps {
             lock.push_str(&format!(" \"{name}\",\n"));
         }

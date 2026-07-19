@@ -393,10 +393,7 @@ base = 0.0
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
         let harness_dir = tempfile::tempdir().unwrap();
-        write(
-            &harness_dir.path().join(spec::PUBLIC_SPEC_FILE),
-            &public_spec(),
-        );
+        write(&harness_dir.path().join(spec::SPEC_FILE), &public_spec());
         write(
             &harness_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
@@ -470,10 +467,7 @@ base = 0.0
     #[test]
     fn grade_with_local_sandbox_never_requires_podman() {
         let assignment_dir = tempfile::tempdir().unwrap();
-        write(
-            &assignment_dir.path().join(spec::PUBLIC_SPEC_FILE),
-            &public_spec(),
-        );
+        write(&assignment_dir.path().join(spec::SPEC_FILE), &public_spec());
         write(
             &assignment_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
@@ -610,7 +604,7 @@ max-output-bytes = "64KiB"
         };
 
         write(
-            &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            &assignment_dir.path().join(spec::SPEC_FILE),
             &spec_toml("[scoring]\nformula = \"sum\"\nbase = 0.0"),
         );
         let store = Store::new(&config.storage_dir);
@@ -624,7 +618,7 @@ max-output-bytes = "64KiB"
         assert_eq!(grades[0].max, None);
 
         write(
-            &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            &assignment_dir.path().join(spec::SPEC_FILE),
             &spec_toml(
                 "[scoring]\nformula = \"affine\"\nmax-sum = 2.0\nscale-min = 0.0\nscale-max = 10.0",
             ),
@@ -644,7 +638,7 @@ max-output-bytes = "64KiB"
         };
 
         write(
-            &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
+            &assignment_dir.path().join(spec::SPEC_FILE),
             &spec_toml("[scoring]\nformula = \"sum\"\nbase = 0.0"),
         );
         write(

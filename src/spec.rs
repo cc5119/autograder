@@ -6,10 +6,10 @@ use serde::{Deserialize, Deserializer};
 use crate::error::{Error, Result};
 use crate::id::AssignmentId;
 
-/// The private full spec file; carries points.
-pub const PRIVATE_SPEC_FILE: &str = "autograder.toml";
-/// The public subset shipped to students; carries no points.
-pub const PUBLIC_SPEC_FILE: &str = "autograder.public.toml";
+/// The one spec filename, used both in the private instructor package and
+/// the published starter `publish` ships to students -- `publish` copies it
+/// verbatim (see `publish::rules`), so the two are always byte-identical.
+pub const SPEC_FILE: &str = "autograder.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -243,13 +243,9 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// Reads `autograder.toml` (private/full) if present, else
-    /// `autograder.public.toml` (public subset) from `dir`.
+    /// Reads `autograder.toml` from `dir`.
     pub fn load(dir: &Path) -> Result<Spec> {
-        let private = dir.join(PRIVATE_SPEC_FILE);
-        let public = dir.join(PUBLIC_SPEC_FILE);
-        let path = if private.exists() { private } else { public };
-        Self::load_file(&path)
+        Self::load_file(&dir.join(SPEC_FILE))
     }
 
     pub fn load_file(path: &Path) -> Result<Spec> {
