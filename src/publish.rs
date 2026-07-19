@@ -34,14 +34,15 @@ use syn::Item;
 use crate::error::{Error, Result};
 use crate::spec::{self, AssignmentKind, Spec};
 
-/// Placeholder release coordinates for the downloaded `autograder` binary
-/// (design §11.2). The real pinned version + sha256 come from the release
-/// pipeline (M3 step 19, `.github/workflows/release.yml` in this repo); an
-/// instructor stands up their own fork/release and edits these before
-/// distributing a starter repo.
-const RELEASE_REPO: &str = "your-org/autograder";
-const RELEASE_VERSION: &str = "v0.1.0";
-const RELEASE_SHA256_PLACEHOLDER: &str = "<pinned-sha256>";
+/// `templates/autograde.yml.tmpl`'s release coordinates (repo, version,
+/// sha256) for the downloaded `autograder` binary (design §11.2) are
+/// themselves placeholders, not substituted here -- the real pinned
+/// version + sha256 come from the release pipeline (M3 step 19,
+/// `.github/workflows/release.yml` in this repo), so an instructor stands
+/// up their own fork/release and edits the template's output directly
+/// before distributing a starter repo. Only `{base_image}` is filled in at
+/// publish time, from `[sandbox].image`.
+const AUTOGRADE_WORKFLOW_TEMPLATE: &str = include_str!("../templates/autograde.yml.tmpl");
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
@@ -324,45 +325,8 @@ fn keep_only_public_tests(
         .collect()
 }
 
-/// The thin GitHub Actions wrapper (design §11.2): downloads a
-/// version-pinned prebuilt `autograder` binary, verifies its checksum, and
-/// runs `autograder ci` from the repo root (`ci` takes no `--harness` flag
-/// -- it always runs from the checkout root where `autograder.public.toml`/
-/// `harness/` live, finding the student's own crate at the sibling
-/// directory named after `[assignment].id`). No compile step, so student CI
-/// never needs a Rust toolchain of its own for the grader itself.
-///
-/// `ci` now runs inside the same `ContainerSandbox` grading uses (design
-/// §10/§11 unified), so before that step the workflow also has to: make
-/// sure Podman is on the runner (`ubuntu-latest` doesn't ship it by
-/// default), vendor dependencies offline via `autograder prefetch` (reusing
-/// `vendor::prefetch` unchanged -- runs on the bare runner with network
-/// access, *before* the sandboxed, network-disabled `ci` step, from the
-/// public spec's `[allowed-crates]`), and `podman pull` the same base
-/// image (`base_image`, from `[sandbox].image`) grading uses -- the
-/// instructor is responsible for having pushed that image somewhere this
-/// runner can pull it from.
 fn autograde_workflow_yaml(base_image: &str) -> String {
-    format!(
-        r#"name: autograde
-on:
-  push:
-    branches: [main]        # default branch only
-jobs:
-  public-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          curl -fsSL https://github.com/{RELEASE_REPO}/releases/download/{RELEASE_VERSION}/autograder-x86_64-linux -o autograder
-          echo "{RELEASE_SHA256_PLACEHOLDER}  autograder" | sha256sum -c -   # verify before exec
-          chmod +x autograder
-      - run: command -v podman || (sudo apt-get update && sudo apt-get install -y podman)
-      - run: ./autograder prefetch .
-      - run: podman pull {base_image}
-      - run: ./autograder ci
-"#
-    )
+    AUTOGRADE_WORKFLOW_TEMPLATE.replace("{base_image}", base_image)
 }
 
 /// Runs `cargo fix` directly in `student_dir` (already a full, disposable
