@@ -69,9 +69,9 @@ impl Evaluator for StubEvaluator {
 
         Ok(EvaluationResult {
             schema_version: 1,
-            assignment_id: ctx.assignment_id.clone(),
-            student_id: ctx.student_id.clone(),
-            run_id: ctx.run_id.clone(),
+            assignment_id: ctx.assignment_id,
+            student_id: ctx.student_id,
+            run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,

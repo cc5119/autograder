@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::fs;
+use crate::id::StudentId;
 use crate::model::{GitRepo, LocalPath, StageStatus, Submission};
 use crate::source::SubmissionsSource;
 use crate::store::{read_json, write_json};
@@ -176,11 +177,11 @@ impl SubmissionsSource<LocalPath> for DirectorySource {
             if !path.is_dir() {
                 continue;
             }
-            let student_id = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
+            let student_id = StudentId::new(
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default(),
+            );
             submissions.push(Submission {
                 student_id,
                 fetchable: LocalPath(path),
@@ -227,11 +228,11 @@ pub fn fetch_batch<F: Fetchable>(
     source: &dyn SubmissionsSource<F>,
     work_dir: &Path,
     deadline: &Zoned,
-) -> Result<Vec<(String, FetchRecord)>> {
+) -> Result<Vec<(StudentId, FetchRecord)>> {
     let submissions = source.submissions()?;
     let mut records = Vec::new();
     for submission in submissions {
-        let job_root = work_dir.join(&submission.student_id);
+        let job_root = work_dir.join(submission.student_id.as_str());
         let checkout_dir = job_root.join("checkout");
         let outcome = submission.fetch(&checkout_dir, deadline)?;
         let record = FetchRecord {

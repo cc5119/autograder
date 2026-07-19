@@ -29,7 +29,7 @@ pub fn render(grades: &[Grade]) -> Result<String> {
     for grade in grades {
         writer
             .write_record([
-                grade.student_id.clone(),
+                grade.student_id.to_string(),
                 grade.score.to_string(),
                 grade.max.map(|m| m.to_string()).unwrap_or_default(),
                 grade.status.clone(),

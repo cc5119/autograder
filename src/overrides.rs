@@ -15,6 +15,7 @@ use jiff::{Timestamp, Zoned};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::id::StudentId;
 use crate::model::Grade;
 use crate::spec::LatePenalty;
 
@@ -39,9 +40,9 @@ pub struct LateSubmission {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Overrides {
     #[serde(default)]
-    pub manual: BTreeMap<String, ManualOverride>,
+    pub manual: BTreeMap<StudentId, ManualOverride>,
     #[serde(default)]
-    pub late: BTreeMap<String, LateSubmission>,
+    pub late: BTreeMap<StudentId, LateSubmission>,
 }
 
 impl Overrides {
@@ -174,9 +175,9 @@ submitted_at = "2026-02-16T10:00:00-08:00"
         .unwrap();
 
         let overrides = Overrides::load(&path).unwrap();
-        assert_eq!(overrides.manual["alice"].score, 45.0);
+        assert_eq!(overrides.manual[&StudentId::new("alice")].score, 45.0);
         assert_eq!(
-            overrides.late["bob"].submitted_at,
+            overrides.late[&StudentId::new("bob")].submitted_at,
             "2026-02-16T10:00:00-08:00".parse::<Timestamp>().unwrap()
         );
     }
@@ -189,7 +190,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             reason: "Regrade after appeal".into(),
         };
         let overrides = Overrides {
-            manual: BTreeMap::from([("alice".to_string(), over)]),
+            manual: BTreeMap::from([(StudentId::new("alice"), over)]),
             late: BTreeMap::new(),
         };
 
@@ -208,7 +209,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
         let overrides = Overrides {
             manual: BTreeMap::new(),
             late: BTreeMap::from([(
-                "alice".to_string(),
+                StudentId::new("alice"),
                 LateSubmission {
                     submitted_at: deadline().timestamp() - std::time::Duration::from_secs(3600),
                 },
@@ -226,7 +227,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
         let overrides = Overrides {
             manual: BTreeMap::new(),
             late: BTreeMap::from([(
-                "alice".to_string(),
+                StudentId::new("alice"),
                 LateSubmission {
                     // just over 2 days late -> 3 days rounded up -> 30%,
                     // under the 50% cap.
@@ -247,7 +248,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
         let overrides = Overrides {
             manual: BTreeMap::new(),
             late: BTreeMap::from([(
-                "alice".to_string(),
+                StudentId::new("alice"),
                 LateSubmission {
                     submitted_at: deadline().timestamp()
                         + std::time::Duration::from_secs(30 * 86_400),
@@ -266,7 +267,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
         let overrides = Overrides {
             manual: BTreeMap::new(),
             late: BTreeMap::from([(
-                "alice".to_string(),
+                StudentId::new("alice"),
                 LateSubmission {
                     submitted_at: deadline().timestamp()
                         + std::time::Duration::from_secs(5 * 86_400),
@@ -284,7 +285,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
     fn manual_override_wins_over_a_recorded_late_entry() {
         let overrides = Overrides {
             manual: BTreeMap::from([(
-                "alice".to_string(),
+                StudentId::new("alice"),
                 ManualOverride {
                     score: 90.0,
                     status: None,
@@ -292,7 +293,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
                 },
             )]),
             late: BTreeMap::from([(
-                "alice".to_string(),
+                StudentId::new("alice"),
                 LateSubmission {
                     submitted_at: deadline().timestamp()
                         + std::time::Duration::from_secs(5 * 86_400),

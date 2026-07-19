@@ -3,12 +3,14 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::id::{AssignmentId, RunId, StudentId};
+
 /// Generic over the fetchable type `F`, so it's a compile error to hand a
 /// `CsvRoster`'s (`GitRepo`-fetching) submissions to code that only knows
 /// how to fetch a `LocalPath`.
 #[derive(Debug, Clone)]
 pub struct Submission<F> {
-    pub student_id: String,
+    pub student_id: StudentId,
     pub fetchable: F,
     pub metadata: BTreeMap<String, String>,
 }
@@ -31,9 +33,9 @@ pub struct GitRepo {
 /// Per-job context threaded through the pipeline stages.
 #[derive(Debug, Clone)]
 pub struct JobContext {
-    pub assignment_id: String,
-    pub student_id: String,
-    pub run_id: String,
+    pub assignment_id: AssignmentId,
+    pub student_id: StudentId,
+    pub run_id: RunId,
     /// Where the code being evaluated actually is: for `grade`, an
     /// ephemeral scratch copy of just the `<id>/` crate extracted from the
     /// fetched checkout (never the checkout itself); for `ci`, the current
@@ -132,9 +134,9 @@ pub struct StageReports {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
     pub schema_version: u32,
-    pub assignment_id: String,
-    pub student_id: String,
-    pub run_id: String,
+    pub assignment_id: AssignmentId,
+    pub student_id: StudentId,
+    pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graded_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,7 +154,7 @@ pub struct EvaluationResult {
 /// Which named test in the failing/passing breakdown, for reporters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grade {
-    pub student_id: String,
+    pub student_id: StudentId,
     pub score: f64,
     /// The scale's theoretical ceiling, when the scoring formula defines
     /// one (`affine`'s `scale-max`). `sum` is unnormalized and has no
@@ -180,9 +182,9 @@ mod tests {
     fn sample() -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
-            assignment_id: "hw3".into(),
-            student_id: "alice".into(),
-            run_id: "2026-07-17T18-03-00Z-ab12".into(),
+            assignment_id: AssignmentId::new("hw3"),
+            student_id: StudentId::new("alice"),
+            run_id: RunId::new("2026-07-17T18-03-00Z-ab12"),
             graded_commit: Some("a1b2c3d".into()),
             instructor_commit: Some("f9e8d7".into()),
             public_harness_commit: Some("c0ffee".into()),

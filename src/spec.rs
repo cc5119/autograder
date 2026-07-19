@@ -5,6 +5,7 @@ use jiff::Zoned;
 use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
+use crate::id::AssignmentId;
 
 /// The private full spec file; carries points.
 pub const PRIVATE_SPEC_FILE: &str = "autograder.toml";
@@ -22,7 +23,7 @@ pub enum AssignmentKind {
 /// `library`, the expected binary target name for `binary`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
-    pub id: String,
+    pub id: AssignmentId,
     pub name: String,
     pub kind: AssignmentKind,
     pub deadline: Zoned,

@@ -5,6 +5,7 @@ pub mod evaluator;
 pub mod fetch;
 pub mod fs;
 pub mod grade;
+pub mod id;
 pub mod init;
 pub mod manifest_check;
 pub mod model;
@@ -30,6 +31,7 @@ pub use error::{Error, Result};
 use evaluator::Evaluator;
 use evaluator::binary::Binary;
 use evaluator::library::Library;
+use id::{AssignmentId, StudentId};
 use model::JobContext;
 use report::{Reporter, ci::CiReport, csv::CsvReporter, json::JsonReporter};
 use sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
@@ -64,12 +66,12 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
         Command::Regrade {
             assignment_id,
             assignment,
-        } => run_regrade(&assignment_id, &assignment, config),
+        } => run_regrade(assignment_id, &assignment, config),
         Command::Report {
             assignment_id,
             format,
             out,
-        } => run_report(&assignment_id, format, out, config),
+        } => run_report(assignment_id, format, out, config),
         Command::Publish { assignment, out } => run_publish(&assignment, &out),
     }
 }
@@ -127,13 +129,13 @@ fn run_fetch(
     for (student_id, record) in &records {
         if record.status == model::StageStatus::Ok {
             tracing::info!(
-                student_id,
+                %student_id,
                 graded_commit = record.graded_commit.as_deref().unwrap_or(""),
                 "fetched"
             );
         } else {
             tracing::warn!(
-                student_id,
+                %student_id,
                 message = record.message.as_deref().unwrap_or(""),
                 "fetch failed"
             );
@@ -181,7 +183,7 @@ fn run_grade(
         )?,
     };
 
-    write_reports(&spec.assignment.id, &grades, config)
+    write_reports(spec.assignment.id, &grades, config)
 }
 
 fn build_evaluator(
@@ -221,7 +223,7 @@ fn build_evaluator_for(
 fn run_ci(local_sandbox: bool) -> Result<()> {
     let harness_dir = fs::current_dir()?;
     let spec = Spec::load(&harness_dir)?;
-    let workspace = harness_dir.join(&spec.assignment.id);
+    let workspace = harness_dir.join(spec.assignment.id.as_str());
     let run_id = pipeline::generate_run_id();
     // `library`'s harness is already positioned correctly by `publish` as
     // a sibling of `workspace`. `binary` has no separate driver crate, so
@@ -231,8 +233,8 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
         AssignmentKind::Binary => std::env::temp_dir().join(format!("autograder-ci-{run_id}")),
     };
     let ctx = JobContext {
-        assignment_id: spec.assignment.id.clone(),
-        student_id: "local".into(),
+        assignment_id: spec.assignment.id,
+        student_id: StudentId::new("local"),
         run_id,
         workspace: workspace.clone(),
         driver_dir,
@@ -269,7 +271,11 @@ fn run_publish(assignment: &std::path::Path, out: &std::path::Path) -> Result<()
 /// student code, no evaluator) -- applies `spec.scoring`/`overrides.toml`
 /// fresh from disk every time, so editing either always reflects the
 /// current policy, never one baked in at `grade` time.
-fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Config) -> Result<()> {
+fn run_regrade(
+    assignment_id: AssignmentId,
+    assignment: &std::path::Path,
+    config: &Config,
+) -> Result<()> {
     let spec = Spec::load(assignment)?;
     let store = Store::new(&config.storage_dir);
     let evals = store.latest_evals(assignment_id)?;
@@ -284,7 +290,7 @@ fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Confi
             &spec.assignment.deadline,
             spec.scoring.late_penalty.as_ref(),
         );
-        store.save_grade(&eval.assignment_id, &eval.run_id, &grade)?;
+        store.save_grade(eval.assignment_id, eval.run_id, &grade)?;
         grades.push(grade);
     }
 
@@ -292,7 +298,7 @@ fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Confi
 }
 
 fn run_report(
-    assignment_id: &str,
+    assignment_id: AssignmentId,
     format: ReportFormat,
     out: Option<std::path::PathBuf>,
     config: &Config,
@@ -305,7 +311,11 @@ fn run_report(
     }
 }
 
-fn write_reports(assignment_id: &str, grades: &[model::Grade], config: &Config) -> Result<()> {
+fn write_reports(
+    assignment_id: AssignmentId,
+    grades: &[model::Grade],
+    config: &Config,
+) -> Result<()> {
     let reports_dir = config.storage_dir.join("reports");
     fs::create_dir_all(&reports_dir)?;
 
@@ -392,7 +402,7 @@ base = 0.0
 
         let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
-            assignment_id: spec.assignment.id.clone(),
+            assignment_id: spec.assignment.id,
             student_id: "local".into(),
             run_id: "run-1".into(),
             workspace,
@@ -474,7 +484,7 @@ base = 0.0
         .unwrap();
 
         let store = Store::new(&config.storage_dir);
-        let grades = store.latest_grades("hw3").unwrap();
+        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
         assert_eq!(grades.len(), 1);
         assert_eq!(grades[0].status, "HarnessError");
     }
@@ -576,8 +586,8 @@ max-output-bytes = "64KiB"
         let store = Store::new(&config.storage_dir);
         store.save_eval(&persisted_eval()).unwrap();
 
-        run_regrade("hw3", assignment_dir.path(), &config).unwrap();
-        let grades = store.latest_grades("hw3").unwrap();
+        run_regrade(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
+        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
         assert_eq!(grades.len(), 1);
         // insert_basic passes (1.0 default), balance_adversarial fails (0.0).
         assert_eq!(grades[0].score, 1.0);
@@ -589,8 +599,8 @@ max-output-bytes = "64KiB"
                 "[scoring]\nformula = \"affine\"\nmax-sum = 2.0\nscale-min = 0.0\nscale-max = 10.0",
             ),
         );
-        run_regrade("hw3", assignment_dir.path(), &config).unwrap();
-        let grades = store.latest_grades("hw3").unwrap();
+        run_regrade(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
+        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
         assert_eq!(grades[0].score, 5.0);
         assert_eq!(grades[0].max, Some(10.0));
     }
@@ -614,9 +624,9 @@ max-output-bytes = "64KiB"
         let store = Store::new(&config.storage_dir);
         store.save_eval(&persisted_eval()).unwrap();
 
-        run_regrade("hw3", assignment_dir.path(), &config).unwrap();
+        run_regrade(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
 
-        let grades = store.latest_grades("hw3").unwrap();
+        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
         assert_eq!(grades.len(), 1);
         assert_eq!(grades[0].score, 25.0);
         assert_eq!(grades[0].status, "override");

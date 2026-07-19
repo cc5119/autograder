@@ -56,7 +56,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     };
 
     Grade {
-        student_id: eval.student_id.clone(),
+        student_id: eval.student_id,
         score,
         max,
         status,

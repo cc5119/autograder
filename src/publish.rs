@@ -54,16 +54,16 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
         )));
     }
     let spec = Spec::load_file(&private_spec_path)?;
-    let id = spec.assignment.id.clone();
+    let id = spec.assignment.id;
 
     let ctx = Context {
         source_root: package_dir.to_path_buf(),
-        substitutions: HashMap::from([("id", id.clone())]),
+        substitutions: HashMap::from([("id", id.to_string())]),
     };
 
     overlay::apply(&ctx, out_dir, &rules(spec.assignment.kind))?;
 
-    let student_dir = out_dir.join(&id);
+    let student_dir = out_dir.join(id.as_str());
     run_cargo_fix(&student_dir)?;
 
     let public_spec_path = out_dir.join(spec::PUBLIC_SPEC_FILE);

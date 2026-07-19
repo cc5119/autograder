@@ -44,7 +44,7 @@ pub struct Binary<S> {
 impl<S: Sandbox> Binary<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
-        let tests_dir = package_dir.join(&spec.assignment.id).join("tests");
+        let tests_dir = package_dir.join(spec.assignment.id.as_str()).join("tests");
         if !tests_dir.is_dir() {
             return Err(Error::InvalidSpec(format!(
                 "binary assignment missing {} -- the judge must be real, \
@@ -155,9 +155,9 @@ impl<S: Sandbox> Evaluator for Binary<S> {
 
         Ok(EvaluationResult {
             schema_version: 1,
-            assignment_id: ctx.assignment_id.clone(),
-            student_id: ctx.student_id.clone(),
-            run_id: ctx.run_id.clone(),
+            assignment_id: ctx.assignment_id,
+            student_id: ctx.student_id,
+            run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,
@@ -186,9 +186,9 @@ fn terminal_result(
 ) -> EvaluationResult {
     EvaluationResult {
         schema_version: 1,
-        assignment_id: ctx.assignment_id.clone(),
-        student_id: ctx.student_id.clone(),
-        run_id: ctx.run_id.clone(),
+        assignment_id: ctx.assignment_id,
+        student_id: ctx.student_id,
+        run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
         public_harness_commit: None,

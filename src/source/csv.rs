@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::id::StudentId;
 use crate::model::{GitRepo, Submission};
 
 use super::SubmissionsSource;
@@ -74,6 +75,7 @@ fn read_roster(path: &Path) -> Result<Vec<Submission<GitRepo>>> {
         let student_id = student_id.ok_or_else(|| {
             Error::InvalidSpec(format!("roster {path:?} missing student_id column"))
         })?;
+        let student_id = StudentId::new(student_id);
         let repo_url = repo_url.ok_or_else(|| {
             Error::InvalidSpec(format!("roster {path:?} missing repo_url column"))
         })?;

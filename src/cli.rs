@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::id::AssignmentId;
 use crate::spec::AssignmentKind;
 
 #[derive(Debug, Parser)]
@@ -89,7 +90,7 @@ pub enum Command {
     /// Re-run only the Grade stage from persisted results.
     Regrade {
         /// Assignment id to regrade.
-        assignment_id: String,
+        assignment_id: AssignmentId,
         /// Path to the assignment repo (for the current scoring policy).
         #[arg(long)]
         assignment: PathBuf,
@@ -97,7 +98,7 @@ pub enum Command {
     /// Emit a report from persisted grades.
     Report {
         /// Assignment id to report on.
-        assignment_id: String,
+        assignment_id: AssignmentId,
         /// Output format.
         #[arg(long, value_enum, default_value = "json")]
         format: ReportFormat,

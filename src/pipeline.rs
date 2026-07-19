@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::error::Result;
 use crate::evaluator::Evaluator;
 use crate::fetch::read_fetch_record;
+use crate::id::RunId;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
@@ -54,9 +55,9 @@ fn terminal_eval(
 ) -> EvaluationResult {
     EvaluationResult {
         schema_version: 1,
-        assignment_id: ctx.assignment_id.clone(),
-        student_id: ctx.student_id.clone(),
-        run_id: ctx.run_id.clone(),
+        assignment_id: ctx.assignment_id,
+        student_id: ctx.student_id,
+        run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
         public_harness_commit: None,
@@ -90,13 +91,13 @@ fn terminal_eval(
     }
 }
 
-pub(crate) fn generate_run_id() -> String {
+pub(crate) fn generate_run_id() -> RunId {
     let n = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
+    RunId::new(format!(
         "{}-{:04x}",
         jiff::Timestamp::now().strftime("%Y-%m-%dT%H-%M-%SZ"),
         n
-    )
+    ))
 }
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
@@ -122,18 +123,18 @@ pub fn grade_batch<F>(
 
     for submission in submissions {
         let run_id = generate_run_id();
-        let job_root = work_dir.join(&submission.student_id);
+        let job_root = work_dir.join(submission.student_id.as_str());
         let checkout_dir = job_root.join("checkout");
         // `workspace` is named after `[assignment].id`, not e.g. "student":
         // the harness's checked-in Cargo.toml depends on that exact sibling
         // name (see `evaluator::library`'s module doc comment).
         let build_dir = job_root.join("build");
-        let workspace = build_dir.join(&spec.assignment.id);
+        let workspace = build_dir.join(spec.assignment.id.as_str());
         let driver_dir = build_dir.join("harness");
         let ctx = JobContext {
-            assignment_id: spec.assignment.id.clone(),
-            student_id: submission.student_id.clone(),
-            run_id: run_id.clone(),
+            assignment_id: spec.assignment.id,
+            student_id: submission.student_id,
+            run_id,
             workspace: workspace.clone(),
             driver_dir: driver_dir.clone(),
         };
@@ -154,7 +155,7 @@ pub fn grade_batch<F>(
             };
             terminal_eval(&ctx, StageStatus::FetchFailed, message)
         } else {
-            let submitted_crate = checkout_dir.join(&spec.assignment.id);
+            let submitted_crate = checkout_dir.join(spec.assignment.id.as_str());
             if !submitted_crate.is_dir() {
                 terminal_eval(
                     &ctx,
@@ -167,7 +168,7 @@ pub fn grade_batch<F>(
                 )
             } else {
                 let outcome: Result<EvaluationResult> = (|| {
-                    let subs = HashMap::from([("id", spec.assignment.id.clone())]);
+                    let subs = HashMap::from([("id", spec.assignment.id.to_string())]);
                     overlay::apply(
                         &Context {
                             source_root: checkout_dir.clone(),
@@ -224,7 +225,7 @@ pub fn grade_batch<F>(
             &spec.assignment.deadline,
             spec.scoring.late_penalty.as_ref(),
         );
-        store.save_grade(&ctx.assignment_id, &ctx.run_id, &grade)?;
+        store.save_grade(ctx.assignment_id, ctx.run_id, &grade)?;
         grades.push(grade);
     }
 
@@ -340,9 +341,13 @@ base = 0.0
         assert_eq!(grades[0].score, 1.0);
         assert_eq!(grades[0].max, None);
 
-        let persisted = store.latest_evals("hw3").unwrap();
+        let persisted = store
+            .latest_evals(crate::id::AssignmentId::new("hw3"))
+            .unwrap();
         assert_eq!(persisted.len(), 1);
-        let persisted_grades = store.latest_grades("hw3").unwrap();
+        let persisted_grades = store
+            .latest_grades(crate::id::AssignmentId::new("hw3"))
+            .unwrap();
         assert_eq!(persisted_grades.len(), 1);
 
         assert!(
@@ -408,9 +413,9 @@ base = 0.0
 
             Ok(EvaluationResult {
                 schema_version: 1,
-                assignment_id: ctx.assignment_id.clone(),
-                student_id: ctx.student_id.clone(),
-                run_id: ctx.run_id.clone(),
+                assignment_id: ctx.assignment_id,
+                student_id: ctx.student_id,
+                run_id: ctx.run_id,
                 graded_commit: None,
                 instructor_commit: None,
                 public_harness_commit: None,
@@ -523,7 +528,9 @@ base = 0.0
         assert_eq!(grades[0].score, 0.0);
         assert_eq!(grades[0].status, "DisallowedDependency");
 
-        let persisted = store.latest_evals("hw3").unwrap();
+        let persisted = store
+            .latest_evals(crate::id::AssignmentId::new("hw3"))
+            .unwrap();
         assert_eq!(persisted.len(), 1);
         assert!(
             persisted[0]
@@ -593,7 +600,7 @@ base = 0.0
         let store = Store::new(store_dir.path());
         let overrides = Overrides {
             manual: std::collections::BTreeMap::from([(
-                "alice".to_string(),
+                crate::id::StudentId::new("alice"),
                 crate::overrides::ManualOverride {
                     score: 3.0,
                     status: Some("manual-review".into()),
@@ -620,7 +627,9 @@ base = 0.0
         assert_eq!(grades[0].status, "manual-review");
         assert!(grades[0].override_reason.is_some());
 
-        let persisted = store.latest_evals("hw3").unwrap();
+        let persisted = store
+            .latest_evals(crate::id::AssignmentId::new("hw3"))
+            .unwrap();
         assert_eq!(persisted[0].tests[0].status, crate::model::TestStatus::Pass);
     }
 }

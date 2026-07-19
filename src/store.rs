@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::id::{AssignmentId, RunId, StudentId};
 use crate::model::{EvaluationResult, Grade};
 
 /// Persists `EvaluationResult`s and `Grade`s as JSON keyed by
@@ -15,19 +16,26 @@ impl Store {
         Self { root: root.into() }
     }
 
-    fn student_dir(&self, assignment_id: &str, student_id: &str) -> PathBuf {
-        self.root.join(assignment_id).join(student_id)
+    fn student_dir(&self, assignment_id: AssignmentId, student_id: StudentId) -> PathBuf {
+        self.root
+            .join(assignment_id.as_str())
+            .join(student_id.as_str())
     }
 
     pub fn save_eval(&self, eval: &EvaluationResult) -> Result<PathBuf> {
-        let dir = self.student_dir(&eval.assignment_id, &eval.student_id);
+        let dir = self.student_dir(eval.assignment_id, eval.student_id);
         let path = dir.join(format!("{}.eval.json", eval.run_id));
         write_json(&path, eval)?;
         Ok(path)
     }
 
-    pub fn save_grade(&self, assignment_id: &str, run_id: &str, grade: &Grade) -> Result<PathBuf> {
-        let dir = self.student_dir(assignment_id, &grade.student_id);
+    pub fn save_grade(
+        &self,
+        assignment_id: AssignmentId,
+        run_id: RunId,
+        grade: &Grade,
+    ) -> Result<PathBuf> {
+        let dir = self.student_dir(assignment_id, grade.student_id);
         let path = dir.join(format!("{run_id}.grade.json"));
         write_json(&path, grade)?;
         Ok(path)
@@ -35,21 +43,21 @@ impl Store {
 
     /// The most recent persisted `EvaluationResult` per student for an
     /// assignment (by run_id sort order), or an empty vec if none exist.
-    pub fn latest_evals(&self, assignment_id: &str) -> Result<Vec<EvaluationResult>> {
+    pub fn latest_evals(&self, assignment_id: AssignmentId) -> Result<Vec<EvaluationResult>> {
         self.latest_per_student(assignment_id, "eval.json")
     }
 
     /// The most recent persisted `Grade` per student for an assignment.
-    pub fn latest_grades(&self, assignment_id: &str) -> Result<Vec<Grade>> {
+    pub fn latest_grades(&self, assignment_id: AssignmentId) -> Result<Vec<Grade>> {
         self.latest_per_student(assignment_id, "grade.json")
     }
 
     fn latest_per_student<T: serde::de::DeserializeOwned>(
         &self,
-        assignment_id: &str,
+        assignment_id: AssignmentId,
         suffix: &str,
     ) -> Result<Vec<T>> {
-        let assignment_dir = self.root.join(assignment_id);
+        let assignment_dir = self.root.join(assignment_id.as_str());
         if !assignment_dir.is_dir() {
             return Ok(Vec::new());
         }
@@ -118,7 +126,7 @@ mod tests {
         store.save_eval(&eval("hw3", "alice", "run-2")).unwrap();
         store.save_eval(&eval("hw3", "bob", "run-1")).unwrap();
 
-        let mut latest = store.latest_evals("hw3").unwrap();
+        let mut latest = store.latest_evals(AssignmentId::new("hw3")).unwrap();
         latest.sort_by(|a, b| a.student_id.cmp(&b.student_id));
 
         assert_eq!(latest.len(), 2);
@@ -131,6 +139,11 @@ mod tests {
     fn missing_assignment_dir_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        assert!(store.latest_evals("nope").unwrap().is_empty());
+        assert!(
+            store
+                .latest_evals(AssignmentId::new("nope"))
+                .unwrap()
+                .is_empty()
+        );
     }
 }
