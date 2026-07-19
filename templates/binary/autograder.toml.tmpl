@@ -1,0 +1,32 @@
+[assignment]
+id = "{id}"
+name = "TODO: assignment name"
+kind = "binary"
+deadline = "{deadline}" # TODO: set the real deadline
+
+[sandbox]
+image = "autograder-base:1.86.0"
+
+[allowed-crates]
+
+[limits.build]
+wall-clock = "60s"
+cpus = 2
+memory = "1GiB"
+pids = 128
+
+[limits.run]
+cpu-time = "5s"
+wall-clock = "10s"
+cpus = 1
+memory = "256MiB"
+pids = 64
+max-output-bytes = "64KiB"
+
+[scoring]
+model = "weighted"
+
+[[scoring.tests]]
+name = "example_test"
+points = 10
+visibility = "public"

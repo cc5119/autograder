@@ -4,6 +4,7 @@ pub mod error;
 pub mod evaluator;
 pub mod fetch;
 pub mod grade;
+pub mod init;
 pub mod manifest_check;
 pub mod model;
 pub mod overrides;
@@ -36,6 +37,7 @@ use store::Store;
 
 pub fn dispatch(command: Command, config: &Config) -> Result<()> {
     match command {
+        Command::Init { dir, kind, id } => run_init(&dir, &id, kind.into()),
         Command::Prefetch { assignment } => run_prefetch(&assignment),
         Command::Fetch {
             assignment,
@@ -68,6 +70,12 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
         } => run_report(&assignment_id, format, out, config),
         Command::Scaffold { assignment, out } => run_scaffold(&assignment, &out),
     }
+}
+
+fn run_init(dir: &std::path::Path, id: &str, kind: AssignmentKind) -> Result<()> {
+    let outcome = init::init(dir, id, kind)?;
+    tracing::info!(dir = %outcome.dir.display(), "init complete");
+    Ok(())
 }
 
 fn run_prefetch(assignment: &std::path::Path) -> Result<()> {

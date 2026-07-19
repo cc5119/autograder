@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::spec::AssignmentKind;
+
 #[derive(Debug, Parser)]
 #[command(name = "autograder", version, about = "Rust assignment autograder")]
 pub struct Cli {
@@ -11,6 +13,21 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Scaffold a brand-new private instructor package (autograder.toml,
+    /// a root Cargo.toml, a reference solution stub, and -- for
+    /// `library`-kind -- a harness/ stub) at `dir`, which must not
+    /// already exist or must be empty.
+    Init {
+        /// Directory to create the new package in.
+        dir: PathBuf,
+        /// The assignment kind.
+        #[arg(long, value_enum)]
+        kind: AssignmentKindArg,
+        /// `[assignment].id`: the crate name, and the directory name the
+        /// reference solution lives in.
+        #[arg(long)]
+        id: String,
+    },
     /// Build the offline vendor dir + base image for an assignment.
     Prefetch {
         /// Path to the assignment repo.
@@ -100,4 +117,22 @@ pub enum Command {
 pub enum ReportFormat {
     Json,
     Csv,
+}
+
+/// Mirrors `spec::AssignmentKind` -- kept separate (rather than deriving
+/// `clap::ValueEnum` on the spec type itself) so `spec` stays free of any
+/// CLI-parsing dependency; `From` below maps this to the real type.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum AssignmentKindArg {
+    Library,
+    Binary,
+}
+
+impl From<AssignmentKindArg> for AssignmentKind {
+    fn from(kind: AssignmentKindArg) -> Self {
+        match kind {
+            AssignmentKindArg::Library => AssignmentKind::Library,
+            AssignmentKindArg::Binary => AssignmentKind::Binary,
+        }
+    }
 }
