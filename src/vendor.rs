@@ -145,7 +145,8 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
+formula = "sum"
+base = 0.0
 "#,
         );
         toml::from_str(&toml).unwrap()

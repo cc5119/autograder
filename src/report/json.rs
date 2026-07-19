@@ -31,7 +31,7 @@ mod tests {
         let grades = vec![Grade {
             student_id: "alice".into(),
             score: 10.0,
-            max: 30.0,
+            max: Some(30.0),
             status: "fail".into(),
             failing_tests: vec!["balance_adversarial".into()],
             override_reason: None,

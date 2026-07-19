@@ -1,52 +1,49 @@
-use crate::model::{EvaluationResult, Grade, StageStatus, TestStatus};
-use crate::spec::{ScoredTest, Scoring, ScoringModel};
+use crate::model::{EvaluationResult, Grade, StageStatus, TestResult, TestStatus};
+use crate::spec::{Scoring, ScoringFormula};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
-/// untrusted code runs here.
+/// untrusted code runs here, and no pre-declared test-name table is
+/// consulted -- every test `eval` reports feeds the sum, whatever its
+/// runtime name.
 pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
-    // A stage-level failure means every scored test is treated as failing,
-    // even if student code dodged a specific assertion by crashing the
-    // driver instead.
+    // A stage-level failure means the run never produced a trustworthy set
+    // of test results at all, even if a few tests happened to report
+    // before the crash -- the same `stage_failed` short-circuit as before,
+    // just landing on each formula's own floor value instead of 0.0.
     let stage_failed = eval.stages.fetch.status != StageStatus::Ok
         || eval.stages.build.status != StageStatus::Ok
         || eval.stages.run.status != StageStatus::Ok;
 
-    let passing = |test: &ScoredTest| -> bool {
-        if stage_failed {
-            return false;
-        }
-        eval.tests
-            .iter()
-            .find(|t| t.name == test.name)
-            .is_some_and(|t| t.status == TestStatus::Pass)
-    };
-
-    let failing_tests: Vec<String> = policy
+    let failing_tests: Vec<String> = eval
         .tests
         .iter()
-        .filter(|t| !passing(t))
+        .filter(|t| t.status != TestStatus::Pass)
         .map(|t| t.name.clone())
         .collect();
 
-    let (score, max) = match policy.model {
-        ScoringModel::Weighted => {
-            let max: f64 = policy.tests.iter().filter_map(|t| t.points).sum();
-            let score: f64 = policy
-                .tests
-                .iter()
-                .filter(|t| passing(t))
-                .filter_map(|t| t.points)
-                .sum();
-            (score, max)
+    let reported_sum: f64 = eval.tests.iter().map(contribution).sum();
+
+    let (score, max) = match &policy.formula {
+        ScoringFormula::Sum { base } => {
+            let score = if stage_failed {
+                *base
+            } else {
+                base + reported_sum
+            };
+            (score, None)
         }
-        ScoringModel::PassCount => {
-            let max = policy.tests.len() as f64;
-            let score = policy.tests.iter().filter(|t| passing(t)).count() as f64;
-            (score, max)
-        }
-        ScoringModel::PassFail => {
-            let all_pass = !policy.tests.is_empty() && policy.tests.iter().all(passing);
-            (if all_pass { 1.0 } else { 0.0 }, 1.0)
+        ScoringFormula::Affine {
+            max_sum,
+            scale_min,
+            scale_max,
+        } => {
+            let score = if stage_failed {
+                *scale_min
+            } else {
+                let frac = (reported_sum / max_sum).clamp(0.0, 1.0);
+                scale_min + frac * (scale_max - scale_min)
+            };
+            (score, Some(*scale_max))
         }
     };
 
@@ -69,6 +66,16 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     }
 }
 
+/// A test's contribution to the sum: whatever it self-reported, or the
+/// 1.0/0.0 pass/fail default when it reported nothing.
+fn contribution(test: &TestResult) -> f64 {
+    match test.reported_score {
+        Some(v) => v,
+        None if test.status == TestStatus::Pass => 1.0,
+        None => 0.0,
+    }
+}
+
 fn stage_status_label(eval: &EvaluationResult) -> String {
     for status in [
         eval.stages.fetch.status,
@@ -87,7 +94,7 @@ mod tests {
     use super::*;
     use crate::model::{ResourceUsage, StageReport, StageReports};
 
-    fn eval_with(stages: StageReports, tests: Vec<crate::model::TestResult>) -> EvaluationResult {
+    fn eval_with(stages: StageReports, tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
             assignment_id: "hw3".into(),
@@ -111,33 +118,43 @@ mod tests {
         }
     }
 
-    fn test_result(name: &str, status: TestStatus) -> crate::model::TestResult {
-        crate::model::TestResult {
+    fn test_result(name: &str, status: TestStatus) -> TestResult {
+        TestResult {
             name: name.into(),
-            visibility: crate::model::TestVisibility::Public,
             status,
             duration_ms: None,
             message: None,
+            reported_score: None,
         }
     }
 
-    fn policy(model: ScoringModel, tests: Vec<(&str, Option<f64>)>) -> Scoring {
+    fn test_result_with_score(name: &str, status: TestStatus, score: f64) -> TestResult {
+        TestResult {
+            reported_score: Some(score),
+            ..test_result(name, status)
+        }
+    }
+
+    fn sum_policy(base: f64) -> Scoring {
         Scoring {
-            model,
-            tests: tests
-                .into_iter()
-                .map(|(name, points)| ScoredTest {
-                    name: name.into(),
-                    visibility: crate::model::TestVisibility::Public,
-                    points,
-                })
-                .collect(),
+            formula: ScoringFormula::Sum { base },
+            late_penalty: None,
+        }
+    }
+
+    fn affine_policy(max_sum: f64, scale_min: f64, scale_max: f64) -> Scoring {
+        Scoring {
+            formula: ScoringFormula::Affine {
+                max_sum,
+                scale_min,
+                scale_max,
+            },
             late_penalty: None,
         }
     }
 
     #[test]
-    fn weighted_sums_points_of_passing_tests() {
+    fn sum_formula_adds_base_to_the_default_pass_fail_contributions() {
         let eval = eval_with(
             ok_stages(),
             vec![
@@ -145,47 +162,47 @@ mod tests {
                 test_result("b", TestStatus::Fail),
             ],
         );
-        let policy = policy(
-            ScoringModel::Weighted,
-            vec![("a", Some(10.0)), ("b", Some(20.0))],
-        );
-        let grade = grade(&eval, &policy);
-        assert_eq!(grade.score, 10.0);
-        assert_eq!(grade.max, 30.0);
+        let grade = grade(&eval, &sum_policy(1.0));
+        assert_eq!(grade.score, 2.0);
+        assert_eq!(grade.max, None);
         assert_eq!(grade.failing_tests, vec!["b".to_string()]);
     }
 
     #[test]
-    fn pass_count_counts_passing_tests() {
+    fn sum_formula_sums_reported_scores_over_the_pass_fail_default() {
         let eval = eval_with(
             ok_stages(),
             vec![
-                test_result("a", TestStatus::Pass),
-                test_result("b", TestStatus::Pass),
-                test_result("c", TestStatus::Fail),
+                test_result_with_score("a", TestStatus::Pass, 0.5),
+                test_result_with_score("b", TestStatus::Fail, 0.25),
             ],
         );
-        let policy = policy(
-            ScoringModel::PassCount,
-            vec![("a", None), ("b", None), ("c", None)],
-        );
-        let grade = grade(&eval, &policy);
-        assert_eq!(grade.score, 2.0);
-        assert_eq!(grade.max, 3.0);
+        let grade = grade(&eval, &sum_policy(0.0));
+        assert_eq!(grade.score, 0.75);
     }
 
     #[test]
-    fn pass_fail_requires_all_scored_tests_to_pass() {
+    fn affine_formula_scales_the_reported_sum_into_the_configured_range() {
         let eval = eval_with(
             ok_stages(),
             vec![
-                test_result("a", TestStatus::Pass),
-                test_result("b", TestStatus::Fail),
+                test_result_with_score("a", TestStatus::Pass, 10.0),
+                test_result_with_score("b", TestStatus::Pass, 10.0),
             ],
         );
-        let policy = policy(ScoringModel::PassFail, vec![("a", None), ("b", None)]);
-        let grade = grade(&eval, &policy);
-        assert_eq!(grade.score, 0.0);
+        let grade = grade(&eval, &affine_policy(20.0, 1.0, 7.0));
+        assert_eq!(grade.score, 7.0);
+        assert_eq!(grade.max, Some(7.0));
+    }
+
+    #[test]
+    fn affine_formula_clamps_above_max_sum() {
+        let eval = eval_with(
+            ok_stages(),
+            vec![test_result_with_score("a", TestStatus::Pass, 100.0)],
+        );
+        let grade = grade(&eval, &affine_policy(20.0, 1.0, 7.0));
+        assert_eq!(grade.score, 7.0);
     }
 
     #[test]
@@ -212,22 +229,19 @@ mod tests {
             },
             vec![test_result("a", TestStatus::Pass)],
         );
-        let policy = policy(
-            ScoringModel::Weighted,
-            vec![("a", Some(10.0)), ("b", Some(20.0))],
-        );
+        let policy = sum_policy(0.0);
 
         let honest_grade = grade(&honest_fail_eval, &policy);
         let harness_error_grade = grade(&harness_error_eval, &policy);
 
-        assert_eq!(honest_grade.score, 10.0);
-        // Despite reporting "a" as passing, a harness_error zeroes everything.
+        assert_eq!(honest_grade.score, 1.0);
+        // Despite reporting "a" as passing, a harness_error floors at base.
         assert_eq!(harness_error_grade.score, 0.0);
         assert!(harness_error_grade.score <= honest_grade.score);
     }
 
     #[test]
-    fn build_failed_scores_zero() {
+    fn build_failed_floors_the_sum_formula_at_base() {
         let eval = eval_with(
             StageReports {
                 fetch: StageReport::ok(),
@@ -240,9 +254,27 @@ mod tests {
             },
             vec![],
         );
-        let policy = policy(ScoringModel::Weighted, vec![("a", Some(10.0))]);
-        let grade = grade(&eval, &policy);
-        assert_eq!(grade.score, 0.0);
+        let grade = grade(&eval, &sum_policy(1.0));
+        assert_eq!(grade.score, 1.0);
+        assert_eq!(grade.status, "BuildFailed");
+    }
+
+    #[test]
+    fn build_failed_floors_the_affine_formula_at_scale_min() {
+        let eval = eval_with(
+            StageReports {
+                fetch: StageReport::ok(),
+                build: StageReport {
+                    status: StageStatus::BuildFailed,
+                    duration_ms: None,
+                    warnings: None,
+                },
+                run: StageReport::ok(),
+            },
+            vec![],
+        );
+        let grade = grade(&eval, &affine_policy(20.0, 1.0, 7.0));
+        assert_eq!(grade.score, 1.0);
         assert_eq!(grade.status, "BuildFailed");
     }
 }

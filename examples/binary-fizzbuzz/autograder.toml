@@ -1,8 +1,10 @@
 # Private, standalone full spec for the `binary-fizzbuzz` example (a
 # `binary`-kind assignment, as opposed to library-stack's `library` one).
-# Self-contained: defines every test (public + hidden) and its point value;
-# `autograder scaffold` derives the public/starter view straight from this
-# file, no separate hand-maintained repo.
+# Self-contained; `autograder publish` derives the public/starter view
+# straight from this package, no separate hand-maintained repo. Which judge
+# tests ship to students is controlled by `keep`/`stub`/`hide` doc-comments
+# on the `#[test]` fns themselves (see ./fizzbuzz/tests/judge.rs), not by
+# anything declared here.
 #
 # `id` doubles as the student-facing binary target name (no [student]
 # section): the judge (./fizzbuzz/tests/judge.rs -- no separate harness/
@@ -36,14 +38,5 @@ pids = 64
 max-output-bytes = "64KiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "fizzbuzz_1_to_15"
-points = 10
-visibility = "public"
-
-[[scoring.tests]]
-name = "fizzbuzz_multiples_of_15_and_zero"
-points = 20
-visibility = "private"
+formula = "sum"
+base = 0.0

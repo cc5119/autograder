@@ -5,7 +5,6 @@ use jiff::Zoned;
 use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
-use crate::model::TestVisibility;
 
 /// The private full spec file; carries points.
 pub const PRIVATE_SPEC_FILE: &str = "autograder.toml";
@@ -136,24 +135,6 @@ pub struct Limits {
     pub run: RunLimits,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ScoringModel {
-    Weighted,
-    PassCount,
-    PassFail,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ScoredTest {
-    pub name: String,
-    pub visibility: TestVisibility,
-    /// Absent in the public spec: the shipped spec never reveals weighting,
-    /// and the autograder computes no score for a pointsless test.
-    #[serde(default)]
-    pub points: Option<f64>,
-}
-
 /// A late-submission penalty: a grace period, then a percentage of the
 /// score deducted per day late, capped at `max-percent`. Absent, no late
 /// penalty is ever applied, even with an `overrides.toml` late entry.
@@ -167,13 +148,74 @@ pub struct LatePenalty {
     pub max_percent: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// How a submission's score is computed from the sum of `score=` lines
+/// tests report at run time (see `crate::grade`). No per-test point
+/// declarations here -- a test's contribution is whatever it reports, or
+/// the 1.0/0.0 pass/fail default when it reports nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScoringFormula {
+    /// `score = base + sum(reported values)`, unnormalized.
+    Sum { base: f64 },
+    /// `score = scale_min + clamp(sum / max_sum, 0, 1) * (scale_max - scale_min)`.
+    Affine {
+        max_sum: f64,
+        scale_min: f64,
+        scale_max: f64,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct Scoring {
-    pub model: ScoringModel,
-    #[serde(default, rename = "tests")]
-    pub tests: Vec<ScoredTest>,
-    #[serde(default, rename = "late-penalty")]
+    pub formula: ScoringFormula,
     pub late_penalty: Option<LatePenalty>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawScoring {
+    formula: String,
+    #[serde(default)]
+    base: f64,
+    #[serde(default, rename = "max-sum")]
+    max_sum: Option<f64>,
+    #[serde(default, rename = "scale-min")]
+    scale_min: Option<f64>,
+    #[serde(default, rename = "scale-max")]
+    scale_max: Option<f64>,
+    #[serde(default, rename = "late-penalty")]
+    late_penalty: Option<LatePenalty>,
+}
+
+impl<'de> Deserialize<'de> for Scoring {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawScoring::deserialize(deserializer)?;
+        let formula = match raw.formula.as_str() {
+            "sum" => ScoringFormula::Sum { base: raw.base },
+            "affine" => ScoringFormula::Affine {
+                max_sum: raw
+                    .max_sum
+                    .ok_or_else(|| serde::de::Error::missing_field("max-sum"))?,
+                scale_min: raw
+                    .scale_min
+                    .ok_or_else(|| serde::de::Error::missing_field("scale-min"))?,
+                scale_max: raw
+                    .scale_max
+                    .ok_or_else(|| serde::de::Error::missing_field("scale-max"))?,
+            },
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown [scoring].formula {other:?}, expected \"sum\" or \"affine\""
+                )));
+            }
+        };
+        Ok(Scoring {
+            formula,
+            late_penalty: raw.late_penalty,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,12 +244,6 @@ impl Spec {
             path: path.to_path_buf(),
             source: Box::new(source),
         })
-    }
-
-    /// True if no scored test in this spec carries points (i.e. this is a
-    /// public spec, whether named `autograder.public.toml` or not).
-    pub fn exposes_no_points(&self) -> bool {
-        self.scoring.tests.iter().all(|t| t.points.is_none())
     }
 }
 
@@ -245,13 +281,11 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
-[[scoring.tests]]
-name = "insert_basic"
-visibility = "public"
+formula = "sum"
+base = 1.0
 "#;
 
-    const PRIVATE_TOML: &str = r#"
+    const AFFINE_TOML: &str = r#"
 [assignment]
 id = "hw3"
 name = "Binary search tree"
@@ -281,21 +315,14 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "insert_basic"
-points = 10
-visibility = "public"
-
-[[scoring.tests]]
-name = "balance_adversarial"
-points = 20
-visibility = "private"
+formula = "affine"
+max-sum = 20.0
+scale-min = 1.0
+scale-max = 7.0
 "#;
 
     #[test]
-    fn parses_public_spec_with_no_points() {
+    fn parses_a_sum_formula_spec() {
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
         assert_eq!(spec.assignment.kind, AssignmentKind::Library);
@@ -305,16 +332,37 @@ visibility = "private"
             Duration(std::time::Duration::from_secs(120))
         );
         assert_eq!(spec.limits.run.max_output_bytes, ByteSize(1024 * 1024));
-        assert!(spec.exposes_no_points());
+        assert_eq!(spec.scoring.formula, ScoringFormula::Sum { base: 1.0 });
     }
 
     #[test]
-    fn parses_private_spec_with_points() {
-        let spec: Spec = toml::from_str(PRIVATE_TOML).unwrap();
-        assert_eq!(spec.scoring.tests.len(), 2);
-        assert_eq!(spec.scoring.tests[0].points, Some(10.0));
-        assert_eq!(spec.scoring.tests[1].visibility, TestVisibility::Private);
-        assert!(!spec.exposes_no_points());
+    fn parses_an_affine_formula_spec() {
+        let spec: Spec = toml::from_str(AFFINE_TOML).unwrap();
+        assert_eq!(
+            spec.scoring.formula,
+            ScoringFormula::Affine {
+                max_sum: 20.0,
+                scale_min: 1.0,
+                scale_max: 7.0,
+            }
+        );
+    }
+
+    #[test]
+    fn affine_formula_missing_a_required_field_is_a_clear_parse_error() {
+        let toml = AFFINE_TOML.replace("max-sum = 20.0\n", "");
+        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_formula_is_a_clear_parse_error() {
+        let toml = PUBLIC_TOML.replace(
+            "formula = \"sum\"\nbase = 1.0",
+            "formula = \"geometric-mean\"",
+        );
+        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -346,8 +394,8 @@ visibility = "private"
     #[test]
     fn late_penalty_table_parses_grace_hours_and_percentages() {
         let toml = PUBLIC_TOML.replace(
-            "[scoring]\nmodel = \"weighted\"\n[[scoring.tests]]",
-            "[scoring]\nmodel = \"weighted\"\n\n[scoring.late-penalty]\ngrace = \"24h\"\nper-day-percent = 10\nmax-percent = 50\n\n[[scoring.tests]]",
+            "[scoring]\nformula = \"sum\"\nbase = 1.0",
+            "[scoring]\nformula = \"sum\"\nbase = 1.0\n\n[scoring.late-penalty]\ngrace = \"24h\"\nper-day-percent = 10\nmax-percent = 50",
         );
         let spec: Spec = toml::from_str(&toml).unwrap();
         let penalty = spec.scoring.late_penalty.unwrap();

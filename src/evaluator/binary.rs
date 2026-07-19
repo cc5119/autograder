@@ -27,10 +27,10 @@ use crate::model::{
     StageStatus,
 };
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
-use crate::spec::{ScoredTest, Spec};
+use crate::spec::Spec;
 
 use super::library::parse_junit_report;
-use super::{Evaluator, build_sandbox_limits, run_sandbox_limits};
+use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
 
 const VENDOR_DIR_NAME: &str = "vendor";
 
@@ -39,7 +39,6 @@ pub struct Binary<S> {
     package_dir: PathBuf,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
-    tests: Vec<ScoredTest>,
 }
 
 impl<S: Sandbox> Binary<S> {
@@ -58,7 +57,6 @@ impl<S: Sandbox> Binary<S> {
             package_dir,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
-            tests: spec.scoring.tests.clone(),
         })
     }
 
@@ -117,6 +115,8 @@ impl<S: Sandbox> Evaluator for Binary<S> {
             ));
         }
 
+        write_nextest_config(workspace)?;
+
         let mut run_spec = SandboxSpec::new("cargo", self.run_limits.clone());
         run_spec.args = vec!["nextest".into(), "run".into(), "--offline".into()];
         run_spec.workdir = Some(workspace.clone());
@@ -150,7 +150,7 @@ impl<S: Sandbox> Evaluator for Binary<S> {
                 run_diagnostics(&run_outcome),
             ));
         };
-        let tests = parse_junit_report(&xml, &self.tests)?;
+        let tests = parse_junit_report(&xml)?;
         let diagnostics = run_diagnostics(&run_outcome);
 
         Ok(EvaluationResult {
@@ -320,12 +320,8 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "echoes_input"
-points = 10
-visibility = "public"
+formula = "sum"
+base = 0.0
 "#;
         toml::from_str(toml).unwrap()
     }

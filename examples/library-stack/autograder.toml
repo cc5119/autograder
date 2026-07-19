@@ -1,7 +1,9 @@
 # Private, standalone full spec for the `library-stack` example
-# (design §5.1). Self-contained: defines every test (public + hidden) and
-# its point value; `autograder scaffold` derives the public/starter view
-# straight from this file, no separate hand-maintained repo.
+# (design §5.1). Self-contained; `autograder publish` derives the
+# public/starter view straight from this package, no separate
+# hand-maintained repo. Which judge tests ship to students is controlled by
+# `keep`/`stub`/`hide` doc-comments on the `#[test]` fns themselves (see
+# ./harness/tests/judge.rs), not by anything declared here.
 #
 # `id` doubles as the student-facing crate name (no [student] section): the
 # harness's Cargo.toml depends on `library-stack-example`, and the
@@ -34,14 +36,5 @@ pids = 64
 max-output-bytes = "64KiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "push_pop_basic"
-points = 10
-visibility = "public"
-
-[[scoring.tests]]
-name = "many_pushes_then_pops"
-points = 20
-visibility = "private"
+formula = "sum"
+base = 0.0

@@ -48,14 +48,6 @@ pub struct JobContext {
     pub driver_dir: PathBuf,
 }
 
-/// Visibility of a test: public tests also run in the CI tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TestVisibility {
-    Public,
-    Private,
-}
-
 /// Verdict for a single test, as observed by the trusted judge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,12 +62,15 @@ pub enum TestStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
     pub name: String,
-    pub visibility: TestVisibility,
     pub status: TestStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Sum of every `autograder: score=<f64>` line this test
+    /// printed to stdout (see `crate::grade`); `None` if it printed none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_score: Option<f64>,
 }
 
 /// Terminal status of a pipeline stage (fetch/build/run).
@@ -159,7 +154,11 @@ pub struct EvaluationResult {
 pub struct Grade {
     pub student_id: String,
     pub score: f64,
-    pub max: f64,
+    /// The scale's theoretical ceiling, when the scoring formula defines
+    /// one (`affine`'s `scale-max`). `sum` is unnormalized and has no
+    /// natural ceiling, so this is `None` for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
     pub status: String,
     #[serde(default)]
     pub failing_tests: Vec<String>,
@@ -203,24 +202,24 @@ mod tests {
             tests: vec![
                 TestResult {
                     name: "insert_basic".into(),
-                    visibility: TestVisibility::Public,
                     status: TestStatus::Pass,
                     duration_ms: Some(5),
                     message: None,
+                    reported_score: Some(0.83),
                 },
                 TestResult {
                     name: "balance_adv".into(),
-                    visibility: TestVisibility::Private,
                     status: TestStatus::Fail,
                     duration_ms: Some(9),
                     message: Some("assertion failed: height <= 2*log2(n)".into()),
+                    reported_score: None,
                 },
                 TestResult {
                     name: "delete_edge".into(),
-                    visibility: TestVisibility::Public,
                     status: TestStatus::Timeout,
                     duration_ms: None,
                     message: None,
+                    reported_score: None,
                 },
             ],
             resource_usage: ResourceUsage {

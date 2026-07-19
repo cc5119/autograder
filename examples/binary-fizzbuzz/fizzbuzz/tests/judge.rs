@@ -17,8 +17,9 @@
 //! compiled `fizzbuzz` binary as a child process and asserts purely on its
 //! observable stdout, never on anything the binary "reports" about itself.
 //!
-//! `fizzbuzz_1_to_15` is the public test (the classic case, also shipped to
-//! students); `fizzbuzz_multiples_of_15_and_zero` is private (hidden) --
+//! `fizzbuzz_1_to_15` is marked `keep` below, so it ships to students as
+//! the public test (the classic case); `fizzbuzz_multiples_of_15_and_zero`
+//! is left unmarked, so `publish` drops it -- it never ships, and it's
 //! adversarial in the sense the design calls for (§9): a solution that
 //! special-cases exactly the first 15 lines (matching the public test)
 //! still fails the n=0 (no output) and n=30 (another multiple-of-15 line,
@@ -39,6 +40,7 @@ fn run(n: &str) -> String {
     String::from_utf8(output.stdout).expect("fizzbuzz stdout was not valid utf8")
 }
 
+/// autograder: keep
 #[test]
 fn fizzbuzz_1_to_15() {
     let output = run("15");

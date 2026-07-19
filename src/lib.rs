@@ -354,10 +354,8 @@ pids = 64
 max-output-bytes = "64KiB"
 
 [scoring]
-model = "weighted"
-[[scoring.tests]]
-name = "insert_basic"
-visibility = "public"
+formula = "sum"
+base = 0.0
 "#;
 
     /// This host has no `cargo-nextest` installed, so the run stage never
@@ -486,7 +484,7 @@ mod regrade_tests {
     use super::*;
     use model::{
         Diagnostics, EvaluationResult, ResourceUsage, StageReport, StageReports, TestResult,
-        TestStatus, TestVisibility,
+        TestStatus,
     };
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -494,7 +492,7 @@ mod regrade_tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    fn spec_toml(model: &str) -> String {
+    fn spec_toml(scoring_block: &str) -> String {
         format!(
             r#"
 [assignment]
@@ -522,18 +520,7 @@ memory = "256MiB"
 pids = 64
 max-output-bytes = "64KiB"
 
-[scoring]
-model = "{model}"
-
-[[scoring.tests]]
-name = "insert_basic"
-points = 10
-visibility = "public"
-
-[[scoring.tests]]
-name = "balance_adversarial"
-points = 20
-visibility = "private"
+{scoring_block}
 "#
         )
     }
@@ -555,17 +542,17 @@ visibility = "private"
             tests: vec![
                 TestResult {
                     name: "insert_basic".into(),
-                    visibility: TestVisibility::Public,
                     status: TestStatus::Pass,
                     duration_ms: None,
                     message: None,
+                    reported_score: None,
                 },
                 TestResult {
                     name: "balance_adversarial".into(),
-                    visibility: TestVisibility::Private,
                     status: TestStatus::Fail,
                     duration_ms: None,
                     message: None,
+                    reported_score: None,
                 },
             ],
             resource_usage: ResourceUsage::default(),
@@ -583,7 +570,7 @@ visibility = "private"
 
         write(
             &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
-            &spec_toml("weighted"),
+            &spec_toml("[scoring]\nformula = \"sum\"\nbase = 0.0"),
         );
         let store = Store::new(&config.storage_dir);
         store.save_eval(&persisted_eval()).unwrap();
@@ -591,18 +578,20 @@ visibility = "private"
         run_regrade("hw3", assignment_dir.path(), &config).unwrap();
         let grades = store.latest_grades("hw3").unwrap();
         assert_eq!(grades.len(), 1);
-        // insert_basic passes (10 pts), balance_adversarial fails -> 10/30.
-        assert_eq!(grades[0].score, 10.0);
-        assert_eq!(grades[0].max, 30.0);
+        // insert_basic passes (1.0 default), balance_adversarial fails (0.0).
+        assert_eq!(grades[0].score, 1.0);
+        assert_eq!(grades[0].max, None);
 
         write(
             &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
-            &spec_toml("pass-count"),
+            &spec_toml(
+                "[scoring]\nformula = \"affine\"\nmax-sum = 2.0\nscale-min = 0.0\nscale-max = 10.0",
+            ),
         );
         run_regrade("hw3", assignment_dir.path(), &config).unwrap();
         let grades = store.latest_grades("hw3").unwrap();
-        assert_eq!(grades[0].score, 1.0);
-        assert_eq!(grades[0].max, 2.0);
+        assert_eq!(grades[0].score, 5.0);
+        assert_eq!(grades[0].max, Some(10.0));
     }
 
     #[test]
@@ -615,7 +604,7 @@ visibility = "private"
 
         write(
             &assignment_dir.path().join(spec::PRIVATE_SPEC_FILE),
-            &spec_toml("weighted"),
+            &spec_toml("[scoring]\nformula = \"sum\"\nbase = 0.0"),
         );
         write(
             &assignment_dir.path().join(overrides::OVERRIDES_FILE),

@@ -24,13 +24,13 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    StageStatus, TestResult, TestStatus, TestVisibility,
+    StageStatus, TestResult, TestStatus,
 };
 use crate::sandbox::{Mount, MountMode, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
-use crate::spec::{ScoredTest, Spec};
+use crate::spec::Spec;
 use crate::vendor;
 
-use super::{Evaluator, build_sandbox_limits, run_sandbox_limits};
+use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
 /// writes to; mirrors `vendor::prefetch`'s output layout.
@@ -41,7 +41,6 @@ pub struct Library<S> {
     package_dir: PathBuf,
     build_limits: SandboxLimits,
     run_limits: SandboxLimits,
-    tests: Vec<ScoredTest>,
 }
 
 impl<S: Sandbox> Library<S> {
@@ -60,7 +59,6 @@ impl<S: Sandbox> Library<S> {
             package_dir,
             build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
             run_limits: run_sandbox_limits(&spec.limits.run),
-            tests: spec.scoring.tests.clone(),
         })
     }
 
@@ -147,6 +145,8 @@ impl<S: Sandbox> Evaluator for Library<S> {
             ));
         }
 
+        write_nextest_config(driver_dir)?;
+
         let mut run_spec = SandboxSpec::new("cargo", self.run_limits.clone());
         run_spec.args = vec!["nextest".into(), "run".into(), "--offline".into()];
         run_spec.args.extend(config_args);
@@ -183,7 +183,7 @@ impl<S: Sandbox> Evaluator for Library<S> {
                 run_diagnostics(&run_outcome),
             ));
         };
-        let tests = parse_junit_report(&xml, &self.tests)?;
+        let tests = parse_junit_report(&xml)?;
         let diagnostics = run_diagnostics(&run_outcome);
 
         Ok(EvaluationResult {
@@ -271,11 +271,10 @@ fn capped_utf8(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Parses `cargo nextest`'s JUnit XML report into `TestResult`s. `tests` is
-/// consulted only to recover each test's `visibility` (JUnit doesn't carry
-/// it), matched by name or by its last `::`-separated segment (nextest
-/// reports `<binary>::<test_fn>`-style names).
-pub fn parse_junit_report(xml: &str, tests: &[ScoredTest]) -> Result<Vec<TestResult>> {
+/// Parses `cargo nextest`'s JUnit XML report into `TestResult`s -- every
+/// genuine `#[test]` fn nextest ran, hand-written or `dir-test`-generated,
+/// with no pre-declared name table consulted.
+pub fn parse_junit_report(xml: &str) -> Result<Vec<TestResult>> {
     let doc = roxmltree::Document::parse(xml)
         .map_err(|e| Error::Other(format!("failed to parse junit report: {e}")))?;
 
@@ -303,27 +302,59 @@ pub fn parse_junit_report(xml: &str, tests: &[ScoredTest]) -> Result<Vec<TestRes
             (TestStatus::Pass, None)
         };
 
-        let visibility = visibility_for(&name, tests);
+        let reported_score = reported_score(node);
 
         results.push(TestResult {
             name,
-            visibility,
             status,
             duration_ms,
             message,
+            reported_score,
         });
     }
 
     Ok(results)
 }
 
-fn visibility_for(name: &str, tests: &[ScoredTest]) -> TestVisibility {
-    let leaf = name.rsplit("::").next().unwrap_or(name);
-    tests
-        .iter()
-        .find(|t| t.name == name || t.name == leaf)
-        .map(|t| t.visibility)
-        .unwrap_or(TestVisibility::Public)
+/// Sums every `autograder: ... score=<f64>` line found in the testcase's
+/// captured stdout (`<system-out>`, only present for a pass when the
+/// harness's nextest profile sets `store-success-output = true`) or its
+/// failure/error text -- `None` if none were reported, so `crate::grade`
+/// falls back to the 1.0/0.0 pass/fail default.
+fn reported_score(node: roxmltree::Node) -> Option<f64> {
+    let mut text = String::new();
+    for out in node.children() {
+        if !(out.has_tag_name("system-out")
+            || out.has_tag_name("failure")
+            || out.has_tag_name("error"))
+        {
+            continue;
+        }
+        if let Some(t) = out.text() {
+            text.push_str(t);
+            text.push('\n');
+        }
+    }
+    sum_reported_scores(&text)
+}
+
+fn sum_reported_scores(text: &str) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut found = false;
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("autograder:") else {
+            continue;
+        };
+        for token in rest.split_whitespace() {
+            if let Some(raw) = token.strip_prefix("score=")
+                && let Ok(v) = raw.parse::<f64>()
+            {
+                sum += v;
+                found = true;
+            }
+        }
+    }
+    found.then_some(sum)
 }
 
 #[cfg(test)]
@@ -331,14 +362,6 @@ mod tests {
     use super::*;
     use crate::sandbox::SandboxOutcome;
     use std::sync::Mutex;
-
-    fn scored(name: &str, visibility: TestVisibility) -> ScoredTest {
-        ScoredTest {
-            name: name.into(),
-            visibility,
-            points: Some(10.0),
-        }
-    }
 
     const SAMPLE_JUNIT: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <testsuites>
@@ -356,34 +379,39 @@ mod tests {
 
     #[test]
     fn parses_a_captured_nextest_junit_sample_into_test_results() {
-        let tests = vec![
-            scored("insert_basic", TestVisibility::Public),
-            scored("balance_adversarial", TestVisibility::Private),
-            scored("delete_edge", TestVisibility::Public),
-        ];
-
-        let results = parse_junit_report(SAMPLE_JUNIT, &tests).unwrap();
+        let results = parse_junit_report(SAMPLE_JUNIT).unwrap();
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].name, "insert_basic");
         assert_eq!(results[0].status, TestStatus::Pass);
-        assert_eq!(results[0].visibility, TestVisibility::Public);
 
         assert_eq!(results[1].status, TestStatus::Fail);
-        assert_eq!(results[1].visibility, TestVisibility::Private);
         assert!(results[1].message.as_ref().unwrap().contains("height"));
 
         assert_eq!(results[2].status, TestStatus::Error);
     }
 
     #[test]
-    fn unknown_test_name_defaults_to_public_visibility() {
-        let results = parse_junit_report(SAMPLE_JUNIT, &[]).unwrap();
-        assert!(
-            results
-                .iter()
-                .all(|t| t.visibility == TestVisibility::Public)
-        );
+    fn a_passing_tests_reported_score_is_summed_from_captured_stdout() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="driver" tests="1" failures="0" errors="0">
+    <testcase name="partial_credit" time="0.004">
+      <system-out>autograder: case=a score=0.5
+autograder: case=b score=0.25
+</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
+"#;
+        let results = parse_junit_report(xml).unwrap();
+        assert_eq!(results[0].reported_score, Some(0.75));
+    }
+
+    #[test]
+    fn a_test_with_no_score_line_reports_none() {
+        let results = parse_junit_report(SAMPLE_JUNIT).unwrap();
+        assert!(results.iter().all(|t| t.reported_score.is_none()));
     }
 
     /// Returns canned outcomes for the build then run invocation, in order.
@@ -456,12 +484,8 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "insert_basic"
-points = 10
-visibility = "public"
+formula = "sum"
+base = 0.0
 "#;
         toml::from_str(toml).unwrap()
     }

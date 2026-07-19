@@ -5,11 +5,11 @@
 //! responses. Runs process-per-session under `cargo nextest`: each `#[test]`
 //! spawns its own driver process.
 //!
-//! `push_pop_basic` is the public test (also shipped in
-//! `examples/library-stack/public/`); `many_pushes_then_pops` is
-//! private (hidden) — it never ships to students, and it's adversarial in
-//! the sense the design calls for (§9): it can't be satisfied by a solution
-//! that special-cases the couple of ops the public test happens to check.
+//! `push_pop_basic` is marked `keep` below, so it ships to students as the
+//! public test; `many_pushes_then_pops` is left unmarked, so `publish`
+//! drops it -- it never ships, and it's adversarial in the sense the
+//! design calls for (§9): it can't be satisfied by a solution that
+//! special-cases the couple of ops the public test happens to check.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -40,9 +40,7 @@ impl Session {
         writeln!(self.stdin, "{op}").expect("write to driver");
         self.stdin.flush().expect("flush driver stdin");
         let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read from driver");
+        self.stdout.read_line(&mut line).expect("read from driver");
         line.trim().to_string()
     }
 }
@@ -53,6 +51,7 @@ impl Drop for Session {
     }
 }
 
+#[doc = "autograder: keep"]
 #[test]
 fn push_pop_basic() {
     let mut session = Session::start();

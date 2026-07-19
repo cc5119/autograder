@@ -1,13 +1,14 @@
 pub mod binary;
 pub mod library;
 
+use std::path::Path;
+
 use crate::error::Result;
 use crate::model::{
-    Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    TestResult, TestStatus,
+    Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
 use crate::sandbox::SandboxLimits;
-use crate::spec::{BuildLimits, RunLimits, ScoredTest};
+use crate::spec::{BuildLimits, RunLimits};
 
 /// Shared by both evaluators: `[limits.build]` carries no `max-output-bytes`
 /// of its own, so compiler output reuses the run stage's cap.
@@ -31,6 +32,22 @@ pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
     }
 }
 
+/// Writes `dir/.config/nextest.toml` with `store-success-output = true`, so
+/// a *passing* test's stdout still reaches the JUnit report's
+/// `<system-out>` -- required to see `autograder: score=` lines from tests
+/// that pass with partial credit, not just failing ones. Written by the
+/// trusted evaluator itself (like `prepare`'s `.cargo/config.toml`), never
+/// checked into the student- or instructor-authored harness, so grading
+/// never depends on either remembering to set it.
+pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
+    let config_dir = dir.join(".config");
+    crate::fs::create_dir_all(&config_dir)?;
+    crate::fs::write(
+        &config_dir.join("nextest.toml"),
+        "[profile.default]\nstore-success-output = true\n",
+    )
+}
+
 /// Turns a prepared workspace into a raw evaluation result. Real impls
 /// (`Library`, `Binary`) launch a trusted judge process against a
 /// `Sandbox`.
@@ -41,24 +58,14 @@ pub trait Evaluator {
 /// Emits a well-formed `EvaluationResult` without executing any student
 /// code, so the Fetch -> Prepare -> Evaluate -> Grade -> Report chain can
 /// be wired and tested end-to-end before a real sandboxed evaluator lands.
-/// Every scored test is reported as passing.
+/// Reports exactly the `TestResult`s it's given, verbatim.
 pub struct StubEvaluator {
-    pub tests: Vec<ScoredTest>,
+    pub tests: Vec<TestResult>,
 }
 
 impl Evaluator for StubEvaluator {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
-        let tests = self
-            .tests
-            .iter()
-            .map(|t| TestResult {
-                name: t.name.clone(),
-                visibility: t.visibility,
-                status: TestStatus::Pass,
-                duration_ms: Some(1),
-                message: None,
-            })
-            .collect();
+        let tests = self.tests.clone();
 
         Ok(EvaluationResult {
             schema_version: 1,
@@ -83,16 +90,18 @@ impl Evaluator for StubEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TestVisibility;
+    use crate::model::TestStatus;
     use std::path::PathBuf;
 
     #[test]
-    fn stub_evaluator_reports_every_scored_test_as_passing() {
+    fn stub_evaluator_reports_the_given_tests_verbatim() {
         let evaluator = StubEvaluator {
-            tests: vec![ScoredTest {
+            tests: vec![TestResult {
                 name: "insert_basic".into(),
-                visibility: TestVisibility::Public,
-                points: Some(10.0),
+                status: TestStatus::Pass,
+                duration_ms: Some(1),
+                message: None,
+                reported_score: None,
             }],
         };
         let ctx = JobContext {

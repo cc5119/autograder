@@ -24,9 +24,5 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "example_test"
-points = 10
-visibility = "public"
+formula = "sum"
+base = 0.0

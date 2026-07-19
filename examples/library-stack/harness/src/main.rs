@@ -13,7 +13,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use library_stack_example::Stack;
+use library_stack::Stack;
 
 fn main() {
     let mut stack = Stack::new();

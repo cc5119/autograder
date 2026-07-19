@@ -127,7 +127,7 @@ mod tests {
         Grade {
             student_id: "alice".into(),
             score,
-            max: 100.0,
+            max: Some(100.0),
             status: "pass".into(),
             failing_tests: Vec::new(),
             override_reason: None,

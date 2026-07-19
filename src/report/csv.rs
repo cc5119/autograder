@@ -31,7 +31,7 @@ pub fn render(grades: &[Grade]) -> Result<String> {
             .write_record([
                 grade.student_id.clone(),
                 grade.score.to_string(),
-                grade.max.to_string(),
+                grade.max.map(|m| m.to_string()).unwrap_or_default(),
                 grade.status.clone(),
                 grade.override_reason.clone().unwrap_or_default(),
                 grade
@@ -66,7 +66,7 @@ mod tests {
             Grade {
                 student_id: "alice".into(),
                 score: 10.0,
-                max: 30.0,
+                max: Some(30.0),
                 status: "fail".into(),
                 failing_tests: vec!["balance_adversarial".into()],
                 override_reason: None,
@@ -75,7 +75,7 @@ mod tests {
             Grade {
                 student_id: "bob".into(),
                 score: 30.0,
-                max: 30.0,
+                max: Some(30.0),
                 status: "pass".into(),
                 failing_tests: vec![],
                 override_reason: None,
@@ -98,7 +98,7 @@ mod tests {
         let grades = vec![Grade {
             student_id: "carol".into(),
             score: 18.0,
-            max: 30.0,
+            max: Some(30.0),
             status: "fail".into(),
             failing_tests: vec!["delete_edge".into()],
             override_reason: None,

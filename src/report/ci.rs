@@ -135,7 +135,7 @@ fn test_status_label(status: TestStatus) -> &'static str {
 mod tests {
     use super::*;
     use crate::model::Diagnostics;
-    use crate::model::{ResourceUsage, StageReport, StageReports, TestResult, TestVisibility};
+    use crate::model::{ResourceUsage, StageReport, StageReports, TestResult};
 
     fn eval_with_tests(tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
@@ -161,10 +161,10 @@ mod tests {
     fn all_passing_tests_render_checkmarks_and_pass() {
         let eval = eval_with_tests(vec![TestResult {
             name: "balance_small".into(),
-            visibility: TestVisibility::Public,
             status: TestStatus::Pass,
             duration_ms: Some(1),
             message: None,
+            reported_score: None,
         }]);
         let report = CiReport {
             eval: Some(&eval),
@@ -179,10 +179,10 @@ mod tests {
     fn a_failing_test_is_reported_with_its_message_and_fails_overall() {
         let eval = eval_with_tests(vec![TestResult {
             name: "insert_basic".into(),
-            visibility: TestVisibility::Public,
             status: TestStatus::Fail,
             duration_ms: Some(1),
             message: Some("assertion failed: expected Some(3), got None".into()),
+            reported_score: None,
         }]);
         let report = CiReport {
             eval: Some(&eval),

@@ -268,13 +268,19 @@ pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
-model = "weighted"
-
-[[scoring.tests]]
-name = "insert_basic"
-points = 10
-visibility = "public"
+formula = "sum"
+base = 0.0
 "#;
+
+    fn passing_test(name: &str) -> crate::model::TestResult {
+        crate::model::TestResult {
+            name: name.into(),
+            status: crate::model::TestStatus::Pass,
+            duration_ms: Some(1),
+            message: None,
+            reported_score: None,
+        }
+    }
 
     #[test]
     fn grade_batch_runs_end_to_end_over_a_directory_submission() {
@@ -295,7 +301,7 @@ visibility = "public"
             metadata: Default::default(),
         }]);
         let evaluator = crate::evaluator::StubEvaluator {
-            tests: spec.scoring.tests.clone(),
+            tests: vec![passing_test("insert_basic")],
         };
         let store = Store::new(store_dir.path());
 
@@ -313,8 +319,8 @@ visibility = "public"
 
         assert_eq!(grades.len(), 1);
         assert_eq!(grades[0].student_id, "alice");
-        assert_eq!(grades[0].score, 10.0);
-        assert_eq!(grades[0].max, 10.0);
+        assert_eq!(grades[0].score, 1.0);
+        assert_eq!(grades[0].max, None);
 
         let persisted = store.latest_evals("hw3").unwrap();
         assert_eq!(persisted.len(), 1);
@@ -346,7 +352,7 @@ visibility = "public"
             metadata: Default::default(),
         }]);
         let evaluator = crate::evaluator::StubEvaluator {
-            tests: spec.scoring.tests.clone(),
+            tests: vec![passing_test("insert_basic")],
         };
         let store = Store::new(store_dir.path());
 
@@ -479,7 +485,7 @@ visibility = "public"
             metadata: Default::default(),
         }]);
         let evaluator = crate::evaluator::StubEvaluator {
-            tests: spec.scoring.tests.clone(),
+            tests: vec![passing_test("insert_basic")],
         };
         let store = Store::new(store_dir.path());
 
@@ -524,7 +530,7 @@ visibility = "public"
             metadata: Default::default(),
         }]);
         let evaluator = crate::evaluator::StubEvaluator {
-            tests: spec.scoring.tests.clone(),
+            tests: vec![passing_test("insert_basic")],
         };
         let store = Store::new(store_dir.path());
 
@@ -564,7 +570,7 @@ visibility = "public"
             metadata: Default::default(),
         }]);
         let evaluator = crate::evaluator::StubEvaluator {
-            tests: spec.scoring.tests.clone(),
+            tests: vec![passing_test("insert_basic")],
         };
         let store = Store::new(store_dir.path());
         let overrides = Overrides {
