@@ -1,7 +1,7 @@
 [package]
 name = "driver"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 
 # A plain path dependency, always pointed at whatever's actually sitting in
 # the sibling directory named after [assignment].id: the reference solution

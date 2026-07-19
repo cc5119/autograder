@@ -407,7 +407,7 @@ visibility = "public"
         );
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
             &harness_dir.path().join("harness/src/main.rs"),
@@ -417,7 +417,7 @@ visibility = "public"
         let workspace = harness_dir.path().join("hw3");
         write(
             &workspace.join("Cargo.toml"),
-            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         );
         write(&workspace.join("src/lib.rs"), "pub fn noop() {}\n");
 
@@ -488,7 +488,7 @@ visibility = "public"
         );
         write(
             &assignment_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
             &assignment_dir.path().join("harness/src/main.rs"),
@@ -498,7 +498,7 @@ visibility = "public"
         let submissions_dir = tempfile::tempdir().unwrap();
         write(
             &submissions_dir.path().join("alice/hw3/Cargo.toml"),
-            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         );
         write(
             &submissions_dir.path().join("alice/hw3/src/lib.rs"),

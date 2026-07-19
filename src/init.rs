@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(spec.assignment.kind, AssignmentKind::Binary);
         assert_eq!(
             std::fs::read_to_string(outcome.dir.join("Cargo.toml")).unwrap(),
-            "[workspace]\nmembers = [\"wc\"]\n"
+            "[workspace]\nresolver = \"3\"\nmembers = [\"wc\"]\n"
         );
     }
 

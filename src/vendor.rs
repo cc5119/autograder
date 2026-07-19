@@ -19,7 +19,7 @@ pub fn synthetic_manifest_toml(spec: &Spec) -> String {
     out.push_str("[package]\n");
     out.push_str("name = \"autograder-vendor-probe\"\n");
     out.push_str("version = \"0.0.0\"\n");
-    out.push_str("edition = \"2021\"\n\n");
+    out.push_str("edition = \"2024\"\n\n");
     out.push_str("[dependencies]\n");
     for (name, version) in &spec.allowed_crates {
         out.push_str(&format!("{name} = \"{version}\"\n"));

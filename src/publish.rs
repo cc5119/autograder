@@ -590,7 +590,7 @@ points = 20
 visibility = "private"
 "#;
 
-    const HARNESS_MANIFEST: &str = "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n";
+    const HARNESS_MANIFEST: &str = "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n";
 
     const JUDGE_RS: &str = r#"
         #[test]
@@ -608,7 +608,7 @@ visibility = "private"
         write(
             &solution_dir.join("Cargo.toml"),
             &format!(
-                "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"
+                "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
             ),
         );
         write(
@@ -964,7 +964,7 @@ visibility = "private"
         );
         write(
             &package_dir.join("wc/Cargo.toml"),
-            "[package]\nname = \"wc\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+            "[package]\nname = \"wc\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
         );
         write(
             &package_dir.join("wc/src/main.rs"),

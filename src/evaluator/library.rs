@@ -520,7 +520,7 @@ visibility = "public"
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
             package_dir.join("harness/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         )
         .unwrap();
     }
