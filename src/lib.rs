@@ -18,6 +18,7 @@ pub mod source;
 pub mod spec;
 pub mod store;
 pub mod stub;
+pub mod template;
 pub mod vendor;
 pub mod volume;
 

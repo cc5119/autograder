@@ -5,14 +5,15 @@
 //! from in the first place.
 //!
 //! Declarative in the most literal sense: the layout to generate *is* a
-//! real directory tree, `templates/<kind>/` (embedded into the binary at
-//! compile time via [`include_dir`]), not a Rust table describing one.
-//! Adding, renaming, or restructuring a generated file is an edit to that
-//! tree -- real TOML/Rust source with normal syntax highlighting, not a
-//! Rust string literal -- never a change to this module's code. `init`
-//! just walks whichever kind's subtree recursively, substitutes
-//! placeholders (see [`substitute`]) into every file's path and contents,
-//! strips the `.tmpl` suffix, and writes the result.
+//! real directory tree, `templates/<kind>/` (rendered via
+//! [`crate::template`], the single place every template in this crate goes
+//! through), not a Rust table describing one. Adding, renaming, or
+//! restructuring a generated file is an edit to that tree -- real
+//! TOML/Rust source with normal syntax highlighting, not a Rust string
+//! literal -- never a change to this module's code. `init` just asks
+//! [`crate::template::render_tree`] for whichever kind's subtree, already
+//! substituted and with the `.tmpl` suffix stripped, and writes the
+//! result.
 //!
 //! What's generated is a *template* to edit, not a finished package:
 //! `{deadline}` renders to "now + one week" (a plausible, obviously-
@@ -27,13 +28,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{Duration, Local, SubsecRound};
-use include_dir::{Dir, File, include_dir};
 
 use crate::error::{Error, Result};
 use crate::fs;
 use crate::spec::AssignmentKind;
-
-static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
 #[derive(Debug, Clone)]
 pub struct InitOutcome {
@@ -62,9 +60,6 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         AssignmentKind::Library => "library",
         AssignmentKind::Binary => "binary",
     };
-    let template_root = TEMPLATES.get_dir(kind_name).unwrap_or_else(|| {
-        panic!("templates/{kind_name}/ is missing from the embedded template tree")
-    });
 
     // Truncated to whole seconds -- a placeholder with nanosecond noise
     // reads as generated cruft rather than a value meant to be edited.
@@ -73,68 +68,17 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         .to_rfc3339();
     let placeholders = HashMap::from([("id", id), ("deadline", deadline.as_str())]);
 
-    for file in walk_files(template_root) {
-        let rel_path = file
-            .path()
-            .strip_prefix(template_root.path())
-            .expect("file is under template_root by construction")
-            .with_extension(""); // drop the trailing `.tmpl`
-        let rel_path = substitute(&rel_path.to_string_lossy(), &placeholders);
-        let contents = file
-            .contents_utf8()
-            .unwrap_or_else(|| panic!("template {} is not valid UTF-8", file.path().display()));
-
+    for (rel_path, content) in crate::template::render_tree(kind_name, &placeholders)? {
         let dst = dir.join(&rel_path);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&dst, substitute(contents, &placeholders))?;
+        fs::write(&dst, content)?;
     }
 
     Ok(InitOutcome {
         dir: dir.to_path_buf(),
     })
-}
-
-/// Every file under `dir`, recursively -- `include_dir`'s `Dir` only
-/// exposes direct children (`files()`/`dirs()`), so this walks the tree
-/// itself.
-fn walk_files<'a>(dir: &'a Dir<'a>) -> Vec<&'a File<'a>> {
-    let mut files: Vec<&File> = dir.files().collect();
-    for subdir in dir.dirs() {
-        files.extend(walk_files(subdir));
-    }
-    files
-}
-
-/// Single-pass substitution of `{key}` tokens against `placeholders`: a
-/// `{` is only ever treated as the start of a placeholder if the text up
-/// to the *next* `}` exactly matches a known key -- anything else (an
-/// unrelated `{...}`, e.g. TOML's own inline-table syntax like
-/// `{ path = "../{id}" }`) is emitted verbatim, character by character,
-/// which is also exactly why a single multi-key pass (not one `.replace`
-/// call per key run back-to-back) is what's needed here: chained
-/// `.replace` calls risk one substitution's *output* being reinterpreted
-/// by the next call, which a single left-to-right scan never does.
-fn substitute(text: &str, placeholders: &HashMap<&str, &str>) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < text.len() {
-        if text.as_bytes()[i] == b'{'
-            && let Some(rel_end) = text[i + 1..].find('}')
-        {
-            let key = &text[i + 1..i + 1 + rel_end];
-            if let Some(value) = placeholders.get(key) {
-                out.push_str(value);
-                i += rel_end + 2; // past the closing `}`
-                continue;
-            }
-        }
-        let ch = text[i..].chars().next().expect("i < text.len()");
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
 }
 
 fn is_valid_id(id: &str) -> bool {
@@ -147,23 +91,6 @@ fn is_valid_id(id: &str) -> bool {
 mod tests {
     use super::*;
     use crate::spec::Spec;
-
-    #[test]
-    fn substitute_replaces_only_exact_known_keys() {
-        let placeholders = HashMap::from([("id", "hw3")]);
-        assert_eq!(substitute("id = \"{id}\"", &placeholders), "id = \"hw3\"");
-        // TOML's own inline-table braces must survive untouched, with the
-        // placeholder nested inside them still substituted.
-        assert_eq!(
-            substitute("{id} = { path = \"../{id}\" }", &placeholders),
-            "hw3 = { path = \"../hw3\" }"
-        );
-        // An unrelated brace pair that isn't a known key is left alone.
-        assert_eq!(
-            substitute("println!(\"{}\", x)", &placeholders),
-            "println!(\"{}\", x)"
-        );
-    }
 
     #[test]
     fn init_produces_a_loadable_library_package() {

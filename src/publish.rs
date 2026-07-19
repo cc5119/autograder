@@ -25,7 +25,7 @@
 //! published starter's copy of the student's own crate — `publish` copies
 //! it verbatim.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ignore::overrides::OverrideBuilder;
@@ -34,16 +34,6 @@ use syn::Item;
 use crate::error::{Error, Result};
 use crate::fs;
 use crate::spec::{self, AssignmentKind, Spec};
-
-/// `templates/autograde.yml.tmpl`'s release coordinates (repo, version,
-/// sha256) for the downloaded `autograder` binary (design §11.2) are
-/// themselves placeholders, not substituted here -- the real pinned
-/// version + sha256 come from the release pipeline (M3 step 19,
-/// `.github/workflows/release.yml` in this repo), so an instructor stands
-/// up their own fork/release and edits the template's output directly
-/// before distributing a starter repo. Only `{base_image}` is filled in at
-/// publish time, from `[sandbox].image`.
-const AUTOGRADE_WORKFLOW_TEMPLATE: &str = include_str!("../templates/autograde.yml.tmpl");
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
@@ -125,7 +115,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     let workflow_dir = out_dir.join(".github/workflows");
     fs::create_dir_all(&workflow_dir)?;
     let workflow_path = workflow_dir.join("autograde.yml");
-    let workflow_yaml = autograde_workflow_yaml(&spec.sandbox.image);
+    let workflow_yaml = autograde_workflow_yaml(&spec.sandbox.image)?;
     fs::write(&workflow_path, workflow_yaml)?;
 
     Ok(PublishOutcome {
@@ -275,8 +265,20 @@ fn keep_only_public_tests(
         .collect()
 }
 
-fn autograde_workflow_yaml(base_image: &str) -> String {
-    AUTOGRADE_WORKFLOW_TEMPLATE.replace("{base_image}", base_image)
+/// `templates/autograde.yml.tmpl`'s release coordinates (repo, version,
+/// sha256) for the downloaded `autograder` binary (design §11.2) are
+/// themselves placeholders, not substituted here -- the real pinned
+/// version + sha256 come from the release pipeline (M3 step 19,
+/// `.github/workflows/release.yml` in this repo), so an instructor stands
+/// up their own fork/release and edits the template's output directly
+/// before distributing a starter repo. Only `{base_image}` is filled in at
+/// publish time, from `[sandbox].image`, via `crate::template::render_file`
+/// -- the one place every template in this crate renders through.
+fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
+    crate::template::render_file(
+        "autograde.yml",
+        &HashMap::from([("base_image", base_image)]),
+    )
 }
 
 /// Runs `cargo fix` directly in `student_dir` (already a full, disposable
