@@ -23,15 +23,14 @@ pub enum Command {
     /// later plain `grade` (no `--fetch`) redo just Prepare/Evaluate/Grade
     /// against what's already on disk, with no network access needed.
     Fetch {
-        /// Path to the assignment repo.
+        /// Path to the (private) assignment repo.
         assignment: PathBuf,
         /// Where submissions come from: a roster CSV file, or a directory
         /// with one subdirectory per student. The kind is inferred from
         /// whether the path is a file or a directory.
         #[arg(long)]
         submissions: PathBuf,
-        /// Override the deadline used for push-time commit selection
-        /// (RFC3339) -- see `[assignment].deadline`.
+        /// Override the deadline used for push-time commit selection (RFC3339)
         #[arg(long)]
         as_of: Option<String>,
     },
@@ -40,7 +39,7 @@ pub enum Command {
     /// already landed on disk -- pass `--fetch` to run the Fetch stage
     /// first, in the same command.
     Grade {
-        /// Path to the assignment repo.
+        /// Path to the (private) assignment repo.
         assignment: PathBuf,
         /// Where submissions come from: a roster CSV file, or a directory
         /// with one subdirectory per student. The kind is inferred from
@@ -53,28 +52,16 @@ pub enum Command {
         /// on disk and never touches the network.
         #[arg(long)]
         fetch: bool,
-        /// Override the deadline used for push-time commit selection
-        /// (RFC3339) -- only meaningful together with `--fetch`.
-        #[arg(long)]
+        /// Override the deadline used for push-time commit selection (RFC3339)
+        #[arg(long, requires = "fetch")]
         as_of: Option<String>,
-        /// Grade using the host-process `LocalSandbox` instead of the
-        /// `ContainerSandbox` (skips Podman entirely). This drops the
-        /// container isolation the authoritative tier relies on for
-        /// untrusted student code (design §10) -- only for local
-        /// development/testing on a host without a working Podman, never
-        /// for grading real submissions.
+        /// Grade using the host-process "local sandbox" instead of podman
         #[arg(long)]
         local_sandbox: bool,
     },
-    /// Student-facing: run public tests only, advisory. Run from the repo
-    /// root produced by `scaffold` (where `autograder.public.toml` and
-    /// `harness/` live) -- the student's own crate is found at
-    /// `<[assignment].id>/`, a sibling directory named after the spec's id.
+    /// Student-facing: run public tests only, advisory.
     Ci {
-        /// Run using the host-process `LocalSandbox` instead of the
-        /// `ContainerSandbox` (skips Podman entirely). Same tradeoff as
-        /// `grade --local-sandbox` -- only for local development/testing on
-        /// a host without a working Podman, never for real CI runs.
+        /// Grade using the host-process "local sandbox" instead of podman
         #[arg(long)]
         local_sandbox: bool,
     },

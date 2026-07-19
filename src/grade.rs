@@ -2,80 +2,75 @@ use crate::model::{EvaluationResult, Grade, StageStatus, TestStatus};
 use crate::spec::{ScoredTest, Scoring, ScoringModel};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
-/// untrusted code runs here (design §7.4).
-pub trait Grader {
-    fn grade(&self, eval: &EvaluationResult, policy: &Scoring) -> Grade;
-}
+/// untrusted code runs here (design §7.4). Not behind a trait -- there is
+/// exactly one scoring policy this codebase implements (`[scoring].model`
+/// itself already selects weighted/pass-count/pass-fail), so a swappable
+/// `Grader` abstraction would have exactly one implementation to swap.
+pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
+    // Terminal failure states score zero, never better than a normal
+    // fail: a stage-level failure (build_failed, harness_error,
+    // timeout, oom, disallowed_dependency, fetch_failed) means every
+    // scored test is treated as failing, even if student code managed
+    // to dodge a specific assertion by crashing the driver instead.
+    let stage_failed = eval.stages.fetch.status != StageStatus::Ok
+        || eval.stages.build.status != StageStatus::Ok
+        || eval.stages.run.status != StageStatus::Ok;
 
-pub struct DefaultGrader;
-
-impl Grader for DefaultGrader {
-    fn grade(&self, eval: &EvaluationResult, policy: &Scoring) -> Grade {
-        // Terminal failure states score zero, never better than a normal
-        // fail: a stage-level failure (build_failed, harness_error,
-        // timeout, oom, disallowed_dependency, fetch_failed) means every
-        // scored test is treated as failing, even if student code managed
-        // to dodge a specific assertion by crashing the driver instead.
-        let stage_failed = eval.stages.fetch.status != StageStatus::Ok
-            || eval.stages.build.status != StageStatus::Ok
-            || eval.stages.run.status != StageStatus::Ok;
-
-        let passing = |test: &ScoredTest| -> bool {
-            if stage_failed {
-                return false;
-            }
-            eval.tests
-                .iter()
-                .find(|t| t.name == test.name)
-                .is_some_and(|t| t.status == TestStatus::Pass)
-        };
-
-        let failing_tests: Vec<String> = policy
-            .tests
-            .iter()
-            .filter(|t| !passing(t))
-            .map(|t| t.name.clone())
-            .collect();
-
-        let (score, max) = match policy.model {
-            ScoringModel::Weighted => {
-                let max: f64 = policy.tests.iter().filter_map(|t| t.points).sum();
-                let score: f64 = policy
-                    .tests
-                    .iter()
-                    .filter(|t| passing(t))
-                    .filter_map(|t| t.points)
-                    .sum();
-                (score, max)
-            }
-            ScoringModel::PassCount => {
-                let max = policy.tests.len() as f64;
-                let score = policy.tests.iter().filter(|t| passing(t)).count() as f64;
-                (score, max)
-            }
-            ScoringModel::PassFail => {
-                let all_pass = !policy.tests.is_empty() && policy.tests.iter().all(passing);
-                (if all_pass { 1.0 } else { 0.0 }, 1.0)
-            }
-        };
-
-        let status = if stage_failed {
-            stage_status_label(eval)
-        } else if failing_tests.is_empty() {
-            "pass".to_string()
-        } else {
-            "fail".to_string()
-        };
-
-        Grade {
-            student_id: eval.student_id.clone(),
-            score,
-            max,
-            status,
-            failing_tests,
-            override_reason: None,
-            late_penalty_percent: None,
+    let passing = |test: &ScoredTest| -> bool {
+        if stage_failed {
+            return false;
         }
+        eval.tests
+            .iter()
+            .find(|t| t.name == test.name)
+            .is_some_and(|t| t.status == TestStatus::Pass)
+    };
+
+    let failing_tests: Vec<String> = policy
+        .tests
+        .iter()
+        .filter(|t| !passing(t))
+        .map(|t| t.name.clone())
+        .collect();
+
+    let (score, max) = match policy.model {
+        ScoringModel::Weighted => {
+            let max: f64 = policy.tests.iter().filter_map(|t| t.points).sum();
+            let score: f64 = policy
+                .tests
+                .iter()
+                .filter(|t| passing(t))
+                .filter_map(|t| t.points)
+                .sum();
+            (score, max)
+        }
+        ScoringModel::PassCount => {
+            let max = policy.tests.len() as f64;
+            let score = policy.tests.iter().filter(|t| passing(t)).count() as f64;
+            (score, max)
+        }
+        ScoringModel::PassFail => {
+            let all_pass = !policy.tests.is_empty() && policy.tests.iter().all(passing);
+            (if all_pass { 1.0 } else { 0.0 }, 1.0)
+        }
+    };
+
+    let status = if stage_failed {
+        stage_status_label(eval)
+    } else if failing_tests.is_empty() {
+        "pass".to_string()
+    } else {
+        "fail".to_string()
+    };
+
+    Grade {
+        student_id: eval.student_id.clone(),
+        score,
+        max,
+        status,
+        failing_tests,
+        override_reason: None,
+        late_penalty_percent: None,
     }
 }
 
@@ -159,7 +154,7 @@ mod tests {
             ScoringModel::Weighted,
             vec![("a", Some(10.0)), ("b", Some(20.0))],
         );
-        let grade = DefaultGrader.grade(&eval, &policy);
+        let grade = grade(&eval, &policy);
         assert_eq!(grade.score, 10.0);
         assert_eq!(grade.max, 30.0);
         assert_eq!(grade.failing_tests, vec!["b".to_string()]);
@@ -179,7 +174,7 @@ mod tests {
             ScoringModel::PassCount,
             vec![("a", None), ("b", None), ("c", None)],
         );
-        let grade = DefaultGrader.grade(&eval, &policy);
+        let grade = grade(&eval, &policy);
         assert_eq!(grade.score, 2.0);
         assert_eq!(grade.max, 3.0);
     }
@@ -194,7 +189,7 @@ mod tests {
             ],
         );
         let policy = policy(ScoringModel::PassFail, vec![("a", None), ("b", None)]);
-        let grade = DefaultGrader.grade(&eval, &policy);
+        let grade = grade(&eval, &policy);
         assert_eq!(grade.score, 0.0);
     }
 
@@ -227,8 +222,8 @@ mod tests {
             vec![("a", Some(10.0)), ("b", Some(20.0))],
         );
 
-        let honest_grade = DefaultGrader.grade(&honest_fail_eval, &policy);
-        let harness_error_grade = DefaultGrader.grade(&harness_error_eval, &policy);
+        let honest_grade = grade(&honest_fail_eval, &policy);
+        let harness_error_grade = grade(&harness_error_eval, &policy);
 
         assert_eq!(honest_grade.score, 10.0);
         // Despite reporting "a" as passing, a harness_error zeroes everything.
@@ -251,7 +246,7 @@ mod tests {
             vec![],
         );
         let policy = policy(ScoringModel::Weighted, vec![("a", Some(10.0))]);
-        let grade = DefaultGrader.grade(&eval, &policy);
+        let grade = grade(&eval, &policy);
         assert_eq!(grade.score, 0.0);
         assert_eq!(grade.status, "BuildFailed");
     }

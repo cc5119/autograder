@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::error::{Error, Result};
 use crate::evaluator::Evaluator;
 use crate::fetch::read_fetch_record;
-use crate::grade::Grader;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
@@ -99,14 +98,13 @@ pub(crate) fn generate_run_id() -> String {
 /// private harness's test source never lingers on disk.
 ///
 /// `overrides` (design §14, §18.2 -- M5 step 24) is applied to the `Grade`
-/// after `grader.grade` runs, never touching the persisted `eval` -- see
+/// after `grade::grade` runs, never touching the persisted `eval` -- see
 /// `overrides::apply`'s doc comment for why a manual override or late
 /// penalty is recomputed here rather than baked into the raw result.
 #[allow(clippy::too_many_arguments)]
 pub fn grade_batch<F>(
     source: &dyn SubmissionsSource<F>,
     evaluator: &dyn Evaluator,
-    grader: &dyn Grader,
     package_dir: &Path,
     spec: &Spec,
     work_dir: &Path,
@@ -194,7 +192,7 @@ pub fn grade_batch<F>(
                     // would leave any *other* file the submission already
                     // had there (e.g. the public judge `scaffold` baked
                     // into the starter, which a normal submission still
-                    // has) -- and since `DefaultGrader` matches a
+                    // has) -- and since `grade::grade` matches a
                     // `TestResult` to a scored test by name alone, with no
                     // regard for which file/binary it came from
                     // (`grade.rs`), a stray leftover file defining a
@@ -258,7 +256,7 @@ pub fn grade_batch<F>(
         };
 
         store.save_eval(&eval)?;
-        let grade = grader.grade(&eval, &spec.scoring);
+        let grade = crate::grade::grade(&eval, &spec.scoring);
         let grade = overrides::apply(
             grade,
             overrides,
@@ -275,7 +273,6 @@ pub fn grade_batch<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grade::DefaultGrader;
     use crate::model::LocalPath;
     use crate::source::SubmissionsSource;
 
@@ -367,7 +364,6 @@ visibility = "public"
         let grades = grade_batch(
             &source,
             &evaluator,
-            &DefaultGrader,
             package_dir.path(),
             &spec,
             work_dir.path(),
@@ -424,7 +420,6 @@ visibility = "public"
         let grades = grade_batch(
             &source,
             &evaluator,
-            &DefaultGrader,
             package_dir.path(),
             &spec,
             work_dir.path(),
@@ -520,7 +515,6 @@ visibility = "public"
         grade_batch(
             &source,
             &evaluator,
-            &DefaultGrader,
             package_dir.path(),
             &spec,
             work_dir.path(),
@@ -569,7 +563,6 @@ visibility = "public"
         let grades = grade_batch(
             &source,
             &evaluator,
-            &DefaultGrader,
             package_dir.path(),
             &spec,
             work_dir.path(),
@@ -615,7 +608,6 @@ visibility = "public"
         let grades = grade_batch(
             &source,
             &evaluator,
-            &DefaultGrader,
             package_dir.path(),
             &spec,
             work_dir.path(),
@@ -667,7 +659,6 @@ visibility = "public"
         let grades = grade_batch(
             &source,
             &evaluator,
-            &DefaultGrader,
             package_dir.path(),
             &spec,
             work_dir.path(),

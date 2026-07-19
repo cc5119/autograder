@@ -27,7 +27,6 @@ pub use error::{Error, Result};
 use evaluator::Evaluator;
 use evaluator::binary::Binary;
 use evaluator::library::Library;
-use grade::{DefaultGrader, Grader};
 use model::JobContext;
 use report::{Reporter, ci::CiReport, csv::CsvReporter, json::JsonReporter};
 use sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
@@ -161,7 +160,6 @@ fn run_grade(
         Submissions::Directory(source) => pipeline::grade_batch(
             &source,
             evaluator.as_ref(),
-            &DefaultGrader,
             assignment,
             &spec,
             &work_dir,
@@ -171,7 +169,6 @@ fn run_grade(
         Submissions::Csv(source) => pipeline::grade_batch(
             &source,
             evaluator.as_ref(),
-            &DefaultGrader,
             assignment,
             &spec,
             &work_dir,
@@ -224,7 +221,7 @@ fn build_evaluator_for(
 /// `[assignment].id` (see `scaffold`'s doc comment on that layout). Prints
 /// per-test feedback via `CiReport` and exits non-zero when any public test
 /// fails, mirroring `autograder ci`'s exit code contract (design §11.1).
-/// Never touches `Grader`/`Scoring` — evaluation only.
+/// Never touches `grade::grade`/`Scoring` — evaluation only.
 fn run_ci(local_sandbox: bool) -> Result<()> {
     let harness_dir = std::env::current_dir().map_err(|source| Error::Io {
         path: std::path::PathBuf::from("."),
@@ -294,7 +291,7 @@ fn run_regrade(assignment_id: &str, assignment: &std::path::Path, config: &Confi
 
     let mut grades = Vec::new();
     for eval in &evals {
-        let grade = DefaultGrader.grade(eval, &spec.scoring);
+        let grade = grade::grade(eval, &spec.scoring);
         let grade = overrides::apply(
             grade,
             &overrides,

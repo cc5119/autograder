@@ -1,6 +1,6 @@
 //! Grade-stage overrides (design §14, §18.2 -- M5 step 24): manual
 //! per-student score overrides and a late-penalty policy, both applied
-//! *after* `Grader::grade` produces a normal `Grade` from a persisted
+//! *after* `grade::grade` produces a normal `Grade` from a persisted
 //! `EvaluationResult` -- never by mutating the raw `EvaluationResult`
 //! itself, so raw judge output stays an untouched audit trail (design §14)
 //! no matter how many times a course re-grades or an appeal changes a
