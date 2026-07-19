@@ -1,7 +1,7 @@
 //! Scaffolds a brand-new **private instructor package** from nothing --
-//! `scaffold`'s inverse: that module derives the public starter tree from
+//! `publish`'s inverse: that module derives the public starter tree from
 //! an existing private package (design §5.1); this one originates the
-//! private package itself, so there's something for `scaffold` to derive
+//! private package itself, so there's something for `publish` to derive
 //! from in the first place.
 //!
 //! Declarative in the most literal sense: the layout to generate *is* a
@@ -42,7 +42,7 @@ pub struct InitOutcome {
 /// Writes a fresh private instructor package at `dir` (must not already
 /// exist, or must be empty -- `init` refuses to write into a directory
 /// that might already hold something, same "refuse to guess" posture
-/// `scaffold` takes toward its own required inputs).
+/// `publish` takes toward its own required inputs).
 pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
     if !is_valid_id(id) {
         return Err(Error::InvalidSpec(format!(

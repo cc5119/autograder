@@ -101,8 +101,8 @@ pub enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Emit the starter/template repo for distribution to students.
-    Scaffold {
+    /// Publish the starter/template repo for distribution to students.
+    Publish {
         /// Path to the private instructor package (autograder.toml,
         /// harness/, and a reference solution directory named after
         /// [assignment].id).

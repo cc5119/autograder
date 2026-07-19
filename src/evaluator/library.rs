@@ -23,7 +23,7 @@
 //! reference solution for standalone testing (`cd harness && cargo nextest
 //! run`, no autograder involvement), a fresh per-job copy of the submission
 //! for authoritative grading, or the student's own checkout for `ci` (see
-//! `crate::scaffold`). Same manifest, no per-tier rewriting, no
+//! `crate::publish`). Same manifest, no per-tier rewriting, no
 //! `--config`-injected override to keep in sync with it.
 //!
 //! Before Prepare runs, `harness/` is overlaid into `ctx.driver_dir`: a

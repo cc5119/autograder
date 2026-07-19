@@ -86,7 +86,7 @@ pub(crate) fn generate_run_id() -> String {
 /// Not generic over a fetchable type -- `source` only needs to yield the
 /// roster (`student_id`/`metadata`), since this function never fetches.
 ///
-/// The `checkout/` a prior fetch left behind mirrors `scaffold`'s starter
+/// The `checkout/` a prior fetch left behind mirrors `publish`'s starter
 /// layout (the crate under `[assignment].id`, possibly a `harness/`
 /// alongside it that this pipeline never trusts or reads) and is kept on
 /// disk indefinitely as the record of what was actually submitted --
@@ -190,7 +190,7 @@ pub fn grade_batch<F>(
                     // overlaid onto: `copy_dir_into` only overwrites paths
                     // that exist in its source, so simply copying on top
                     // would leave any *other* file the submission already
-                    // had there (e.g. the public judge `scaffold` baked
+                    // had there (e.g. the public judge `publish` baked
                     // into the starter, which a normal submission still
                     // has) -- and since `grade::grade` matches a
                     // `TestResult` to a scored test by name alone, with no
@@ -341,7 +341,7 @@ visibility = "public"
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
-        // The submission source is a whole checkout, matching `scaffold`'s
+        // The submission source is a whole checkout, matching `publish`'s
         // starter layout: the crate lives under a subdirectory named after
         // `[assignment].id`, not flattened at the source root.
         write(
@@ -471,7 +471,7 @@ visibility = "public"
         }
     }
 
-    /// A submission that still has the scaffold-baked public judge (same
+    /// A submission that still has the publish-baked public judge (same
     /// filename the private judge will overlay onto) *and* a decoy file
     /// with a same-named, trivially-passing stand-in for the hidden test
     /// -- confirms `workspace/tests/` is wiped before the private judge is

@@ -13,7 +13,6 @@ pub mod prepare;
 pub mod publish;
 pub mod report;
 pub mod sandbox;
-pub mod scaffold;
 pub mod source;
 pub mod spec;
 pub mod store;
@@ -68,7 +67,7 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
             format,
             out,
         } => run_report(&assignment_id, format, out, config),
-        Command::Scaffold { assignment, out } => run_scaffold(&assignment, &out),
+        Command::Publish { assignment, out } => run_publish(&assignment, &out),
     }
 }
 
@@ -223,10 +222,10 @@ fn build_evaluator_for(
 /// uses (`build_container_evaluator`, no custom seccomp profile — see its
 /// doc comment) unless `local_sandbox` opts out, mirroring `grade
 /// --local-sandbox`. No `--harness` flag or separate fetch stage: `ci`
-/// always runs from the repo root `scaffold` produces (current directory —
+/// always runs from the repo root `publish` produces (current directory —
 /// where `autograder.public.toml`/`harness/` live), with the student's own
 /// crate found at the sibling directory named after the spec's
-/// `[assignment].id` (see `scaffold`'s doc comment on that layout). Prints
+/// `[assignment].id` (see `publish`'s doc comment on that layout). Prints
 /// per-test feedback via `CiReport` and exits non-zero when any public test
 /// fails, mirroring `autograder ci`'s exit code contract (design §11.1).
 /// Never touches `grade::grade`/`Scoring` — evaluation only.
@@ -238,7 +237,7 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
     let spec = Spec::load(&harness_dir)?;
     let workspace = harness_dir.join(&spec.assignment.id);
     let run_id = pipeline::generate_run_id();
-    // `library`'s harness is already positioned correctly by `scaffold`:
+    // `library`'s harness is already positioned correctly by `publish`:
     // `harness_dir.join("harness")` is a real, on-disk sibling of
     // `workspace`, so there's nothing to copy or redirect (see
     // `evaluator::library`'s module doc comment) -- `prepare` doesn't make
@@ -278,9 +277,9 @@ fn run_ci(local_sandbox: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_scaffold(assignment: &std::path::Path, out: &std::path::Path) -> Result<()> {
-    let outcome = scaffold::scaffold(assignment, out)?;
-    tracing::info!(out_dir = %outcome.out_dir.display(), "scaffold complete");
+fn run_publish(assignment: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    let outcome = publish::publish(assignment, out)?;
+    tracing::info!(out_dir = %outcome.out_dir.display(), "publish complete");
     Ok(())
 }
 
@@ -395,7 +394,7 @@ visibility = "public"
     /// the ground rules describe for M2's podman dependency.
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
-        // Mirrors the real starter layout `scaffold` produces: `harness/`
+        // Mirrors the real starter layout `publish` produces: `harness/`
         // and the student's own crate (`hw3/`) as siblings under the repo
         // root, with `harness/Cargo.toml` depending on it via a plain path
         // dependency rather than a patch (see `publish::rewrite_harness_

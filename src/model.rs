@@ -60,7 +60,7 @@ pub struct JobContext {
     /// full reasoning): a fresh, per-job scratch copy for
     /// `Tier::Authoritative`; `package_dir/harness` itself, built **in
     /// place** with no copy at all, for `Tier::Ci` (the starter repo
-    /// `scaffold` produces already has `harness/` positioned as a real
+    /// `publish` produces already has `harness/` positioned as a real
     /// sibling of the checkout). Unused by `binary`, which builds the
     /// student's own binary directly in `workspace`.
     pub driver_dir: PathBuf,

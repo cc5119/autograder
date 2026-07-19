@@ -42,7 +42,7 @@ pub struct PrepareOutcome {
 ///   dependency resolves correctly either way with no patch or `--config`
 ///   override).
 /// - **`binary`**: the judge tests live directly inside `workspace`'s own
-///   `tests/` -- for `Ci` they're already there (`scaffold` baked the
+///   `tests/` -- for `Ci` they're already there (`publish` baked the
 ///   public subset into the starter), for `Authoritative` the caller
 ///   overlays the private set onto the copied submission before calling
 ///   this (see `evaluator::binary`'s module doc comment).

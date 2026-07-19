@@ -7,7 +7,7 @@
 //! Unlike `library`, there is no separate driver crate at all: the judge
 //! tests live directly inside `[assignment].id`'s own package, both in the
 //! private repo (the reference solution's `tests/*.rs`, containing every
-//! test, public and hidden) and in the published starter (`scaffold`
+//! test, public and hidden) and in the published starter (`publish`
 //! derives just the public-visibility subset into the student's own
 //! `tests/`, the same way it derives `library`'s public harness). At
 //! grading time, the caller (`pipeline::grade_batch`, `Authoritative` only
@@ -64,7 +64,7 @@ impl<S: Sandbox> Binary<S> {
         // is the reference solution's own (private, unfiltered) judge
         // tests -- the source `grade_batch` copies from. For `Ci`,
         // `package_dir` is the student's own checkout, so this is
-        // `workspace/tests` itself, which `scaffold` already populated
+        // `workspace/tests` itself, which `publish` already populated
         // with the public subset -- nothing to copy, just confirming it's
         // there.
         let tests_dir = package_dir.join(&spec.assignment.id).join("tests");

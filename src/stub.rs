@@ -130,7 +130,7 @@
 //! to only the ones the retained signatures still need would mean
 //! reimplementing name resolution. Instead the caller builds the candidate
 //! in a real crate and runs `cargo fix` on it (see
-//! `scaffold::build_stub_source`) -- the compiler is the actual authority
+//! `publish::run_cargo_fix`) -- the compiler is the actual authority
 //! on which imports are unused, so it prunes them, not us.
 //!
 //! The file's shebang and crate-level attributes (`#!...`, doc comments
