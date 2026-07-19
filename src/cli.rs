@@ -29,6 +29,15 @@ pub enum Command {
         #[arg(long)]
         id: String,
     },
+    /// (Re)resolve the workspace-root `Cargo.lock` shared by `{id}` and the
+    /// harness from their manifests, and record its hash in
+    /// `autograder.toml` as the "blessed" lock every checkout is checked
+    /// against. Run this whenever a dependency changes, before `prefetch`
+    /// or `publish`.
+    Lock {
+        /// Path to the (private) assignment repo.
+        assignment: PathBuf,
+    },
     /// Build the offline vendor dir + base image for an assignment.
     Prefetch {
         /// Path to the assignment repo.

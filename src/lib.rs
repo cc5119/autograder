@@ -1,3 +1,4 @@
+pub mod cargo_lock;
 pub mod cli;
 pub mod config;
 pub mod error;
@@ -7,6 +8,7 @@ pub mod fs;
 pub mod grade;
 pub mod id;
 pub mod init;
+pub mod lock;
 pub mod manifest_check;
 pub mod model;
 pub mod overlay;
@@ -42,6 +44,7 @@ use store::Store;
 pub fn dispatch(command: Command, config: &Config) -> Result<()> {
     match command {
         Command::Init { dir, kind, id } => run_init(&dir, &id, kind.into()),
+        Command::Lock { assignment } => run_lock(&assignment),
         Command::Prefetch { assignment } => run_prefetch(&assignment),
         Command::Fetch {
             assignment,
@@ -79,6 +82,16 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
 fn run_init(dir: &std::path::Path, id: &str, kind: AssignmentKind) -> Result<()> {
     let outcome = init::init(dir, id, kind)?;
     tracing::info!(dir = %outcome.dir.display(), "init complete");
+    Ok(())
+}
+
+fn run_lock(assignment: &std::path::Path) -> Result<()> {
+    let outcome = lock::lock(assignment)?;
+    tracing::info!(
+        lock_path = %outcome.lock_path.display(),
+        sha256 = %outcome.sha256,
+        "lock complete"
+    );
     Ok(())
 }
 
@@ -334,18 +347,23 @@ mod ci_tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    const PUBLIC_SPEC: &str = r#"
+    /// Written to the workspace root alongside `Cargo.toml` in every test
+    /// that reaches `prepare` -- its hash is what `public_spec` embeds.
+    const LOCK_TOML: &str = "version = 4\n\n[[package]]\nname = \"harness\"\nversion = \"0.0.0\"\ndependencies = [\n \"hw3\",\n]\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\n";
+
+    fn public_spec() -> String {
+        format!(
+            r#"
 [assignment]
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "{}"
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
 
 [limits.build]
 wall-clock = "30s"
@@ -364,7 +382,10 @@ max-output-bytes = "64KiB"
 [scoring]
 formula = "sum"
 base = 0.0
-"#;
+"#,
+            crate::cargo_lock::sha256_hex(LOCK_TOML)
+        )
+    }
 
     /// This host has no `cargo-nextest` installed, so the run stage never
     /// produces a junit report -- the evaluator should report
@@ -374,12 +395,13 @@ base = 0.0
         let harness_dir = tempfile::tempdir().unwrap();
         write(
             &harness_dir.path().join(spec::PUBLIC_SPEC_FILE),
-            PUBLIC_SPEC,
+            &public_spec(),
         );
         write(
             &harness_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
         );
+        write(&harness_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
             "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
@@ -421,7 +443,7 @@ base = 0.0
 
     #[test]
     fn ci_evaluator_selection_builds_binary_when_its_harness_dir_exists() {
-        let toml = PUBLIC_SPEC.replace("kind = \"library\"", "kind = \"binary\"");
+        let toml = public_spec().replace("kind = \"library\"", "kind = \"binary\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
@@ -435,7 +457,7 @@ base = 0.0
 
     #[test]
     fn ci_evaluator_selection_errors_clearly_when_binary_dir_is_missing() {
-        let toml = PUBLIC_SPEC.replace("kind = \"library\"", "kind = \"binary\"");
+        let toml = public_spec().replace("kind = \"library\"", "kind = \"binary\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
@@ -450,12 +472,13 @@ base = 0.0
         let assignment_dir = tempfile::tempdir().unwrap();
         write(
             &assignment_dir.path().join(spec::PUBLIC_SPEC_FILE),
-            PUBLIC_SPEC,
+            &public_spec(),
         );
         write(
             &assignment_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
         );
+        write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &assignment_dir.path().join("harness/Cargo.toml"),
             "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
@@ -518,11 +541,10 @@ name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "{sha}"
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
 
 [limits.build]
 wall-clock = "30s"
@@ -539,7 +561,8 @@ pids = 64
 max-output-bytes = "64KiB"
 
 {scoring_block}
-"#
+"#,
+            sha = "0".repeat(64)
         )
     }
 

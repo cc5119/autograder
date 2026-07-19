@@ -29,10 +29,14 @@ pub struct PublishOutcome {
 
 /// Same shape for both `library` and `binary`: `harness/` always holds the
 /// judge, as a sibling package of `{id}` (see `evaluator::library`'s and
-/// `evaluator::binary`'s module doc comments).
+/// `evaluator::binary`'s module doc comments). The workspace-root
+/// `Cargo.lock` ships too -- it's what makes a student's own plain `cargo
+/// build`/`cargo test` resolve the same dependency versions grading does
+/// (see `crate::lock`'s module doc comment).
 fn rules() -> Vec<Rule> {
     vec![
         Rule::File("Cargo.toml", None),
+        Rule::File("Cargo.lock", None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
         Rule::Glob("{id}/src/**", Some(strip_stub)),
         Rule::File("{harness}/Cargo.toml", None),
@@ -52,6 +56,17 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     }
     let spec = Spec::load_file(&private_spec_path)?;
     let id = spec.assignment.id;
+
+    // Refuses to ship a `[allowed-crates]`-equivalent that's gone stale --
+    // `Cargo.lock`'s resolved dependency graph *is* the allowlist (see
+    // `manifest_check`'s module doc comment), so if it doesn't match the
+    // hash `autograder lock` last recorded, publishing would ship students
+    // an allowlist inconsistent with what grading actually checks against.
+    if let Some(message) = crate::lock::verify(package_dir, &spec) {
+        return Err(Error::InvalidSpec(format!(
+            "refusing to publish: {message}"
+        )));
+    }
 
     let ctx = Context {
         source_root: package_dir.to_path_buf(),
@@ -139,10 +154,19 @@ fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
 }
 
 /// Runs `cargo fix` to prune `use` lines stub-stripping left unused, then
-/// removes the `target/` dir it leaves behind.
+/// removes the `target/` dir it leaves behind. `--locked` keeps it from
+/// silently rewriting the just-shipped, blessed `Cargo.lock` (student
+/// crate's own manifest dependencies are unchanged by stubbing, so the
+/// existing lock still satisfies it).
 fn run_cargo_fix(student_dir: &Path) -> Result<()> {
     let output = std::process::Command::new("cargo")
-        .args(["fix", "--allow-dirty", "--allow-staged", "--allow-no-vcs"])
+        .args([
+            "fix",
+            "--allow-dirty",
+            "--allow-staged",
+            "--allow-no-vcs",
+            "--locked",
+        ])
         .current_dir(student_dir)
         .output()
         .map_err(|source| Error::Io {
@@ -174,21 +198,25 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    const PRIVATE_SPEC: &str = r#"
+    const HW3_LOCK: &str = "version = 4\n\n[[package]]\nname = \"driver\"\nversion = \"0.0.0\"\ndependencies = [\n \"hw3\",\n]\n\n[[package]]\nname = \"hw3\"\nversion = \"0.0.0\"\n";
+
+    /// The private spec, with `cargo-lock-sha256` computed from `HW3_LOCK`
+    /// -- matching what `write_instructor_package` writes to disk, exactly
+    /// as `autograder lock` would leave things (see `crate::lock`).
+    fn private_spec() -> String {
+        format!(
+            r#"
 [assignment]
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "{}"
 
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
-serde = "1"
-rand  = "0.8"
 
 [limits.build]
 wall-clock = "120s"
@@ -207,7 +235,10 @@ max-output-bytes = "1MiB"
 [scoring]
 formula = "sum"
 base = 0.0
-"#;
+"#,
+            crate::cargo_lock::sha256_hex(HW3_LOCK)
+        )
+    }
 
     const HARNESS_MANIFEST: &str = "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n";
 
@@ -258,7 +289,8 @@ base = 0.0
     }
 
     fn write_instructor_package(package_dir: &Path) {
-        write(&package_dir.join(spec::PRIVATE_SPEC_FILE), PRIVATE_SPEC);
+        write(&package_dir.join(spec::PRIVATE_SPEC_FILE), &private_spec());
+        write(&package_dir.join("Cargo.lock"), HW3_LOCK);
         write(
             &package_dir.join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"hw3\"]\n",
@@ -300,7 +332,39 @@ base = 0.0
 
         let public_spec =
             std::fs::read_to_string(out_dir.path().join(spec::PUBLIC_SPEC_FILE)).unwrap();
-        assert_eq!(public_spec, PRIVATE_SPEC);
+        assert_eq!(public_spec, private_spec());
+    }
+
+    #[test]
+    fn publish_ships_the_workspace_root_cargo_lock() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_instructor_package(package_dir.path());
+        let out_dir = tempfile::tempdir().unwrap();
+
+        publish(package_dir.path(), out_dir.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(out_dir.path().join("Cargo.lock")).unwrap(),
+            HW3_LOCK
+        );
+    }
+
+    #[test]
+    fn publish_refuses_to_ship_a_stale_cargo_lock() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_instructor_package(package_dir.path());
+        // The instructor changed a dependency but forgot to rerun `autograder
+        // lock` -- the checked-in Cargo.lock no longer matches the hash
+        // recorded in autograder.toml.
+        write(
+            &package_dir.path().join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"9.9.9\"\n",
+        );
+        let out_dir = tempfile::tempdir().unwrap();
+
+        let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
+        assert!(matches!(err, Error::InvalidSpec(_)));
+        assert!(!out_dir.path().join(spec::PUBLIC_SPEC_FILE).exists());
     }
 
     #[test]
@@ -325,8 +389,9 @@ base = 0.0
         let package_dir = tempfile::tempdir().unwrap();
         write(
             &package_dir.path().join(spec::PRIVATE_SPEC_FILE),
-            PRIVATE_SPEC,
+            &private_spec(),
         );
+        write(&package_dir.path().join("Cargo.lock"), HW3_LOCK);
         write(
             &package_dir.path().join("harness/Cargo.toml"),
             HARNESS_MANIFEST,
@@ -486,18 +551,25 @@ base = 0.0
         assert!(!out_dir.path().join("hw3/vendor").exists());
     }
 
-    const BINARY_PRIVATE_SPEC: &str = r#"
+    // Unlike `library`, `binary`'s harness has no Cargo dependency edge to
+    // `{id}` (see `evaluator::binary`'s module doc comment) -- the lock
+    // must match that, or `cargo fix --locked` (run by `publish`) would
+    // need to rewrite it.
+    const WC_LOCK: &str = "version = 4\n\n[[package]]\nname = \"driver\"\nversion = \"0.0.0\"\n\n[[package]]\nname = \"wc\"\nversion = \"0.0.0\"\n";
+
+    fn binary_private_spec() -> String {
+        format!(
+            r#"
 [assignment]
 id = "wc"
 name = "Word count"
 kind = "binary"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "{}"
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
 
 [limits.build]
 wall-clock = "60s"
@@ -516,7 +588,10 @@ max-output-bytes = "64KiB"
 [scoring]
 formula = "sum"
 base = 0.0
-"#;
+"#,
+            crate::cargo_lock::sha256_hex(WC_LOCK)
+        )
+    }
 
     const BINARY_HARNESS_MANIFEST: &str =
         "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n";
@@ -537,8 +612,9 @@ base = 0.0
     fn write_binary_instructor_package(package_dir: &Path) {
         write(
             &package_dir.join(spec::PRIVATE_SPEC_FILE),
-            BINARY_PRIVATE_SPEC,
+            &binary_private_spec(),
         );
+        write(&package_dir.join("Cargo.lock"), WC_LOCK);
         write(
             &package_dir.join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"wc\"]\n",

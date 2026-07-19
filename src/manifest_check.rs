@@ -1,7 +1,12 @@
-//! Diffs a student `Cargo.toml` against `[allowed-crates]`, producing
-//! precise diagnostics instead of letting the student hit an opaque
+//! Diffs a student `Cargo.toml` against an allowlist, producing precise
+//! diagnostics instead of letting the student hit an opaque
 //! offline-resolution failure, plus static rejections of `[patch]`, git
-//! deps, and external path deps.
+//! deps, and external path deps. The allowlist itself isn't hand-typed
+//! anywhere -- `crate::prepare` derives it fresh from the blessed
+//! `Cargo.lock`'s resolved dependency graph (`{id}`'s own direct
+//! dependencies, via `crate::cargo_lock::CargoLock::direct_dependencies`),
+//! so it can never drift from what the reference solution actually
+//! depends on.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -31,6 +36,10 @@ pub enum ManifestDiagnostic {
     PathDependency {
         name: String,
     },
+    /// `Cargo.lock`, as actually checked out, doesn't match the blessed
+    /// hash recorded in `autograder.toml` -- see `crate::lock::verify`,
+    /// whose message is carried here verbatim.
+    LockfileMismatch(String),
 }
 
 impl std::fmt::Display for ManifestDiagnostic {
@@ -60,6 +69,7 @@ impl std::fmt::Display for ManifestDiagnostic {
             ManifestDiagnostic::PathDependency { name } => {
                 write!(f, "disallowed external path dependency: {name}")
             }
+            ManifestDiagnostic::LockfileMismatch(message) => write!(f, "{message}"),
         }
     }
 }
@@ -119,9 +129,10 @@ impl DependencySpec {
 }
 
 /// Diffs `manifest_toml` (a student `Cargo.toml`) against `allowed_crates`
-/// (the spec's `[allowed-crates]`), consulting `vendor_dir` (if present) for
-/// the exact pinned version/features actually vendored. Returns diagnostics
-/// in the order they were found; an empty vec means the manifest is clean.
+/// (derived from the blessed `Cargo.lock`, see this module's doc comment),
+/// consulting `vendor_dir` (if present) for the exact pinned
+/// version/features actually vendored. Returns diagnostics in the order
+/// they were found; an empty vec means the manifest is clean.
 pub fn check_manifest(
     manifest_toml: &str,
     allowed_crates: &BTreeMap<String, String>,

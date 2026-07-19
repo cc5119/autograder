@@ -10,23 +10,6 @@ pub struct VendorOutcome {
     pub cargo_config_path: PathBuf,
 }
 
-/// A synthetic `Cargo.toml` whose only purpose is to give `cargo vendor` a
-/// manifest to resolve `[allowed-crates]` against. Never built; a stub
-/// `src/lib.rs` accompanies it only because cargo requires a target to
-/// parse the manifest at all.
-pub fn synthetic_manifest_toml(spec: &Spec) -> String {
-    let mut out = String::new();
-    out.push_str("[package]\n");
-    out.push_str("name = \"autograder-vendor-probe\"\n");
-    out.push_str("version = \"0.0.0\"\n");
-    out.push_str("edition = \"2024\"\n\n");
-    out.push_str("[dependencies]\n");
-    for (name, version) in &spec.allowed_crates {
-        out.push_str(&format!("{name} = \"{version}\"\n"));
-    }
-    out
-}
-
 /// The `.cargo/config.toml` that replaces the crates.io source with the
 /// vendored directory. Callers must pass an absolute `vendor_dir`: Cargo
 /// resolves a relative `[source.X].directory` relative to the config
@@ -54,42 +37,42 @@ pub fn absolutize(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Runs `cargo vendor` against a synthetic manifest built from
-/// `spec.allowed_crates`, producing `<package_dir>/vendor/` plus
-/// `<package_dir>/.cargo/config.toml`. Trusted, online, one-time per
-/// assignment -- never runs on student code.
+/// Runs `cargo vendor --locked` directly against the workspace root at
+/// `package_dir` -- both `{id}` and `{harness}` at once, sourced straight
+/// from the checked-in `Cargo.lock` -- producing `<package_dir>/vendor/`
+/// plus `<package_dir>/.cargo/config.toml`. Trusted, online, one-time per
+/// assignment -- never runs on student code. Refuses up front if
+/// `Cargo.lock` doesn't match the blessed hash `autograder lock` recorded
+/// (`crate::lock::verify`), so vendoring can never silently pull a
+/// different dependency graph than the one grading is meant to check
+/// submissions against.
 pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
-    let vendor_dir = package_dir.join("vendor");
-
-    if spec.allowed_crates.is_empty() {
-        // `cargo vendor` refuses to run with zero dependencies ("There is
-        // no dependency to vendor in this project"); an empty allowlist is
-        // a legitimate spec, so produce an empty vendor dir instead of
-        // treating this as an error.
-        crate::fs::create_dir_all(&vendor_dir)?;
-    } else {
-        let manifest_dir = package_dir.join(".vendor-manifest");
-        let src_dir = manifest_dir.join("src");
-        crate::fs::create_dir_all(&src_dir)?;
-        let manifest_path = manifest_dir.join("Cargo.toml");
-        crate::fs::write(&manifest_path, synthetic_manifest_toml(spec))?;
-        crate::fs::write(&src_dir.join("lib.rs"), "")?;
-
-        let output = Command::new("cargo")
-            .arg("vendor")
-            .arg(&vendor_dir)
-            .arg("--manifest-path")
-            .arg(&manifest_path)
-            .output()
-            .map_err(|source| Error::Other(format!("failed to run cargo vendor: {source}")))?;
-
-        if !output.status.success() {
-            return Err(Error::Other(format!(
-                "cargo vendor failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+    if let Some(message) = crate::lock::verify(package_dir, spec) {
+        return Err(Error::InvalidSpec(message));
     }
+
+    let vendor_dir = package_dir.join("vendor");
+    let manifest_path = package_dir.join("Cargo.toml");
+
+    let output = Command::new("cargo")
+        .arg("vendor")
+        .arg(&vendor_dir)
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--locked")
+        .output()
+        .map_err(|source| Error::Other(format!("failed to run cargo vendor: {source}")))?;
+
+    if !output.status.success() {
+        return Err(Error::Other(format!(
+            "cargo vendor failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    // A workspace with zero total dependencies is a legitimate spec, and
+    // `cargo vendor` exits successfully for one -- it just never creates
+    // the directory, since there's nothing to put in it.
+    crate::fs::create_dir_all(&vendor_dir)?;
 
     let cargo_dir = package_dir.join(".cargo");
     crate::fs::create_dir_all(&cargo_dir)?;
@@ -109,8 +92,33 @@ pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
 mod tests {
     use super::*;
 
-    fn spec_with_crates(crates: &[(&str, &str)]) -> Spec {
-        let mut toml = String::from(
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// A minimal, real, dependency-free workspace (`harness` + `hw3`), with
+    /// a genuine `cargo update`-produced `Cargo.lock` whose hash is baked
+    /// into the returned `Spec` -- exactly what `lock::lock` would leave
+    /// behind, built without a network round-trip since there's nothing to
+    /// resolve.
+    fn empty_workspace(package_dir: &Path) -> Spec {
+        write(
+            &package_dir.join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\nmembers = [\"harness\", \"hw3\"]\n",
+        );
+        write(
+            &package_dir.join("hw3/Cargo.toml"),
+            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        );
+        write(&package_dir.join("hw3/src/lib.rs"), "");
+        write(
+            &package_dir.join("harness/Cargo.toml"),
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+        );
+        write(&package_dir.join("harness/src/main.rs"), "fn main() {}\n");
+
+        let toml = format!(
             r#"
 [assignment]
 id = "hw3"
@@ -118,19 +126,11 @@ name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
-
+cargo-lock-sha256 = "{}"
 
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[allowed-crates]
-"#,
-        );
-        for (name, version) in crates {
-            toml.push_str(&format!("{name} = \"{version}\"\n"));
-        }
-        toml.push_str(
-            r#"
 [limits.build]
 wall-clock = "120s"
 cpus = 2
@@ -149,16 +149,15 @@ max-output-bytes = "1MiB"
 formula = "sum"
 base = 0.0
 "#,
+            "0".repeat(64),
         );
-        toml::from_str(&toml).unwrap()
-    }
+        write(&package_dir.join("autograder.toml"), &toml);
 
-    #[test]
-    fn synthetic_manifest_lists_every_allowed_crate() {
-        let spec = spec_with_crates(&[("serde", "1"), ("rand", "0.8")]);
-        let manifest = synthetic_manifest_toml(&spec);
-        assert!(manifest.contains("serde = \"1\""));
-        assert!(manifest.contains("rand = \"0.8\""));
+        let outcome = crate::lock::lock(package_dir).unwrap();
+        let spec_toml = std::fs::read_to_string(package_dir.join("autograder.toml")).unwrap();
+        let spec: Spec = toml::from_str(&spec_toml).unwrap();
+        assert_eq!(spec.assignment.cargo_lock_sha256, outcome.sha256);
+        spec
     }
 
     #[test]
@@ -194,9 +193,9 @@ base = 0.0
     }
 
     #[test]
-    fn prefetch_with_empty_allowlist_produces_an_empty_vendor_dir_and_config() {
+    fn prefetch_with_no_workspace_dependencies_produces_an_empty_vendor_dir_and_config() {
         let package = tempfile::tempdir().unwrap();
-        let spec = spec_with_crates(&[]);
+        let spec = empty_workspace(package.path());
 
         let outcome = prefetch(package.path(), &spec).unwrap();
 
@@ -204,5 +203,15 @@ base = 0.0
         assert!(outcome.cargo_config_path.is_file());
         let config = std::fs::read_to_string(&outcome.cargo_config_path).unwrap();
         assert!(config.contains("vendored-sources"));
+    }
+
+    #[test]
+    fn prefetch_refuses_to_run_against_a_mismatched_lockfile() {
+        let package = tempfile::tempdir().unwrap();
+        let mut spec = empty_workspace(package.path());
+        spec.assignment.cargo_lock_sha256 = "not-the-real-hash".repeat(4);
+
+        let err = prefetch(package.path(), &spec).unwrap_err();
+        assert!(matches!(err, Error::InvalidSpec(_)));
     }
 }

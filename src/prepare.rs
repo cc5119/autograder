@@ -1,6 +1,8 @@
 use std::path::Path;
 
+use crate::cargo_lock::CargoLock;
 use crate::error::Result;
+use crate::lock;
 use crate::manifest_check::{self, ManifestDiagnostic};
 use crate::spec::Spec;
 use crate::vendor;
@@ -31,10 +33,24 @@ pub struct PrepareOutcome {
 /// positioned that correctly by the time this runs (see
 /// `evaluator::library`'s and `evaluator::binary`'s module doc comments),
 /// so this function doesn't need to know the tier or assignment kind.
+///
+/// Checks `package_dir/Cargo.lock` against the blessed hash first
+/// (`crate::lock::verify`) -- a mismatch (a student's edited/deleted lock
+/// for `ci`, a stale one for `grade`) short-circuits straight to a
+/// diagnostic, since the allowlist itself is derived from that same lock
+/// and can't be trusted otherwise.
 pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<PrepareOutcome> {
     let offline_env = install_offline_env(workspace, package_dir)?;
-    let manifest_diagnostics =
-        diagnose_manifest(workspace, spec, offline_env.vendor_dir.as_deref())?;
+
+    let manifest_diagnostics = match lock::verify(package_dir, spec) {
+        Some(message) => vec![ManifestDiagnostic::LockfileMismatch(message)],
+        None => diagnose_manifest(
+            workspace,
+            package_dir,
+            spec,
+            offline_env.vendor_dir.as_deref(),
+        )?,
+    };
 
     Ok(PrepareOutcome {
         offline_env,
@@ -74,12 +90,15 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
     })
 }
 
-/// Diffs the student's `Cargo.toml` against `[allowed-crates]`, so a
+/// Diffs the student's `Cargo.toml` against `{id}`'s own direct
+/// dependencies as resolved in the blessed `Cargo.lock` (the real
+/// allowlist -- see `manifest_check`'s module doc comment), so a
 /// disallowed dependency produces a precise diagnostic instead of an
 /// opaque offline-resolution failure at build time. Absent manifest -> no
 /// diagnostics (the build stage fails on its own with a clear error).
 fn diagnose_manifest(
     workspace: &Path,
+    package_dir: &Path,
     spec: &Spec,
     vendor_dir: Option<&Path>,
 ) -> Result<Vec<ManifestDiagnostic>> {
@@ -88,32 +107,38 @@ fn diagnose_manifest(
         return Ok(Vec::new());
     }
     let contents = crate::fs::read_to_string(&manifest_path)?;
-    manifest_check::check_manifest(&contents, &spec.allowed_crates, vendor_dir)
+
+    let lock_contents = crate::fs::read_to_string(&package_dir.join("Cargo.lock"))?;
+    let lock = CargoLock::parse(&lock_contents)?;
+    let allowed_crates = lock.direct_dependencies(spec.assignment.id.as_str());
+
+    manifest_check::check_manifest(&contents, &allowed_crates, vendor_dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cargo_lock::sha256_hex;
 
     fn write(path: &Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
 
-    const SPEC_TOML: &str = r#"
+    fn spec_toml(cargo_lock_sha256: &str) -> String {
+        format!(
+            r#"
 [assignment]
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "{cargo_lock_sha256}"
 
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
-serde = "1"
 
 [limits.build]
 wall-clock = "120s"
@@ -132,7 +157,29 @@ max-output-bytes = "1MiB"
 [scoring]
 formula = "sum"
 base = 0.0
-"#;
+"#
+        )
+    }
+
+    /// Writes `package_dir/Cargo.lock` recording `hw3`'s given direct
+    /// dependencies, and returns a `Spec` whose `cargo-lock-sha256` matches
+    /// it -- exactly what `crate::lock::lock` would have left behind, but
+    /// hand-crafted so these tests don't need a real `cargo update`.
+    fn spec_with_lock(package_dir: &Path, deps: &[(&str, &str)]) -> Spec {
+        let mut lock = String::from("version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\ndependencies = [\n");
+        for (name, _) in deps {
+            lock.push_str(&format!(" \"{name}\",\n"));
+        }
+        lock.push_str("]\n");
+        for (name, version) in deps {
+            lock.push_str(&format!(
+                "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n"
+            ));
+        }
+        write(&package_dir.join("Cargo.lock"), &lock);
+
+        toml::from_str(&spec_toml(&sha256_hex(&lock))).unwrap()
+    }
 
     #[test]
     fn prepare_installs_offline_env_when_the_package_has_been_prefetched() {
@@ -148,7 +195,7 @@ base = 0.0
             "[package]\nname = \"serde\"\nversion = \"1.4.0\"\n",
         );
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec = spec_with_lock(package.path(), &[("serde", "1.4.0")]);
         let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert!(outcome.manifest_diagnostics.is_empty());
@@ -170,7 +217,7 @@ base = 0.0
             "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1\"\n",
         );
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec = spec_with_lock(package.path(), &[("serde", "1.4.0")]);
         let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
@@ -187,11 +234,33 @@ base = 0.0
         let package = tempfile::tempdir().unwrap();
         write(&workspace.path().join("src/lib.rs"), "// student code");
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec = spec_with_lock(package.path(), &[]);
         let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert!(outcome.offline_env.vendor_dir.is_none());
         assert!(!workspace.path().join(".cargo/config.toml").exists());
+    }
+
+    #[test]
+    fn prepare_surfaces_a_lockfile_mismatch_diagnostic_instead_of_checking_the_manifest() {
+        let workspace = tempfile::tempdir().unwrap();
+        let package = tempfile::tempdir().unwrap();
+        write(&workspace.path().join("src/lib.rs"), "// student code");
+        write(
+            &workspace.path().join("Cargo.toml"),
+            "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n",
+        );
+        // A Cargo.lock is on disk, but doesn't match the spec's blessed hash.
+        write(&package.path().join("Cargo.lock"), "version = 4\n");
+        let spec: Spec = toml::from_str(&spec_toml(&"0".repeat(64))).unwrap();
+
+        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+
+        assert_eq!(outcome.manifest_diagnostics.len(), 1);
+        assert!(matches!(
+            outcome.manifest_diagnostics[0],
+            ManifestDiagnostic::LockfileMismatch(_)
+        ));
     }
 
     /// Confirms `prepare` never touches `package_dir/harness` or
@@ -208,8 +277,10 @@ base = 0.0
         write(&package.path().join("harness/tests/judge.rs"), "// judge");
         write(&package.path().join("hw3/tests/judge.rs"), "// judge");
 
+        let spec = spec_with_lock(package.path(), &[]);
         for kind in ["library", "binary"] {
-            let toml = SPEC_TOML.replace("kind = \"library\"", &format!("kind = \"{kind}\""));
+            let toml = spec_toml(&spec.assignment.cargo_lock_sha256)
+                .replace("kind = \"library\"", &format!("kind = \"{kind}\""));
             let spec: Spec = toml::from_str(&toml).unwrap();
             prepare(workspace.path(), package.path(), &spec).unwrap();
         }

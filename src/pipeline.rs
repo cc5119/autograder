@@ -247,19 +247,25 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    const SPEC_TOML: &str = r#"
+    /// Written to `package_dir/Cargo.lock` in every test that calls
+    /// `grade_batch` -- `prepare` (via `Cargo.lock`'s hash) needs it there
+    /// regardless of what a given test's `Cargo.toml` actually declares.
+    const LOCK_TOML: &str = "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\n";
+
+    fn spec_toml() -> String {
+        format!(
+            r#"
 [assignment]
 id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "{}"
 
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
 
 [limits.build]
 wall-clock = "120s"
@@ -278,7 +284,10 @@ max-output-bytes = "1MiB"
 [scoring]
 formula = "sum"
 base = 0.0
-"#;
+"#,
+            crate::cargo_lock::sha256_hex(LOCK_TOML)
+        )
+    }
 
     fn passing_test(name: &str) -> crate::model::TestResult {
         crate::model::TestResult {
@@ -301,12 +310,13 @@ base = 0.0
             &package_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"hw3\"]\n",
         );
+        write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
         );
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec: Spec = toml::from_str(&spec_toml()).unwrap();
         let source = FixedSource(vec![crate::model::Submission {
             student_id: "alice".into(),
             fetchable: LocalPath(submission_src.path().to_path_buf()),
@@ -361,7 +371,7 @@ base = 0.0
 
         write(&submission_src.path().join("src/lib.rs"), "// student code");
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec: Spec = toml::from_str(&spec_toml()).unwrap();
         let source = FixedSource(vec![crate::model::Submission {
             student_id: "alice".into(),
             fetchable: LocalPath(submission_src.path().to_path_buf()),
@@ -442,6 +452,7 @@ base = 0.0
             &package_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"harness\", \"wc\"]\n",
         );
+        write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &package_dir.path().join("harness/Cargo.toml"),
             "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
@@ -462,7 +473,7 @@ base = 0.0
             "#[test]\nfn fake_pass() { assert!(true); }\n",
         );
 
-        let toml = SPEC_TOML
+        let toml = spec_toml()
             .replace("kind = \"library\"", "kind = \"binary\"")
             .replace("id = \"hw3\"", "id = \"wc\"");
         let spec: Spec = toml::from_str(&toml).unwrap();
@@ -504,6 +515,7 @@ base = 0.0
             &package_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"hw3\"]\n",
         );
+        write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
@@ -513,7 +525,7 @@ base = 0.0
             "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1\"\n",
         );
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec: Spec = toml::from_str(&spec_toml()).unwrap();
         let source = FixedSource(vec![crate::model::Submission {
             student_id: "alice".into(),
             fetchable: LocalPath(submission_src.path().to_path_buf()),
@@ -560,7 +572,7 @@ base = 0.0
         let work_dir = tempfile::tempdir().unwrap();
         let store_dir = tempfile::tempdir().unwrap();
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec: Spec = toml::from_str(&spec_toml()).unwrap();
         let source = FixedSource(vec![crate::model::Submission {
             student_id: "ghost".into(),
             fetchable: LocalPath("/nonexistent/path".into()),
@@ -599,12 +611,13 @@ base = 0.0
             &package_dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"hw3\"]\n",
         );
+        write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &submission_src.path().join("hw3/src/lib.rs"),
             "// student code",
         );
 
-        let spec: Spec = toml::from_str(SPEC_TOML).unwrap();
+        let spec: Spec = toml::from_str(&spec_toml()).unwrap();
         let source = FixedSource(vec![crate::model::Submission {
             student_id: "alice".into(),
             fetchable: LocalPath(submission_src.path().to_path_buf()),

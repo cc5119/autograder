@@ -64,6 +64,11 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         fs::write(&dst, content)?;
     }
 
+    // Resolves and records `Cargo.lock`'s hash so the freshly scaffolded
+    // package is immediately loadable (`cargo-lock-sha256` has no default,
+    // like `id` and `harness` -- see `spec::Assignment`'s doc comment).
+    crate::lock::lock(dir)?;
+
     Ok(InitOutcome {
         dir: dir.to_path_buf(),
     })

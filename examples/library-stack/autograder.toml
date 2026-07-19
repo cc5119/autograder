@@ -16,11 +16,10 @@ name = "Stack (library example)"
 kind = "library"
 deadline = "2099-01-01T00:00:00[UTC]"
 harness = "harness"
+cargo-lock-sha256 = "5fdb98a23f0d720850c5e04771c74b926301dd51c16e1c001fc9a166654c1566"
 
 [sandbox]
 image = "ghcr.io/cc5119/autograder-base:1.97.1"
-
-[allowed-crates]
 
 [limits.build]
 wall-clock = "60s"

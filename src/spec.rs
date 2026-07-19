@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use jiff::Zoned;
@@ -26,6 +25,14 @@ pub enum AssignmentKind {
 /// `<harness>/Cargo.toml` -- the two must agree, since this one value drives
 /// both the on-disk path autograder reads and the `-p` argument it passes to
 /// cargo. No default: every assignment must set it explicitly.
+///
+/// `cargo-lock-sha256` is the SHA-256 (lowercase hex) of the workspace-root
+/// `Cargo.lock` `autograder lock` last generated -- the "blessed" lock every
+/// `Cargo.lock` in a checkout (student's `ci`, instructor's `grade`) is
+/// checked against before any build runs (see `crate::lock`). It, `id`, and
+/// `harness` are what actually make `[allowed-crates]` unnecessary: instead
+/// of a hand-typed, driftable allowlist, `manifest_check` derives the real
+/// one straight from the blessed lockfile's resolved dependency graph.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
     pub id: AssignmentId,
@@ -33,6 +40,8 @@ pub struct Assignment {
     pub kind: AssignmentKind,
     pub deadline: Zoned,
     pub harness: String,
+    #[serde(rename = "cargo-lock-sha256")]
+    pub cargo_lock_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,8 +238,6 @@ impl<'de> Deserialize<'de> for Scoring {
 pub struct Spec {
     pub assignment: Assignment,
     pub sandbox: Sandbox,
-    #[serde(default, rename = "allowed-crates")]
-    pub allowed_crates: BTreeMap<String, String>,
     pub limits: Limits,
     pub scoring: Scoring,
 }
@@ -265,14 +272,11 @@ name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
-serde = "1"
-rand  = "0.8"
 
 [limits.build]
 wall-clock = "120s"
@@ -300,14 +304,11 @@ name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
+cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 
 [sandbox]
 image = "autograder-base:1.86.0"
-
-[allowed-crates]
-serde = "1"
-rand  = "0.8"
 
 [limits.build]
 wall-clock = "120s"
