@@ -2,6 +2,13 @@
 name = "autograder"
 version = "0.1.0"
 edition = "2024"
+# A single integration test binary (tests/integration.rs, with init/publish/cli
+# as its modules) instead of Cargo's default one-binary-per-file-under-tests/.
+autotests = false
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

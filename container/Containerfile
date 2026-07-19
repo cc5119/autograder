@@ -1,0 +1,6 @@
+FROM docker.io/library/rust:latest
+
+ARG IMAGE_SOURCE=https://github.com/unknown/unknown
+LABEL org.opencontainers.image.source=${IMAGE_SOURCE}
+
+RUN cargo install cargo-nextest --locked

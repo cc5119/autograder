@@ -22,6 +22,7 @@ use ignore::overrides::OverrideBuilder;
 use crate::error::{Error, Result};
 use crate::fs;
 
+#[derive(Debug)]
 pub struct MatchedFile {
     pub rel_path: PathBuf,
     pub content: String,
@@ -81,7 +82,16 @@ pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
             }
             Rule::Glob(pattern, hook) => {
                 let pattern = ctx.resolve(pattern);
-                let override_ = OverrideBuilder::new(&ctx.source_root)
+                // `"."`, not `&ctx.source_root`: `all_files` entries are
+                // already relative to `source_root` (stripped by
+                // `fs::walk_files`), so `ignore`'s own root-stripping in
+                // `matched()` must be a no-op here -- passing the real
+                // `source_root` would make it strip a *second* time, which
+                // silently corrupts the match whenever `source_root` is a
+                // relative path whose own basename happens to prefix-match
+                // a candidate (e.g. `autograder init --id hw0 hw0`, where
+                // the package dir and `{id}` share the name `hw0`).
+                let override_ = OverrideBuilder::new(".")
                     .add(&pattern)
                     .unwrap()
                     .build()
@@ -139,6 +149,36 @@ mod tests {
                 .map(|(k, v)| (*k, v.to_string()))
                 .collect(),
         }
+    }
+
+    /// Reproduces `autograder init --id hw0 hw0` followed by a relative
+    /// `autograder publish --out hw0-starter hw0`: the package dir's own
+    /// basename ("hw0") coincides with `{id}`'s subdirectory name. `ignore`
+    /// expects paths passed to `matched()` to still carry the root prefix
+    /// it can strip; `all_files` here is already root-relative, so a
+    /// `source_root` whose basename prefix-matches a candidate used to make
+    /// it strip a second time and silently drop the match (fixed by always
+    /// building the `OverrideBuilder` against `"."`, not `source_root`).
+    #[test]
+    fn glob_rule_matches_when_the_relative_source_root_shares_a_name_with_the_glob_prefix() {
+        let cwd = std::env::current_dir().unwrap();
+        let base = tempfile::tempdir_in(&cwd).unwrap();
+        let name = base.path().file_name().unwrap().to_str().unwrap().to_string();
+        write(&base.path().join(&name).join("src/lib.rs"), "pub fn f() {}");
+
+        let dest = tempfile::tempdir().unwrap();
+        let relative_source_root = PathBuf::from(&name);
+        apply(
+            &ctx(&relative_source_root, &[("id", &name)]),
+            dest.path(),
+            &[Rule::Glob("{id}/src/**", None)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join(&name).join("src/lib.rs")).unwrap(),
+            "pub fn f() {}"
+        );
     }
 
     #[test]
