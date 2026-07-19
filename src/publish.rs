@@ -15,35 +15,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ignore::overrides::OverrideBuilder;
-
 use crate::error::{Error, Result};
 use crate::fs;
+use crate::overlay::{self, Context, MatchedFile, Rule};
 use crate::spec::{self, AssignmentKind, Spec};
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
     pub out_dir: PathBuf,
-}
-
-struct PublishCtx {
-    package_dir: PathBuf,
-    id: String,
-}
-
-struct MatchedFile {
-    rel_path: PathBuf,
-    content: String,
-}
-
-type FileHook = fn(path: &str, file: MatchedFile, ctx: &PublishCtx) -> Result<MatchedFile>;
-
-type GlobHook =
-    fn(pattern: &str, matches: Vec<MatchedFile>, ctx: &PublishCtx) -> Result<Vec<MatchedFile>>;
-
-enum Rule {
-    File(&'static str, Option<FileHook>),
-    Glob(&'static str, Option<GlobHook>),
 }
 
 fn rules(kind: AssignmentKind) -> Vec<Rule> {
@@ -77,12 +56,12 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     let spec = Spec::load_file(&private_spec_path)?;
     let id = spec.assignment.id.clone();
 
-    let ctx = PublishCtx {
-        package_dir: package_dir.to_path_buf(),
-        id: id.clone(),
+    let ctx = Context {
+        source_root: package_dir.to_path_buf(),
+        substitutions: HashMap::from([("id", id.clone())]),
     };
 
-    copy_matching(&ctx, out_dir, &rules(spec.assignment.kind))?;
+    overlay::apply(&ctx, out_dir, &rules(spec.assignment.kind))?;
 
     let student_dir = out_dir.join(&id);
     run_cargo_fix(&student_dir)?;
@@ -101,74 +80,8 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     })
 }
 
-fn copy_matching(ctx: &PublishCtx, out_dir: &Path, rules: &[Rule]) -> Result<()> {
-    let all_files = fs::walk_files(&ctx.package_dir)?;
-
-    for rule in rules {
-        let output_files = match rule {
-            Rule::File(path, hook) => {
-                let rel_path = PathBuf::from(path.replace("{id}", &ctx.id));
-                if !ctx.package_dir.join(&rel_path).is_file() {
-                    return Err(Error::InvalidSpec(format!(
-                        "publish requires {} under {} (the private instructor package) -- \
-                         there is nothing to copy the starter's `{}` from",
-                        rel_path.display(),
-                        ctx.package_dir.display(),
-                        rel_path.display()
-                    )));
-                }
-                let file = read_file(&ctx.package_dir, rel_path)?;
-                match hook {
-                    Some(hook) => vec![hook(path, file, ctx)?],
-                    None => vec![file],
-                }
-            }
-            Rule::Glob(pattern, hook) => {
-                let pattern = pattern.replace("{id}", &ctx.id);
-                let override_ = OverrideBuilder::new(&ctx.package_dir)
-                    .add(&pattern)
-                    .unwrap()
-                    .build()
-                    .unwrap();
-
-                let mut matches = Vec::new();
-                for rel_path in &all_files {
-                    if override_.matched(rel_path, false).is_whitelist() {
-                        matches.push(read_file(&ctx.package_dir, rel_path.clone())?);
-                    }
-                }
-
-                match hook {
-                    Some(hook) => hook(&pattern, matches, ctx)?,
-                    None => matches,
-                }
-            }
-        };
-
-        for file in output_files {
-            write_file(out_dir, file)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn read_file(package_dir: &Path, rel_path: PathBuf) -> Result<MatchedFile> {
-    let full_path = package_dir.join(&rel_path);
-    let content = fs::read_to_string(&full_path)?;
-    Ok(MatchedFile { rel_path, content })
-}
-
-fn write_file(out_dir: &Path, file: MatchedFile) -> Result<()> {
-    let dst = out_dir.join(&file.rel_path);
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&dst, file.content)
-}
-
-fn validate_manifest(path: &str, file: MatchedFile, ctx: &PublishCtx) -> Result<MatchedFile> {
-    let manifest_path = ctx.package_dir.join(path);
+fn validate_manifest(path: &str, file: MatchedFile, ctx: &Context) -> Result<MatchedFile> {
+    let manifest_path = ctx.source_root.join(path);
     let value: toml::Value = toml::from_str(&file.content).map_err(|source| Error::Toml {
         path: manifest_path.clone(),
         source: Box::new(source),
@@ -177,13 +90,18 @@ fn validate_manifest(path: &str, file: MatchedFile, ctx: &PublishCtx) -> Result<
         .get("package")
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str());
-    if package_name != Some(ctx.id.as_str()) {
+    let id = ctx
+        .substitutions
+        .get("id")
+        .map(String::as_str)
+        .unwrap_or_default();
+    if package_name != Some(id) {
         return Err(Error::InvalidSpec(format!(
             "{} has [package].name = {:?}, expected {:?} to match [assignment].id -- \
              rename the package, or the solution directory/id, so they agree",
             manifest_path.display(),
             package_name.unwrap_or("<missing>"),
-            ctx.id
+            id
         )));
     }
     Ok(file)
@@ -192,7 +110,7 @@ fn validate_manifest(path: &str, file: MatchedFile, ctx: &PublishCtx) -> Result<
 fn strip_stub(
     _pattern: &str,
     matches: Vec<MatchedFile>,
-    _ctx: &PublishCtx,
+    _ctx: &Context,
 ) -> Result<Vec<MatchedFile>> {
     matches
         .into_iter()

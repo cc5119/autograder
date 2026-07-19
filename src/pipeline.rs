@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -8,12 +9,39 @@ use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
 };
+use crate::overlay::{self, Context, Rule};
 use crate::overrides::{self, Overrides};
 use crate::source::SubmissionsSource;
 use crate::spec::{AssignmentKind, Spec};
 use crate::store::Store;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Everything copied from the student's own fetched checkout: just their
+/// `{id}/` crate, whatever it contains -- never `harness/`, never their own
+/// spec, both of which the checkout might carry from the published starter
+/// but which grading must never trust.
+fn checkout_rules() -> Vec<Rule> {
+    vec![Rule::Glob("{id}/**", None)]
+}
+
+/// Everything copied from the instructor's private package: the trusted
+/// judge, always overwriting whatever (if anything) the student's own
+/// checkout had at the same paths.
+fn package_rules(kind: AssignmentKind) -> Vec<Rule> {
+    match kind {
+        AssignmentKind::Library => vec![Rule::Glob("harness/**", None)],
+        AssignmentKind::Binary => vec![
+            // `{id}/tests/**` is wiped first, not just overlaid onto: a
+            // same-named decoy test left over from the submission's own
+            // public judge could otherwise fake a hidden test's result
+            // (`grade` matches by name alone, not by which file it came
+            // from).
+            Rule::Clean("{id}/tests"),
+            Rule::Glob("{id}/tests/**", None),
+        ],
+    }
+}
 
 /// Builds an `EvaluationResult` for a stage that failed before Evaluate
 /// ever ran (fetch failure, disallowed dependency), so a non-fatal
@@ -139,33 +167,23 @@ pub fn grade_batch<F>(
                 )
             } else {
                 let outcome: Result<EvaluationResult> = (|| {
-                    crate::fs::copy_dir_all(&submitted_crate, &workspace)?;
-                    // `binary`'s judge tests merge directly into
-                    // `workspace/tests/`, so that dir is wiped first, not
-                    // just overlaid onto: `copy_dir_all` only overwrites
-                    // paths present in its source, and a same-named decoy
-                    // test left over from the submission's own public judge
-                    // could otherwise fake a hidden test's result (`grade`
-                    // matches by name alone, not by which file it came
-                    // from).
-                    match spec.assignment.kind {
-                        AssignmentKind::Library => {
-                            let harness_dir = package_dir.join("harness");
-                            if harness_dir.is_dir() {
-                                crate::fs::copy_dir_all(&harness_dir, &driver_dir)?;
-                            }
-                        }
-                        AssignmentKind::Binary => {
-                            let tests_dir = package_dir.join(&spec.assignment.id).join("tests");
-                            let workspace_tests_dir = workspace.join("tests");
-                            if workspace_tests_dir.is_dir() {
-                                crate::fs::remove_dir_all(&workspace_tests_dir)?;
-                            }
-                            if tests_dir.is_dir() {
-                                crate::fs::copy_dir_all(&tests_dir, &workspace_tests_dir)?;
-                            }
-                        }
-                    }
+                    let subs = HashMap::from([("id", spec.assignment.id.clone())]);
+                    overlay::apply(
+                        &Context {
+                            source_root: checkout_dir.clone(),
+                            substitutions: subs.clone(),
+                        },
+                        &build_dir,
+                        &checkout_rules(),
+                    )?;
+                    overlay::apply(
+                        &Context {
+                            source_root: package_dir.to_path_buf(),
+                            substitutions: subs,
+                        },
+                        &build_dir,
+                        &package_rules(spec.assignment.kind),
+                    )?;
                     let prepared = crate::prepare::prepare(&workspace, package_dir, spec)?;
                     if !prepared.manifest_diagnostics.is_empty() {
                         let message = prepared

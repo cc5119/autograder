@@ -8,6 +8,7 @@ pub mod grade;
 pub mod init;
 pub mod manifest_check;
 pub mod model;
+pub mod overlay;
 pub mod overrides;
 pub mod pipeline;
 pub mod prepare;
