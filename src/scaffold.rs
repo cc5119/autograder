@@ -1,90 +1,13 @@
-//! Emits the starter/template repo for distribution to students (design
-//! §5.1, §11.2) from the **private instructor package** in one pass: copy
+//! Emits the starter/template repo for distribution to students
+//! from the **private instructor package** in one pass: copy
 //! everything real, then strip the sensitive parts in place. No
 //! hand-maintained `public/` sibling repo, and no separately-assembled
 //! `Cargo.toml`/`src/` built up from spec fields in Rust code.
-//!
-//! `package_dir` is the instructor package (`autograder.toml`, a root
-//! `[workspace]` `Cargo.toml`, `<assignment-id>/` — the required reference
-//! solution — and, for `library`-kind only, `harness/`; see below).
-//! `[assignment].id` is the
-//! single identifier for everything student-facing (design §5): the crate
-//! name the harness's `Cargo.toml` depends on (`evaluator::library`), the
-//! binary target name for `binary`-kind assignments, *and* the directory
-//! name the reference solution (privately) / the student's own crate (once
-//! published) must live in. No `[student]` section to keep in sync with
-//! it, no `--solution` flag.
-//!
-//! The published starter is laid out as a **structural mirror** of the
-//! private package: `autograder.public.toml`/`harness/`/`<id>/` sit at
-//! `out_dir`'s top level, exactly where `autograder.toml`/`harness/`/`<id>/`
-//! sit in `package_dir` -- there's no `.autograder/public/` wrapper
-//! directory the way earlier versions of this module had. That parity is
-//! deliberate, not cosmetic: `harness/Cargo.toml`'s dependency on `<id>`
-//! is already a plain path (`../<id>`, see `evaluator::library`'s module
-//! doc comment) precisely because `<id>/` is always sitting right there as
-//! a sibling, in both the private package and the published starter alike
-//! -- no patch, no `--config` override, no per-tier special-casing needed
-//! to make it resolve correctly, and no rewrite needed here either. The
-//! root `[workspace]` manifest (`Cargo.toml`) is copied verbatim too, same
-//! as `harness/Cargo.toml` -- purely a convenience for whoever's *reading*
-//! the private package standalone (an instructor sanity-checking `cargo
-//! test` from `package_dir` itself, or a student doing the same from the
-//! published starter); `autograder`'s own grading/`ci` pipeline never
-//! reads it at all (every sandboxed build always `cd`s directly into the
-//! harness/workspace directory it needs, see `evaluator::library`'s
-//! module doc comment). Copying it here rather than regenerating an
-//! equivalent one from `spec` means there's only ever one place the
-//! member list is written down, instead of two that could drift apart.
-//!
-//! From `package_dir`, `scaffold` produces `out_dir` as:
-//! - `<id>/` — a full recursive copy of `package_dir/<id>/` (the reference
-//!   solution — `Cargo.toml`, `src/`, anything else that's there), with
-//!   every `.rs` file then stripped in place via [`crate::stub`]: pub
-//!   signatures survive, bodies become `todo!()`, private items and
-//!   `#[cfg(test)]` modules are dropped. `cargo fix` then runs directly in
-//!   `out_dir/<id>` to prune imports the stripping left unused — no
-//!   separate scratch copy, since it's already a real, disposable copy of
-//!   the solution crate at this point. A solution directory is required:
-//!   if it's missing, or its own `Cargo.toml` `[package].name` doesn't
-//!   match `[assignment].id`, `scaffold` refuses to guess and errors out
-//!   clearly.
-//! - `autograder.public.toml` — `points` and non-public
-//!   `[[scoring.tests]]` entries stripped
-//!   ([`crate::publish::derive_public_spec_toml`]).
-//! - `harness/` (`library`-kind only) — a copy of the private `harness/`,
-//!   with test files filtered down to the public-visibility tests named in
-//!   that same spec transform ([`crate::publish::keep_only_named_tests`]);
-//!   its manifest is copied verbatim, no rewrite needed (see `publish`'s
-//!   module doc comment). `binary`-kind has no separate harness crate at
-//!   all — its judge tests live directly inside the reference solution's
-//!   own `<id>/tests/` (see `evaluator::binary`'s module doc comment), so
-//!   for that kind the same filtering instead lands those public-only
-//!   tests straight in the student's own `<id>/tests/` — the only way a
-//!   plain `cargo test` finds them there, since there's no crate-linking
-//!   trick available without a separate `Cargo.toml` to attach a path
-//!   dependency to.
-//!   Deliberately *not* copied here: `vendor/`/`.cargo/` (`prefetch`'s
-//!   offline-vendoring output). Those aren't grading-only anymore — the
-//!   generated workflow below runs `autograder prefetch` itself on the
-//!   runner (network enabled, before the sandboxed `ci` step) to produce
-//!   them fresh each run, so there's nothing to check into the starter
-//!   repo; a student's local (non-CI) `cargo test`/`autograder ci
-//!   --local-sandbox` still resolves dependencies normally. `fixtures/`
-//!   isn't copied either —
-//!   nothing in this codebase currently reads it (same reasoning as the
-//!   `fixtures/` overlay removed from `prepare.rs`); reintroduce it,
-//!   correctly scoped, once an evaluator actually needs fixture data.
-//! - `Cargo.toml` — the private package's own root `[workspace]` manifest,
-//!   copied verbatim (see above); required, same as `autograder.toml` and
-//!   the solution directory.
-//! - `.github/workflows/autograde.yml` — a thin wrapper around `autograder
-//!   ci`, run from the repo root (`ci` takes no `--harness` flag, see its
-//!   own doc comment). The one file with no private-repo counterpart to
-//!   copy, so it's still generated.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+use ignore::overrides::OverrideBuilder;
 
 use crate::error::{Error, Result};
 use crate::publish;
@@ -104,17 +27,46 @@ pub struct ScaffoldOutcome {
     pub out_dir: PathBuf,
 }
 
-/// Builds the starter template at `out_dir` from the private instructor
-/// package at `package_dir`, laid out as a **structural mirror** of the
-/// private package itself: `autograder.public.toml`/`harness/`/`<id>/` as
-/// top-level siblings, exactly where `autograder.toml`/`harness/`/`<id>/`
-/// sit in `package_dir`. That parity is what lets `harness/`'s dependency
-/// on `<id>` be an ordinary, always-resolving path dependency instead of
-/// needing a patch or `--config` override in the starter, copied verbatim
-/// with no rewrite -- and it's why a plain `cargo test` from `out_dir` (no
-/// `autograder` involvement) already runs both the student's own tests
-/// and the public harness's, via the `[workspace]` manifest this also
-/// copies over from `package_dir` (see [`copy_workspace_manifest`]).
+struct ScaffoldCtx {
+    package_dir: PathBuf,
+    id: String,
+    public_test_names: HashSet<String>,
+}
+
+struct MatchedFile {
+    rel_path: PathBuf,
+    content: String,
+}
+
+type FileHook = fn(path: &str, file: MatchedFile, ctx: &ScaffoldCtx) -> Result<MatchedFile>;
+
+type GlobHook =
+    fn(pattern: &str, matches: Vec<MatchedFile>, ctx: &ScaffoldCtx) -> Result<Vec<MatchedFile>>;
+
+enum Rule {
+    File(&'static str, Option<FileHook>),
+    Glob(&'static str, Option<GlobHook>),
+}
+
+fn rules(kind: AssignmentKind) -> Vec<Rule> {
+    match kind {
+        AssignmentKind::Library => vec![
+            Rule::File("Cargo.toml", None),
+            Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
+            Rule::Glob("{id}/src/**", Some(strip_stub)),
+            Rule::File("harness/Cargo.toml", None),
+            Rule::Glob("harness/src/**", None),
+            Rule::Glob("harness/tests/**", Some(keep_only_public_tests)),
+        ],
+        AssignmentKind::Binary => vec![
+            Rule::File("Cargo.toml", None),
+            Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
+            Rule::Glob("{id}/src/**", Some(strip_stub)),
+            Rule::Glob("{id}/tests/**", Some(keep_only_public_tests)),
+        ],
+    }
+}
+
 pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
     let private_spec_path = package_dir.join(spec::PRIVATE_SPEC_FILE);
     if !private_spec_path.is_file() {
@@ -125,76 +77,33 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         )));
     }
     let spec = Spec::load_file(&private_spec_path)?;
-    let id = spec.assignment.id.as_str();
+    let id = spec.assignment.id.clone();
 
-    let solution_dir = package_dir.join(id);
-    if !solution_dir.is_dir() {
-        return Err(Error::InvalidSpec(format!(
-            "scaffold requires a reference solution at {} (a directory named after \
-             [assignment].id) -- there is nothing to copy the starter's Cargo.toml/src/ from",
-            solution_dir.display()
-        )));
-    }
-    check_solution_package_name(&solution_dir, id)?;
-
-    let student_dir = out_dir.join(id);
-    copy_dir_if_exists(&solution_dir, &student_dir)?;
-    // For `binary`-kind, the reference solution's own `tests/` is the
-    // private judge itself (see `evaluator::binary`'s module doc comment),
-    // not solution code -- remove the raw copy before stripping so
-    // `strip_rust_files_in_place` (which walks every `.rs` file, meant for
-    // *implementation* code) never mangles real `#[test]` assertions into
-    // `todo!()` stubs. The starter's public-only tests get derived fresh,
-    // below, once `public_test_names` is known. `library` never has this
-    // problem: its judge lives in a separate `harness/` crate entirely.
-    if spec.assignment.kind == AssignmentKind::Binary {
-        let raw_tests_dir = student_dir.join("tests");
-        if raw_tests_dir.is_dir() {
-            std::fs::remove_dir_all(&raw_tests_dir).map_err(|source| Error::Io {
-                path: raw_tests_dir,
-                source,
-            })?;
-        }
-    }
-    strip_rust_files_in_place(&student_dir)?;
-    run_cargo_fix(&student_dir)?;
-
+    // Derived purely from the private TOML text -- doesn't need anything
+    // copied yet, so it can run before the walk instead of being
+    // interleaved with it.
     let private_toml = std::fs::read_to_string(&private_spec_path).map_err(|source| Error::Io {
         path: private_spec_path.clone(),
         source,
     })?;
     let (public_spec_toml, public_test_names) = publish::derive_public_spec_toml(&private_toml)?;
 
+    let ctx = ScaffoldCtx {
+        package_dir: package_dir.to_path_buf(),
+        id: id.clone(),
+        public_test_names,
+    };
+
+    copy_matching(&ctx, out_dir, &rules(spec.assignment.kind))?;
+
+    let student_dir = out_dir.join(&id);
+    run_cargo_fix(&student_dir)?;
+
     let public_spec_path = out_dir.join(spec::PUBLIC_SPEC_FILE);
     std::fs::write(&public_spec_path, public_spec_toml).map_err(|source| Error::Io {
         path: public_spec_path,
         source,
     })?;
-
-    // Deriving the public judge differs in shape by kind (see
-    // `evaluator::library`'s and `evaluator::binary`'s module doc
-    // comments): `library`'s lives in a separate `harness/` crate;
-    // `binary` has none, so its (filtered) judge tests go straight into
-    // the student's own `<id>/tests/` -- the only way a plain `cargo test`
-    // finds them there, since there's no crate-linking trick available
-    // without a `Cargo.toml` to attach a path dependency to.
-    match spec.assignment.kind {
-        AssignmentKind::Library => {
-            let harness_dir = out_dir.join("harness");
-            copy_public_harness(
-                &package_dir.join("harness"),
-                &harness_dir,
-                &public_test_names,
-            )?;
-        }
-        AssignmentKind::Binary => {
-            copy_public_tests(
-                &solution_dir.join("tests"),
-                &student_dir.join("tests"),
-                &public_test_names,
-            )?;
-        }
-    }
 
     let workflow_dir = out_dir.join(".github/workflows");
     std::fs::create_dir_all(&workflow_dir).map_err(|source| Error::Io {
@@ -208,35 +117,192 @@ pub fn scaffold(package_dir: &Path, out_dir: &Path) -> Result<ScaffoldOutcome> {
         source,
     })?;
 
-    copy_workspace_manifest(package_dir, out_dir)?;
-
     Ok(ScaffoldOutcome {
         out_dir: out_dir.to_path_buf(),
     })
 }
 
-/// Copies the private package's own root `[workspace]` manifest verbatim --
-/// no rewrite, same reasoning as `harness/Cargo.toml` (see `publish`'s
-/// module doc comment): the private package already lists exactly the
-/// members the starter needs (`["harness", "<id>"]` for `library`-kind,
-/// `["<id>"]` for `binary`-kind -- see e.g. `examples/library-stack/
-/// Cargo.toml`), so generating an equivalent one here from `spec` would
-/// just be a second, hand-rolled source of the same fact that could drift
-/// from the real one. Required, not optional: `scaffold` refuses to guess
-/// it, same as the solution directory or `autograder.toml`. It's what
-/// makes a bare `cargo test` from `out_dir` build+run every member with no
-/// flags, no `autograder` involvement.
-fn copy_workspace_manifest(package_dir: &Path, out_dir: &Path) -> Result<()> {
-    let src = package_dir.join("Cargo.toml");
-    if !src.is_file() {
+fn copy_matching(ctx: &ScaffoldCtx, out_dir: &Path, rules: &[Rule]) -> Result<()> {
+    let mut all_files = Vec::new();
+    walk_files(&ctx.package_dir, &ctx.package_dir, &mut all_files)?;
+
+    for rule in rules {
+        let output_files = match rule {
+            Rule::File(path, hook) => {
+                let rel_path = PathBuf::from(path.replace("{id}", &ctx.id));
+                if !ctx.package_dir.join(&rel_path).is_file() {
+                    return Err(Error::InvalidSpec(format!(
+                        "scaffold requires {} under {} (the private instructor package) -- \
+                         there is nothing to copy the starter's `{}` from",
+                        rel_path.display(),
+                        ctx.package_dir.display(),
+                        rel_path.display()
+                    )));
+                }
+                let file = read_file(&ctx.package_dir, rel_path)?;
+                match hook {
+                    Some(hook) => vec![hook(path, file, ctx)?],
+                    None => vec![file],
+                }
+            }
+            Rule::Glob(pattern, hook) => {
+                let pattern = pattern.replace("{id}", &ctx.id);
+                let override_ = OverrideBuilder::new(&ctx.package_dir)
+                    .add(&pattern)
+                    .unwrap()
+                    .build()
+                    .unwrap();
+
+                let mut matches = Vec::new();
+                for rel_path in &all_files {
+                    if override_.matched(rel_path, false).is_whitelist() {
+                        matches.push(read_file(&ctx.package_dir, rel_path.clone())?);
+                    }
+                }
+
+                match hook {
+                    Some(hook) => hook(&pattern, matches, ctx)?,
+                    None => matches,
+                }
+            }
+        };
+
+        for file in output_files {
+            write_file(out_dir, file)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn read_file(package_dir: &Path, rel_path: PathBuf) -> Result<MatchedFile> {
+    let full_path = package_dir.join(&rel_path);
+    let content = std::fs::read_to_string(&full_path).map_err(|source| Error::Io {
+        path: full_path,
+        source,
+    })?;
+    Ok(MatchedFile { rel_path, content })
+}
+
+fn write_file(out_dir: &Path, file: MatchedFile) -> Result<()> {
+    let dst = out_dir.join(&file.rel_path);
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    std::fs::write(&dst, file.content).map_err(|source| Error::Io { path: dst, source })
+}
+
+/// Collects every regular file under `dir`, recursively, as paths relative
+/// to `root`.
+fn walk_files(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir).map_err(|source| Error::Io {
+        path: dir.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| Error::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if file_type.is_dir() {
+            walk_files(&path, root, out)?;
+        } else if file_type.is_file() {
+            out.push(
+                path.strip_prefix(root)
+                    .expect("path is under root")
+                    .to_path_buf(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest(path: &str, file: MatchedFile, ctx: &ScaffoldCtx) -> Result<MatchedFile> {
+    let manifest_path = ctx.package_dir.join(path);
+    let value: toml::Value = toml::from_str(&file.content).map_err(|source| Error::Toml {
+        path: manifest_path.clone(),
+        source: Box::new(source),
+    })?;
+    let package_name = value
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str());
+    if package_name != Some(ctx.id.as_str()) {
         return Err(Error::InvalidSpec(format!(
-            "scaffold requires a root Cargo.toml at {} (a [workspace] manifest listing every \
-             member the starter needs) -- there is nothing to copy the starter's own workspace \
-             manifest from",
-            src.display()
+            "{} has [package].name = {:?}, expected {:?} to match [assignment].id -- \
+             rename the package, or the solution directory/id, so they agree",
+            manifest_path.display(),
+            package_name.unwrap_or("<missing>"),
+            ctx.id
         )));
     }
-    copy_file(&src, &out_dir.join("Cargo.toml"))
+    Ok(file)
+}
+
+/// Strips every `.rs` file among the matches to a stub via
+/// [`crate::stub::strip_to_stub`]: pub signatures survive, bodies become
+/// `todo!()`, private items and `#[cfg(test)]` modules are dropped.
+/// Non-`.rs` files (rare, but a solution crate could have one under
+/// `src/`) pass through untouched.
+fn strip_stub(
+    _pattern: &str,
+    matches: Vec<MatchedFile>,
+    _ctx: &ScaffoldCtx,
+) -> Result<Vec<MatchedFile>> {
+    matches
+        .into_iter()
+        .map(|file| {
+            if file.rel_path.extension().is_some_and(|ext| ext == "rs") {
+                let stripped = crate::stub::strip_to_stub(&file.content)?;
+                Ok(MatchedFile {
+                    content: stripped,
+                    ..file
+                })
+            } else {
+                Ok(file)
+            }
+        })
+        .collect()
+}
+
+/// Filters every `.rs` file among the matches down to just the `#[test]`
+/// fns named in `ctx.public_test_names`, via
+/// [`crate::publish::keep_only_named_tests`]. Used for both `library`'s
+/// `harness/tests/**` and `binary`'s `{id}/tests/**` -- the latter is the
+/// reference solution's own (private) judge, but this hook only ever runs
+/// against the `tests/**` rule, never `src/**`, so it can't collide with
+/// [`strip_stub_if_rust`] mangling real `#[test]` assertions into
+/// `todo!()` stubs.
+fn keep_only_public_tests(
+    _pattern: &str,
+    matches: Vec<MatchedFile>,
+    ctx: &ScaffoldCtx,
+) -> Result<Vec<MatchedFile>> {
+    matches
+        .into_iter()
+        .map(|file| {
+            if file.rel_path.extension().is_some_and(|ext| ext == "rs") {
+                let filtered =
+                    publish::keep_only_named_tests(&file.content, &ctx.public_test_names)?;
+                Ok(MatchedFile {
+                    content: filtered,
+                    ..file
+                })
+            } else {
+                Ok(file)
+            }
+        })
+        .collect()
 }
 
 /// The thin GitHub Actions wrapper (design §11.2): downloads a
@@ -280,93 +346,30 @@ jobs:
     )
 }
 
-/// Refuses to guess: `solution_dir` is only trusted as the reference
-/// solution for `assignment_id` if its own `Cargo.toml` says so. Catches a
-/// stale/copy-pasted solution directory (wrong crate, or an id that was
-/// renamed in `autograder.toml` without renaming the directory) before it
-/// silently produces a stub with the wrong API shape.
-fn check_solution_package_name(solution_dir: &Path, assignment_id: &str) -> Result<()> {
-    let manifest_path = solution_dir.join("Cargo.toml");
-    let manifest = std::fs::read_to_string(&manifest_path).map_err(|source| Error::Io {
-        path: manifest_path.clone(),
-        source,
-    })?;
-    let value: toml::Value = toml::from_str(&manifest).map_err(|source| Error::Toml {
-        path: manifest_path.clone(),
-        source: Box::new(source),
-    })?;
-    let package_name = value
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str());
-    if package_name != Some(assignment_id) {
-        return Err(Error::InvalidSpec(format!(
-            "{} has [package].name = {:?}, expected {:?} to match [assignment].id -- \
-             rename the package, or the solution directory/id, so they agree",
-            manifest_path.display(),
-            package_name.unwrap_or("<missing>"),
-            assignment_id
-        )));
-    }
-    Ok(())
-}
-
-/// Walks every `.rs` file under `dir` (recursively -- a solution crate may
-/// have more than one module) and rewrites it in place via
-/// [`crate::stub::strip_to_stub`]: pub signatures survive, bodies become
-/// `todo!()`, private items and `#[cfg(test)]` modules are dropped.
-fn strip_rust_files_in_place(dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir).map_err(|source| Error::Io {
-        path: dir.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: path.clone(),
-            source,
-        })?;
-        if file_type.is_dir() {
-            strip_rust_files_in_place(&path)?;
-        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
-            let source_text = std::fs::read_to_string(&path).map_err(|source| Error::Io {
-                path: path.clone(),
-                source,
-            })?;
-            let stripped = crate::stub::strip_to_stub(&source_text)?;
-            std::fs::write(&path, stripped).map_err(|source| Error::Io { path, source })?;
-        }
-    }
-    Ok(())
-}
-
-/// Runs `cargo fix` directly in `out_dir` (already a full, disposable copy
-/// of the solution crate at this point -- no separate scratch copy needed)
-/// to prune whichever `use` lines `strip_rust_files_in_place` left unused.
-/// The real compiler is the authority on what's unused, not hand-rolled
-/// name resolution. Cleans up the `target/` directory `cargo fix` leaves
-/// behind afterward, so the shipped starter tree carries no build output.
-fn run_cargo_fix(out_dir: &Path) -> Result<()> {
+/// Runs `cargo fix` directly in `student_dir` (already a full, disposable
+/// copy of the solution crate at this point -- no separate scratch copy
+/// needed) to prune whichever `use` lines stub-stripping left unused. The
+/// real compiler is the authority on what's unused, not hand-rolled name
+/// resolution. Cleans up the `target/` directory `cargo fix` leaves behind
+/// afterward, so the shipped starter tree carries no build output.
+fn run_cargo_fix(student_dir: &Path) -> Result<()> {
     let output = std::process::Command::new("cargo")
         .args(["fix", "--allow-dirty", "--allow-staged", "--allow-no-vcs"])
-        .current_dir(out_dir)
+        .current_dir(student_dir)
         .output()
         .map_err(|source| Error::Io {
-            path: out_dir.to_path_buf(),
+            path: student_dir.to_path_buf(),
             source,
         })?;
     if !output.status.success() {
         return Err(Error::Other(format!(
             "cargo fix failed while stripping the starter at {}:\n{}",
-            out_dir.display(),
+            student_dir.display(),
             String::from_utf8_lossy(&output.stderr)
         )));
     }
 
-    let target_dir = out_dir.join("target");
+    let target_dir = student_dir.join("target");
     if target_dir.is_dir() {
         std::fs::remove_dir_all(&target_dir).map_err(|source| Error::Io {
             path: target_dir,
@@ -374,103 +377,6 @@ fn run_cargo_fix(out_dir: &Path) -> Result<()> {
         })?;
     }
 
-    Ok(())
-}
-
-fn copy_file(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::copy(src, dst).map_err(|source| Error::Io {
-        path: src.to_path_buf(),
-        source,
-    })?;
-    Ok(())
-}
-
-/// Copies the instructor's `harness/` into the public starter verbatim --
-/// its `Cargo.toml` needs no rewriting (see `publish`'s module doc comment:
-/// the checked-in dependency is already a plain path onto the sibling
-/// directory named after `[assignment].id`, which means the same thing in
-/// both the private package and the published starter) -- then filters its
-/// `tests/*.rs` down to just the public-visibility tests, via
-/// [`filter_tests_dir_in_place`].
-fn copy_public_harness(src: &Path, dst: &Path, public_test_names: &HashSet<String>) -> Result<()> {
-    if !src.is_dir() {
-        return Ok(());
-    }
-    copy_dir_if_exists(src, dst)?;
-    filter_tests_dir_in_place(&dst.join("tests"), public_test_names)
-}
-
-/// `binary`-kind analogue of [`copy_public_harness`]: there's no separate
-/// harness crate to copy (see `evaluator::binary`'s module doc comment) --
-/// `src` is the reference solution's own `tests/` (its private judge),
-/// copied straight into the student's own `<id>/tests/` and filtered down
-/// to just the public-visibility tests.
-fn copy_public_tests(src: &Path, dst: &Path, public_test_names: &HashSet<String>) -> Result<()> {
-    if !src.is_dir() {
-        return Ok(());
-    }
-    copy_dir_if_exists(src, dst)?;
-    filter_tests_dir_in_place(dst, public_test_names)
-}
-
-/// Filters every `.rs` file directly inside `tests_dir` down to just the
-/// `#[test]` fns named in `public_test_names`, in place, via
-/// [`crate::publish::keep_only_named_tests`]. A no-op if `tests_dir`
-/// doesn't exist.
-fn filter_tests_dir_in_place(tests_dir: &Path, public_test_names: &HashSet<String>) -> Result<()> {
-    if tests_dir.is_dir() {
-        for entry in std::fs::read_dir(tests_dir).map_err(|source| Error::Io {
-            path: tests_dir.to_path_buf(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| Error::Io {
-                path: tests_dir.to_path_buf(),
-                source,
-            })?;
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "rs") {
-                let source_text = std::fs::read_to_string(&path).map_err(|source| Error::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-                let filtered = publish::keep_only_named_tests(&source_text, public_test_names)?;
-                std::fs::write(&path, filtered).map_err(|source| Error::Io { path, source })?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Recursively copies `src` onto `dst`, or does nothing if `src` doesn't
-/// exist (e.g. an assignment with no `fixtures/`).
-fn copy_dir_if_exists(src: &Path, dst: &Path) -> Result<()> {
-    if !src.is_dir() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(dst).map_err(|source| Error::Io {
-        path: dst.to_path_buf(),
-        source,
-    })?;
-    for entry in std::fs::read_dir(src).map_err(|source| Error::Io {
-        path: src.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| Error::Io {
-            path: src.to_path_buf(),
-            source,
-        })?;
-        let file_type = entry.file_type().map_err(|source| Error::Io {
-            path: entry.path(),
-            source,
-        })?;
-        let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_if_exists(&entry.path(), &dst_path)?;
-        } else if file_type.is_file() {
-            copy_file(&entry.path(), &dst_path)?;
-        }
-    }
     Ok(())
 }
 
@@ -817,6 +723,21 @@ visibility = "private"
         let out_dir = tempfile::tempdir().unwrap();
         let err = scaffold(package_dir.path(), out_dir.path()).unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
+    }
+
+    #[test]
+    fn scaffold_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_instructor_package(package_dir.path());
+        write(
+            &package_dir.path().join("hw3/vendor/some-crate/src/lib.rs"),
+            "// prefetch output, never checked into the starter\n",
+        );
+        let out_dir = tempfile::tempdir().unwrap();
+
+        scaffold(package_dir.path(), out_dir.path()).unwrap();
+
+        assert!(!out_dir.path().join("hw3/vendor").exists());
     }
 
     const BINARY_PRIVATE_SPEC: &str = r#"

@@ -21,3 +21,4 @@ proc-macro2 = "1.0.106"
 prettyplease = "0.2.37"
 syn = { version = "2.0.119", features = ["full", "printing", "parsing", "clone-impls"] }
 tempfile = "3"
+ignore = "0.4"
