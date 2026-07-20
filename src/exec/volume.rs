@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::error::Result;
-use crate::fs::directory_size_bytes;
+use crate::exec::fs::directory_size_bytes;
 
 /// Whether `dir`'s total on-disk size exceeds `quota_bytes`.
 pub fn exceeds_quota(dir: &Path, quota_bytes: u64) -> Result<bool> {

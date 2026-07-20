@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use ignore::overrides::OverrideBuilder;
 
 use crate::error::{Error, Result};
-use crate::fs;
+use crate::exec::fs;
 
 #[derive(Debug)]
 pub struct MatchedFile {
@@ -163,7 +163,13 @@ mod tests {
     fn glob_rule_matches_when_the_relative_source_root_shares_a_name_with_the_glob_prefix() {
         let cwd = std::env::current_dir().unwrap();
         let base = tempfile::tempdir_in(&cwd).unwrap();
-        let name = base.path().file_name().unwrap().to_str().unwrap().to_string();
+        let name = base
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         write(&base.path().join(&name).join("src/lib.rs"), "pub fn f() {}");
 
         let dest = tempfile::tempdir().unwrap();

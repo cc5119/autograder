@@ -1,11 +1,11 @@
-//! Integration tests for `autograder::publish::publish`. Packages are
+//! Integration tests for `autograder::package::publish::publish`. Packages are
 //! scaffolded via `common::library_package`/`binary_package` (the real
 //! `init`), then individual tests overwrite just the file(s) relevant to
 //! what they're checking -- never a second, hand-written copy of the
 //! schema/template shape.
 
 use autograder::error::Error;
-use autograder::publish::publish;
+use autograder::package::publish::publish;
 use autograder::spec::SPEC_FILE;
 
 use crate::common::{binary_package, library_package, write};

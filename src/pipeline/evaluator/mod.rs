@@ -4,10 +4,10 @@ pub mod library;
 use std::path::Path;
 
 use crate::error::Result;
+use crate::exec::sandbox::{Mount, MountMode, SandboxLimits};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
-use crate::sandbox::{Mount, MountMode, SandboxLimits};
 use crate::spec::{BuildLimits, RunLimits};
 
 /// Shared by both evaluators: `[limits.build]` carries no `max-output-bytes`
@@ -41,8 +41,8 @@ pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
 /// never depends on either remembering to set it.
 pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
     let config_dir = dir.join(".config");
-    crate::fs::create_dir_all(&config_dir)?;
-    crate::fs::write(
+    crate::exec::fs::create_dir_all(&config_dir)?;
+    crate::exec::fs::write(
         &config_dir.join("nextest.toml"),
         "[profile.default]\nstore-success-output = true\n",
     )

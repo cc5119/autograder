@@ -1,11 +1,14 @@
 //! Integration tests for the Fetch stage's public workflow
 //! (`LocalPath::fetch`, `DirectorySource`, `fetch_batch`, `read_fetch_record`).
-//! The `git`-argv-builder and `run_git` unit tests stay in `src/fetch.rs`,
-//! since they exercise private functions unreachable from here.
+//! The `git`-argv-builder and `run_git` unit tests stay in
+//! `src/submissions/mod.rs`, since they exercise private functions
+//! unreachable from here.
 
-use autograder::fetch::{DirectorySource, Fetchable, fetch_batch, read_fetch_record};
-use autograder::model::{LocalPath, StageStatus};
-use autograder::source::SubmissionsSource;
+use autograder::model::StageStatus;
+use autograder::submissions::source::SubmissionsSource;
+use autograder::submissions::{
+    DirectorySource, Fetchable, LocalPath, fetch_batch, read_fetch_record,
+};
 use jiff::Zoned;
 
 fn local_path(path: impl Into<std::path::PathBuf>) -> LocalPath {

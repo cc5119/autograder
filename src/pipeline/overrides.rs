@@ -52,7 +52,7 @@ impl Overrides {
         if !path.is_file() {
             return Ok(Overrides::default());
         }
-        let contents = crate::fs::read_to_string(path)?;
+        let contents = crate::exec::fs::read_to_string(path)?;
         toml::from_str(&contents).map_err(|source| Error::Toml {
             path: path.to_path_buf(),
             source: Box::new(source),

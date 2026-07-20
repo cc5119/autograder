@@ -62,11 +62,11 @@ impl Store {
             return Ok(Vec::new());
         }
         let mut results = Vec::new();
-        for entry in crate::fs::read_dir_entries(&assignment_dir)? {
+        for entry in crate::exec::fs::read_dir_entries(&assignment_dir)? {
             if !entry.path().is_dir() {
                 continue;
             }
-            let mut runs: Vec<PathBuf> = crate::fs::read_dir(&entry.path())?
+            let mut runs: Vec<PathBuf> = crate::exec::fs::read_dir(&entry.path())?
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.to_string_lossy().ends_with(suffix))
                 .collect();
@@ -81,14 +81,14 @@ impl Store {
 
 pub(crate) fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(dir) = path.parent() {
-        crate::fs::create_dir_all(dir)?;
+        crate::exec::fs::create_dir_all(dir)?;
     }
     let json = serde_json::to_string_pretty(value).map_err(|e| Error::Other(e.to_string()))?;
-    crate::fs::write(path, json)
+    crate::exec::fs::write(path, json)
 }
 
 pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let contents = crate::fs::read_to_string(path)?;
+    let contents = crate::exec::fs::read_to_string(path)?;
     serde_json::from_str(&contents).map_err(|e| Error::Other(e.to_string()))
 }
 

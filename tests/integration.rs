@@ -3,8 +3,8 @@
 //! `[[test]]` entry in `Cargo.toml`), so `cargo test` compiles and links
 //! this suite once instead of once per file.
 
-mod common;
 mod cli;
+mod common;
 mod fetch;
 mod init;
 mod pipeline;

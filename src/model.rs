@@ -1,34 +1,8 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::id::{AssignmentId, RunId, StudentId};
-
-/// Generic over the fetchable type `F`, so it's a compile error to hand a
-/// `CsvRoster`'s (`GitRepo`-fetching) submissions to code that only knows
-/// how to fetch a `LocalPath`.
-#[derive(Debug, Clone)]
-pub struct Submission<F> {
-    pub student_id: StudentId,
-    pub fetchable: F,
-    pub metadata: BTreeMap<String, String>,
-}
-
-/// A `Fetchable` for a path on disk to copy wholesale into the job
-/// workspace. Produced by `DirectorySource`.
-#[derive(Debug, Clone)]
-pub struct LocalPath(pub PathBuf);
-
-/// A `Fetchable` for a git remote: a clone URL plus an optional pinned
-/// ref/branch override -- when unset, `crate::fetch`'s `Fetchable for
-/// GitRepo` impl resolves it via push-time deadline selection instead.
-/// Produced by `CsvRoster`.
-#[derive(Debug, Clone)]
-pub struct GitRepo {
-    pub url: String,
-    pub r#ref: Option<String>,
-}
 
 /// Per-job context threaded through the pipeline stages.
 #[derive(Debug, Clone)]
@@ -36,18 +10,6 @@ pub struct JobContext {
     pub assignment_id: AssignmentId,
     pub student_id: StudentId,
     pub run_id: RunId,
-    /// Where the code being evaluated actually is: for `grade`, an
-    /// ephemeral scratch copy of just the `<id>/` crate extracted from the
-    /// fetched checkout (never the checkout itself); for `ci`, the current
-    /// directory's `<id>/` subdirectory directly. Named after
-    /// `[assignment].id`, not e.g. "student", because the `library` driver
-    /// crate's checked-in `Cargo.toml` depends on that exact sibling name.
-    /// `library`'s driver crate itself always lives at the sibling
-    /// `harness/` directory (`workspace.parent().join("harness")`) -- a
-    /// fresh per-job scratch copy for authoritative grading,
-    /// `package_dir/harness` itself, built in place, for `ci`. There is no
-    /// separate field for it since it's derivable from `workspace` alone,
-    /// and `binary` has no use for it at all.
     pub workspace: PathBuf,
 }
 
@@ -71,7 +33,7 @@ pub struct TestResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// Sum of every `autograder: score=<f64>` line this test
-    /// printed to stdout (see `crate::grade`); `None` if it printed none.
+    /// printed to stdout (see `crate::pipeline::grade`); `None` if it printed none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_score: Option<f64>,
 }

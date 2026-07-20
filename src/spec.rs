@@ -29,7 +29,7 @@ pub enum AssignmentKind {
 /// `cargo-lock-sha256` is the SHA-256 (lowercase hex) of the workspace-root
 /// `Cargo.lock` `autograder lock` last generated -- the "blessed" lock every
 /// `Cargo.lock` in a checkout (student's `ci`, instructor's `grade`) is
-/// checked against before any build runs (see `crate::lock`). It, `id`, and
+/// checked against before any build runs (see `crate::deps::lock`). It, `id`, and
 /// `harness` are what actually make `[allowed-crates]` unnecessary: instead
 /// of a hand-typed, driftable allowlist, `manifest_check` derives the real
 /// one straight from the blessed lockfile's resolved dependency graph.
@@ -164,7 +164,7 @@ pub struct LatePenalty {
 }
 
 /// How a submission's score is computed from the sum of `score=` lines
-/// tests report at run time (see `crate::grade`). No per-test point
+/// tests report at run time (see `crate::pipeline::grade`). No per-test point
 /// declarations here -- a test's contribution is whatever it reports, or
 /// the 1.0/0.0 pass/fail default when it reports nothing.
 #[derive(Debug, Clone, PartialEq)]
@@ -248,7 +248,7 @@ impl Spec {
     }
 
     pub fn load_file(path: &Path) -> Result<Spec> {
-        let contents = crate::fs::read_to_string(path)?;
+        let contents = crate::exec::fs::read_to_string(path)?;
         toml::from_str(&contents).map_err(|source| Error::Toml {
             path: path.to_path_buf(),
             source: Box::new(source),

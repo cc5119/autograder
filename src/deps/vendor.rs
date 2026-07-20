@@ -43,11 +43,11 @@ pub fn absolutize(path: &Path) -> PathBuf {
 /// plus `<package_dir>/.cargo/config.toml`. Trusted, online, one-time per
 /// assignment -- never runs on student code. Refuses up front if
 /// `Cargo.lock` doesn't match the blessed hash `autograder lock` recorded
-/// (`crate::lock::verify`), so vendoring can never silently pull a
+/// (`crate::deps::lock::verify`), so vendoring can never silently pull a
 /// different dependency graph than the one grading is meant to check
 /// submissions against.
 pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
-    if let Some(message) = crate::lock::verify(package_dir, spec) {
+    if let Some(message) = crate::deps::lock::verify(package_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
 
@@ -72,12 +72,12 @@ pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     // A workspace with zero total dependencies is a legitimate spec, and
     // `cargo vendor` exits successfully for one -- it just never creates
     // the directory, since there's nothing to put in it.
-    crate::fs::create_dir_all(&vendor_dir)?;
+    crate::exec::fs::create_dir_all(&vendor_dir)?;
 
     let cargo_dir = package_dir.join(".cargo");
-    crate::fs::create_dir_all(&cargo_dir)?;
+    crate::exec::fs::create_dir_all(&cargo_dir)?;
     let cargo_config_path = cargo_dir.join("config.toml");
-    crate::fs::write(
+    crate::exec::fs::write(
         &cargo_config_path,
         vendor_config_toml(&absolute_vendor_dir(package_dir)),
     )?;
@@ -153,7 +153,7 @@ base = 0.0
         );
         write(&package_dir.join("autograder.toml"), &toml);
 
-        let outcome = crate::lock::lock(package_dir).unwrap();
+        let outcome = crate::deps::lock::lock(package_dir).unwrap();
         let spec_toml = std::fs::read_to_string(package_dir.join("autograder.toml")).unwrap();
         let spec: Spec = toml::from_str(&spec_toml).unwrap();
         assert_eq!(spec.assignment.cargo_lock_sha256, outcome.sha256);

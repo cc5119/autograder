@@ -27,5 +27,5 @@ fn write_output(out: &Option<PathBuf>, contents: &str) -> Result<()> {
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<()> {
-    crate::fs::write(path, contents)
+    crate::exec::fs::write(path, contents)
 }

@@ -45,14 +45,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::deps::vendor;
 use crate::error::{Error, Result};
+use crate::exec::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus, TestResult, TestStatus,
 };
-use crate::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::Spec;
-use crate::vendor;
 
 use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
 
@@ -362,7 +362,7 @@ pub fn parse_junit_report(xml: &str) -> Result<Vec<TestResult>> {
 /// Sums every `autograder: ... score=<f64>` line found in the testcase's
 /// captured stdout (`<system-out>`, only present for a pass when the
 /// harness's nextest profile sets `store-success-output = true`) or its
-/// failure/error text -- `None` if none were reported, so `crate::grade`
+/// failure/error text -- `None` if none were reported, so `crate::pipeline::grade`
 /// falls back to the 1.0/0.0 pass/fail default.
 fn reported_score(node: roxmltree::Node) -> Option<f64> {
     let mut text = String::new();
@@ -403,7 +403,7 @@ fn sum_reported_scores(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::SandboxOutcome;
+    use crate::exec::sandbox::SandboxOutcome;
     use std::sync::Mutex;
 
     const SAMPLE_JUNIT: &str = r#"<?xml version="1.0" encoding="utf-8"?>

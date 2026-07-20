@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use crate::cargo_lock::CargoLock;
+use crate::deps::cargo_lock::CargoLock;
+use crate::deps::lock;
+use crate::deps::vendor;
 use crate::error::Result;
-use crate::lock;
-use crate::manifest_check::{self, ManifestDiagnostic};
+use crate::pipeline::manifest_check::{self, ManifestDiagnostic};
 use crate::spec::Spec;
-use crate::vendor;
 
 /// The offline cargo environment installed into the workspace so the build
 /// stage can only resolve vendored crates. `vendor_dir` is `None` when the
@@ -35,7 +35,7 @@ pub struct PrepareOutcome {
 /// so this function doesn't need to know the tier or assignment kind.
 ///
 /// Checks `package_dir/Cargo.lock` against the blessed hash first
-/// (`crate::lock::verify`) -- a mismatch (a student's edited/deleted lock
+/// (`crate::deps::lock::verify`) -- a mismatch (a student's edited/deleted lock
 /// for `ci`, a stale one for `grade`) short-circuits straight to a
 /// diagnostic, since the allowlist itself is derived from that same lock
 /// and can't be trusted otherwise.
@@ -74,9 +74,9 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
     }
 
     let cargo_dir = workspace.join(".cargo");
-    crate::fs::create_dir_all(&cargo_dir)?;
+    crate::exec::fs::create_dir_all(&cargo_dir)?;
     let config_path = cargo_dir.join("config.toml");
-    crate::fs::write(
+    crate::exec::fs::write(
         &config_path,
         vendor::vendor_config_toml(&vendor::absolute_vendor_dir(package_dir)),
     )?;
@@ -106,9 +106,9 @@ fn diagnose_manifest(
     if !manifest_path.is_file() {
         return Ok(Vec::new());
     }
-    let contents = crate::fs::read_to_string(&manifest_path)?;
+    let contents = crate::exec::fs::read_to_string(&manifest_path)?;
 
-    let lock_contents = crate::fs::read_to_string(&package_dir.join("Cargo.lock"))?;
+    let lock_contents = crate::exec::fs::read_to_string(&package_dir.join("Cargo.lock"))?;
     let lock = CargoLock::parse(&lock_contents)?;
     let allowed_crates = lock.direct_dependencies(spec.assignment.id.as_str());
 
@@ -118,7 +118,7 @@ fn diagnose_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cargo_lock::sha256_hex;
+    use crate::deps::cargo_lock::sha256_hex;
 
     fn write(path: &Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -163,7 +163,7 @@ base = 0.0
 
     /// Writes `package_dir/Cargo.lock` recording `hw3`'s given direct
     /// dependencies, and returns a `Spec` whose `cargo-lock-sha256` matches
-    /// it -- exactly what `crate::lock::lock` would have left behind, but
+    /// it -- exactly what `crate::deps::lock::lock` would have left behind, but
     /// hand-crafted so these tests don't need a real `cargo update`.
     fn spec_with_lock(package_dir: &Path, deps: &[(&str, &str)]) -> Spec {
         let mut lock = String::from(

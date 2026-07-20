@@ -48,7 +48,7 @@ impl Sandbox for LocalSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::SandboxLimits;
+    use crate::exec::sandbox::SandboxLimits;
     use std::time::Duration;
 
     fn limits(wall_clock: Duration) -> SandboxLimits {

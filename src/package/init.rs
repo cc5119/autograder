@@ -3,7 +3,7 @@
 //! existing private package.
 //!
 //! The layout to generate *is* a real directory tree, `templates/<kind>/`
-//! (rendered via [`crate::template`]), not a Rust table describing one.
+//! (rendered via [`crate::package::template`]), not a Rust table describing one.
 //! Adding or restructuring a generated file is an edit to that tree, never
 //! a change to this module's code.
 //!
@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use jiff::{ToSpan, Unit, Zoned, ZonedRound};
 
 use crate::error::{Error, Result};
-use crate::fs;
+use crate::exec::fs;
+use crate::package::template;
 use crate::spec::AssignmentKind;
 
 #[derive(Debug, Clone)]
@@ -56,7 +57,7 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         .to_string();
     let placeholders = HashMap::from([("id", id), ("deadline", deadline.as_str())]);
 
-    for (rel_path, content) in crate::template::render_tree(kind_name, &placeholders)? {
+    for (rel_path, content) in template::render_tree(kind_name, &placeholders)? {
         let dst = dir.join(&rel_path);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
@@ -67,7 +68,7 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
     // Resolves and records `Cargo.lock`'s hash so the freshly scaffolded
     // package is immediately loadable (`cargo-lock-sha256` has no default,
     // like `id` and `harness` -- see `spec::Assignment`'s doc comment).
-    crate::lock::lock(dir)?;
+    crate::deps::lock::lock(dir)?;
 
     Ok(InitOutcome {
         dir: dir.to_path_buf(),

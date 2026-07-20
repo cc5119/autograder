@@ -3,8 +3,7 @@ pub mod csv;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::fetch::DirectorySource;
-use crate::model::Submission;
+use crate::submissions::{DirectorySource, Submission};
 
 /// Where submissions come from, generic over the fetchable type `F` its
 /// submissions carry. Impls: `CsvRoster` (`SubmissionsSource<GitRepo>`),

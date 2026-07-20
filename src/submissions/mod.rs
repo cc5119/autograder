@@ -10,6 +10,9 @@
 //! `repo_url` never helps the common one-fork-per-student case, and a full
 //! clone is what the deadline-based ref search needs anyway).
 
+pub mod source;
+
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -17,13 +20,38 @@ use jiff::{Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::fs;
+use crate::exec::fs;
 use crate::id::StudentId;
-use crate::model::{GitRepo, LocalPath, StageStatus, Submission};
-use crate::source::SubmissionsSource;
+use crate::model::StageStatus;
 use crate::store::{read_json, write_json};
+use crate::submissions::source::SubmissionsSource;
 
 const GIT_BIN: &str = "git";
+
+/// Generic over the fetchable type `F`, so it's a compile error to hand a
+/// `CsvRoster`'s (`GitRepo`-fetching) submissions to code that only knows
+/// how to fetch a `LocalPath`.
+#[derive(Debug, Clone)]
+pub struct Submission<F> {
+    pub student_id: StudentId,
+    pub fetchable: F,
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// A `Fetchable` for a path on disk to copy wholesale into the job
+/// workspace. Produced by `DirectorySource`.
+#[derive(Debug, Clone)]
+pub struct LocalPath(pub PathBuf);
+
+/// A `Fetchable` for a git remote: a clone URL plus an optional pinned
+/// ref/branch override -- when unset, `Fetchable`'s impl for `GitRepo`
+/// below resolves it via push-time deadline selection instead. Produced by
+/// `CsvRoster`.
+#[derive(Debug, Clone)]
+pub struct GitRepo {
+    pub url: String,
+    pub r#ref: Option<String>,
+}
 
 /// Outcome of the Fetch stage for one submission.
 #[derive(Debug, Clone)]

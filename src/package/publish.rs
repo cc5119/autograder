@@ -7,7 +7,7 @@
 //! is no separate visibility flag or declared test list to consult.
 //! [`strip_stub`] (already used for `src/**`) strips `harness/tests/**`
 //! too, via the exact same `keep`/`stub`/`hide` doc-comment convention
-//! `crate::stub` applies to ordinary items: an unmarked `#[test]` fn is
+//! `crate::package::stub` applies to ordinary items: an unmarked `#[test]` fn is
 //! private and non-`main`, so it's dropped by default like any other
 //! unmarked private item, and only ships when the instructor marks it
 //! `keep` or `stub`. The judge always lives in `harness/`, a sibling
@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::fs;
-use crate::overlay::{self, Context, MatchedFile, Rule};
+use crate::exec::fs;
+use crate::exec::overlay::{self, Context, MatchedFile, Rule};
 use crate::spec::{self, Spec};
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     // `manifest_check`'s module doc comment), so if it doesn't match the
     // hash `autograder lock` last recorded, publishing would ship students
     // an allowlist inconsistent with what grading actually checks against.
-    if let Some(message) = crate::lock::verify(package_dir, &spec) {
+    if let Some(message) = crate::deps::lock::verify(package_dir, &spec) {
         return Err(Error::InvalidSpec(format!(
             "refusing to publish: {message}"
         )));
@@ -124,7 +124,7 @@ fn strip_stub(
         .into_iter()
         .map(|file| {
             if file.rel_path.extension().is_some_and(|ext| ext == "rs") {
-                let stripped = crate::stub::strip_to_stub(&file.content)?;
+                let stripped = crate::package::stub::strip_to_stub(&file.content)?;
                 Ok(MatchedFile {
                     content: stripped,
                     ..file
@@ -140,7 +140,7 @@ fn strip_stub(
 /// themselves placeholders an instructor edits after publishing, once they
 /// stand up their own fork/release -- only `{base_image}` is filled in here.
 fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
-    crate::template::render_file(
+    crate::package::template::render_file(
         "autograde.yml",
         &HashMap::from([("base_image", base_image)]),
     )

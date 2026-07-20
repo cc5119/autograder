@@ -6,8 +6,8 @@
 
 use std::fmt::Write as _;
 
-use crate::manifest_check::ManifestDiagnostic;
 use crate::model::{EvaluationResult, StageStatus, TestStatus};
+use crate::pipeline::manifest_check::ManifestDiagnostic;
 
 /// Renders and judges a CI run. `eval` is `None` when a disallowed
 /// dependency short-circuited Evaluate entirely (mirrors the authoritative

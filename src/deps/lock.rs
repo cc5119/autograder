@@ -4,15 +4,16 @@
 //! checks a checkout's `Cargo.lock` against before any build runs (both
 //! `ci`, where it guards against a student editing or deleting the shipped
 //! lock, and `grade`/`publish`, where it guards against the instructor
-//! shipping a stale one). See `crate::cargo_lock` for the lockfile parser
-//! itself, and `crate::manifest_check` for how its resolved graph replaces
+//! shipping a stale one). See `crate::deps::cargo_lock` for the lockfile parser
+//! itself, and `crate::pipeline::manifest_check` for how its resolved graph replaces
 //! a hand-typed `[allowed-crates]` table.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::cargo_lock::sha256_hex;
+use crate::deps::cargo_lock::sha256_hex;
 use crate::error::{Error, Result};
+use crate::exec;
 use crate::spec::{SPEC_FILE, Spec};
 
 #[derive(Debug, Clone)]
@@ -43,7 +44,7 @@ pub fn lock(package_dir: &Path) -> Result<LockOutcome> {
     }
 
     let lock_path = package_dir.join("Cargo.lock");
-    let lock_contents = crate::fs::read_to_string(&lock_path)?;
+    let lock_contents = exec::fs::read_to_string(&lock_path)?;
     let sha256 = sha256_hex(&lock_contents);
 
     write_sha_into_spec(package_dir, &sha256)?;
@@ -57,14 +58,14 @@ pub fn lock(package_dir: &Path) -> Result<LockOutcome> {
 /// comments) survives untouched.
 fn write_sha_into_spec(package_dir: &Path, sha256: &str) -> Result<()> {
     let spec_path = package_dir.join(SPEC_FILE);
-    let contents = crate::fs::read_to_string(&spec_path)?;
+    let contents = exec::fs::read_to_string(&spec_path)?;
     let mut doc = contents
         .parse::<toml_edit::DocumentMut>()
         .map_err(|source| {
             Error::Other(format!("failed to parse {}: {source}", spec_path.display()))
         })?;
     doc["assignment"]["cargo-lock-sha256"] = toml_edit::value(sha256);
-    crate::fs::write(&spec_path, doc.to_string())
+    exec::fs::write(&spec_path, doc.to_string())
 }
 
 /// Verifies `package_dir/Cargo.lock` (as actually checked out -- a
@@ -83,7 +84,7 @@ pub fn verify(package_dir: &Path, spec: &Spec) -> Option<String> {
             lock_path.display()
         ));
     }
-    let Ok(contents) = crate::fs::read_to_string(&lock_path) else {
+    let Ok(contents) = exec::fs::read_to_string(&lock_path) else {
         return Some(format!("{} could not be read", lock_path.display()));
     };
     let found = sha256_hex(&contents);

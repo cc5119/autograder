@@ -1,20 +1,26 @@
+pub mod evaluator;
+pub mod grade;
+pub mod manifest_check;
+pub mod overrides;
+pub mod prepare;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::Result;
-use crate::evaluator::Evaluator;
-use crate::fetch::read_fetch_record;
+use crate::exec::overlay::{self, Context, Rule};
 use crate::id::RunId;
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
 };
-use crate::overlay::{self, Context, Rule};
-use crate::overrides::{self, Overrides};
-use crate::source::SubmissionsSource;
+use crate::pipeline::evaluator::Evaluator;
+use crate::pipeline::overrides::Overrides;
 use crate::spec::Spec;
 use crate::store::Store;
+use crate::submissions::read_fetch_record;
+use crate::submissions::source::SubmissionsSource;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -155,7 +161,7 @@ fn evaluate_submission(
             build_dir,
             &package_rules(),
         )?;
-        let prepared = crate::prepare::prepare(workspace, package_dir, spec)?;
+        let prepared = crate::pipeline::prepare::prepare(workspace, package_dir, spec)?;
         if !prepared.manifest_diagnostics.is_empty() {
             let message = prepared
                 .manifest_diagnostics
@@ -187,7 +193,7 @@ fn evaluate_submission(
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
 /// Prepare -> Evaluate -> persist -> Grade -> apply overrides, one student
-/// at a time. Fetch is a separate stage (`crate::fetch::fetch_batch`, run
+/// at a time. Fetch is a separate stage (`crate::submissions::fetch_batch`, run
 /// via `autograder fetch` or `grade --fetch`); this function only *reads*
 /// what a prior fetch left behind (`job_root/checkout/` and its
 /// `FetchRecord`) -- a student with no record gets the same `FetchFailed`
@@ -234,7 +240,7 @@ pub fn grade_batch<F>(
         )?;
 
         store.save_eval(&eval)?;
-        let grade = crate::grade::grade(&eval, &spec.scoring);
+        let grade = crate::pipeline::grade::grade(&eval, &spec.scoring);
         let grade = overrides::apply(
             grade,
             overrides,

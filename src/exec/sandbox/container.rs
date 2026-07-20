@@ -192,7 +192,7 @@ fn discover_seccomp_profile() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::{Mount, SandboxLimits};
+    use crate::exec::sandbox::{Mount, SandboxLimits};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::Duration;

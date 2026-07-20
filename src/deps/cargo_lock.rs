@@ -1,5 +1,5 @@
 //! Parses `Cargo.lock` (the workspace-root lockfile shared by `{id}` and
-//! `{harness}`, produced by `crate::lock`) enough to derive two things: the
+//! `{harness}`, produced by `crate::deps::lock`) enough to derive two things: the
 //! exact resolved version of any locked crate, and a given package's own
 //! direct dependencies. The latter *is* the student-facing allowlist --
 //! read straight off the blessed lock instead of a hand-typed

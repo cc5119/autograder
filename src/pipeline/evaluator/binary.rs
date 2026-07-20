@@ -37,11 +37,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::exec::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
 };
-use crate::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::spec::Spec;
 
 use super::library::parse_junit_report;
@@ -558,12 +558,18 @@ base = 0.0
             .iter()
             .find(|m| m.container_path == repo_root)
             .unwrap();
-        assert_eq!(repo_root_mount.mode, crate::sandbox::MountMode::ReadWrite);
+        assert_eq!(
+            repo_root_mount.mode,
+            crate::exec::sandbox::MountMode::ReadWrite
+        );
 
         let workspace_mount = mounts
             .iter()
             .find(|m| m.container_path == workspace)
             .unwrap();
-        assert_eq!(workspace_mount.mode, crate::sandbox::MountMode::ReadOnly);
+        assert_eq!(
+            workspace_mount.mode,
+            crate::exec::sandbox::MountMode::ReadOnly
+        );
     }
 }

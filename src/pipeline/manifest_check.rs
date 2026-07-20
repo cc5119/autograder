@@ -2,9 +2,9 @@
 //! diagnostics instead of letting the student hit an opaque
 //! offline-resolution failure, plus static rejections of `[patch]`, git
 //! deps, and external path deps. The allowlist itself isn't hand-typed
-//! anywhere -- `crate::prepare` derives it fresh from the blessed
+//! anywhere -- `crate::pipeline::prepare` derives it fresh from the blessed
 //! `Cargo.lock`'s resolved dependency graph (`{id}`'s own direct
-//! dependencies, via `crate::cargo_lock::CargoLock::direct_dependencies`),
+//! dependencies, via `crate::deps::cargo_lock::CargoLock::direct_dependencies`),
 //! so it can never drift from what the reference solution actually
 //! depends on.
 
@@ -37,7 +37,7 @@ pub enum ManifestDiagnostic {
         name: String,
     },
     /// `Cargo.lock`, as actually checked out, doesn't match the blessed
-    /// hash recorded in `autograder.toml` -- see `crate::lock::verify`,
+    /// hash recorded in `autograder.toml` -- see `crate::deps::lock::verify`,
     /// whose message is carried here verbatim.
     LockfileMismatch(String),
 }

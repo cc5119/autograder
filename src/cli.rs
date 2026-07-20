@@ -51,7 +51,7 @@ pub enum Command {
         /// Override the deadline used for push-time commit selection
         /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long)]
-        as_of: Option<String>,
+        as_of: Option<jiff::Zoned>,
     },
     /// Run Prepare -> Evaluate -> Grade -> Report. By default reuses
     /// submissions pre-fetched with  `autograder fetch`.
@@ -70,7 +70,7 @@ pub enum Command {
         /// Override the deadline used for push-time commit selection
         /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long, requires = "fetch")]
-        as_of: Option<String>,
+        as_of: Option<jiff::Zoned>,
         /// Grade using the host-process "local sandbox" instead of podman
         #[arg(long)]
         local_sandbox: bool,

@@ -6,17 +6,17 @@
 //! exercised here.
 
 use autograder::error::Result;
-use autograder::evaluator::{Evaluator, StubEvaluator};
 use autograder::id::{AssignmentId, StudentId};
 use autograder::model::{
-    EvaluationResult, JobContext, LocalPath, ResourceUsage, StageReport, StageReports, Submission,
-    TestResult, TestStatus,
+    EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult, TestStatus,
 };
-use autograder::overrides::{ManualOverride, Overrides};
+use autograder::pipeline::evaluator::{Evaluator, StubEvaluator};
 use autograder::pipeline::grade_batch;
-use autograder::source::SubmissionsSource;
+use autograder::pipeline::overrides::{ManualOverride, Overrides};
 use autograder::spec::Spec;
 use autograder::store::Store;
+use autograder::submissions::source::SubmissionsSource;
+use autograder::submissions::{LocalPath, Submission};
 
 struct FixedSource(Vec<Submission<LocalPath>>);
 impl SubmissionsSource<LocalPath> for FixedSource {
@@ -31,7 +31,7 @@ fn fetch_first(source: &FixedSource, work_dir: &std::path::Path) {
     let deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
         .parse()
         .unwrap();
-    autograder::fetch::fetch_batch(source, work_dir, &deadline).unwrap();
+    autograder::submissions::fetch_batch(source, work_dir, &deadline).unwrap();
 }
 
 fn write(path: &std::path::Path, contents: &str) {
@@ -77,7 +77,7 @@ max-output-bytes = "1MiB"
 formula = "sum"
 base = 0.0
 "#,
-        autograder::cargo_lock::sha256_hex(LOCK_TOML)
+        autograder::deps::cargo_lock::sha256_hex(LOCK_TOML)
     )
 }
 

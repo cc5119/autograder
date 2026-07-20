@@ -1,5 +1,5 @@
 //! Subprocess-level smoke tests: runs the real compiled `autograder`
-//! binary, not `autograder::init`/`autograder::publish` in-process. Exists
+//! binary, not `autograder::package::init`/`autograder::package::publish` in-process. Exists
 //! specifically to guard against regressions that only manifest with
 //! **relative** paths as typed on a real command line -- `library_package`
 //! (via `common`) and every other in-process test here use
