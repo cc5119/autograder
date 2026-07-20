@@ -32,6 +32,7 @@ fn rules() -> Vec<Rule> {
         Rule::File("Cargo.toml", None),
         Rule::File("Cargo.lock", None),
         Rule::File(spec::SPEC_FILE, None),
+        Rule::File(".gitignore", None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
         Rule::Glob("{id}/src/**", Some(strip_stub)),
         Rule::File("{harness}/Cargo.toml", None),
@@ -256,7 +257,10 @@ mod tests {
 
         let stripped = strip_stub("hw3/src/**", matches, &ctx).unwrap();
 
-        let rs = stripped.iter().find(|f| f.rel_path.ends_with("lib.rs")).unwrap();
+        let rs = stripped
+            .iter()
+            .find(|f| f.rel_path.ends_with("lib.rs"))
+            .unwrap();
         assert!(rs.content.contains("pub fn kept"));
         assert!(!rs.content.contains("fn private"));
 

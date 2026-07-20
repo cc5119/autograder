@@ -87,6 +87,104 @@ pub(crate) fn generate_run_id() -> RunId {
     ))
 }
 
+/// Runs Prepare -> Evaluate for a single submission, given a prior fetch's
+/// output on disk. Early-returns a `terminal_eval` at the first stage that
+/// didn't succeed (no fetch record, failed fetch, missing crate, disallowed
+/// dependency); only a fully prepared workspace reaches `evaluator.evaluate`.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_submission(
+    ctx: &JobContext,
+    job_root: &Path,
+    checkout_dir: &Path,
+    build_dir: &Path,
+    package_dir: &Path,
+    workspace: &Path,
+    spec: &Spec,
+    evaluator: &dyn Evaluator,
+) -> Result<EvaluationResult> {
+    let Some(fetch_record) = read_fetch_record(job_root)? else {
+        return Ok(terminal_eval(
+            ctx,
+            StageStatus::FetchFailed,
+            Some(format!(
+                "no prior fetch found for {} -- run `autograder fetch` first, or pass \
+                 --fetch to grade",
+                ctx.student_id
+            )),
+        ));
+    };
+    if fetch_record.status != StageStatus::Ok {
+        return Ok(terminal_eval(
+            ctx,
+            StageStatus::FetchFailed,
+            fetch_record.message,
+        ));
+    }
+
+    let submitted_crate = checkout_dir.join(spec.assignment.id.as_str());
+    if !submitted_crate.is_dir() {
+        return Ok(terminal_eval(
+            ctx,
+            StageStatus::FetchFailed,
+            Some(format!(
+                "fetched checkout has no {:?} directory -- expected the student's own \
+                 crate there, matching [assignment].id",
+                spec.assignment.id
+            )),
+        ));
+    }
+
+    let outcome: Result<EvaluationResult> = (|| {
+        let subs = HashMap::from([
+            ("id", spec.assignment.id.to_string()),
+            ("harness", spec.assignment.harness.clone()),
+        ]);
+        overlay::apply(
+            &Context {
+                source_root: checkout_dir.to_path_buf(),
+                substitutions: subs.clone(),
+            },
+            build_dir,
+            &checkout_rules(),
+        )?;
+        overlay::apply(
+            &Context {
+                source_root: package_dir.to_path_buf(),
+                substitutions: subs,
+            },
+            build_dir,
+            &package_rules(),
+        )?;
+        let prepared = crate::prepare::prepare(workspace, package_dir, spec)?;
+        if !prepared.manifest_diagnostics.is_empty() {
+            let message = prepared
+                .manifest_diagnostics
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Ok(terminal_eval(
+                ctx,
+                StageStatus::DisallowedDependency,
+                Some(message),
+            ));
+        }
+        evaluator.evaluate(ctx)
+    })();
+
+    if let Err(io_err) = std::fs::remove_dir_all(build_dir)
+        && io_err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %build_dir.display(),
+            error = %io_err,
+            "failed to clean up scratch build directory after grading"
+        );
+    }
+
+    outcome
+}
+
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
 /// Prepare -> Evaluate -> persist -> Grade -> apply overrides, one student
 /// at a time. Fetch is a separate stage (`crate::fetch::fetch_batch`, run
@@ -124,86 +222,16 @@ pub fn grade_batch<F>(
             workspace: workspace.clone(),
         };
 
-        let fetch_record = read_fetch_record(&job_root)?;
-
-        let eval = if fetch_record
-            .as_ref()
-            .is_none_or(|r| r.status != StageStatus::Ok)
-        {
-            let message = match &fetch_record {
-                Some(r) => r.message.clone(),
-                None => Some(format!(
-                    "no prior fetch found for {} -- run `autograder fetch` first, or pass \
-                     --fetch to grade",
-                    submission.student_id
-                )),
-            };
-            terminal_eval(&ctx, StageStatus::FetchFailed, message)
-        } else {
-            let submitted_crate = checkout_dir.join(spec.assignment.id.as_str());
-            if !submitted_crate.is_dir() {
-                terminal_eval(
-                    &ctx,
-                    StageStatus::FetchFailed,
-                    Some(format!(
-                        "fetched checkout has no {:?} directory -- expected the student's own \
-                         crate there, matching [assignment].id",
-                        spec.assignment.id
-                    )),
-                )
-            } else {
-                let outcome: Result<EvaluationResult> = (|| {
-                    let subs = HashMap::from([
-                        ("id", spec.assignment.id.to_string()),
-                        ("harness", spec.assignment.harness.clone()),
-                    ]);
-                    overlay::apply(
-                        &Context {
-                            source_root: checkout_dir.clone(),
-                            substitutions: subs.clone(),
-                        },
-                        &build_dir,
-                        &checkout_rules(),
-                    )?;
-                    overlay::apply(
-                        &Context {
-                            source_root: package_dir.to_path_buf(),
-                            substitutions: subs,
-                        },
-                        &build_dir,
-                        &package_rules(),
-                    )?;
-                    let prepared = crate::prepare::prepare(&workspace, package_dir, spec)?;
-                    if !prepared.manifest_diagnostics.is_empty() {
-                        let message = prepared
-                            .manifest_diagnostics
-                            .iter()
-                            .map(|d| d.to_string())
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        Ok(terminal_eval(
-                            &ctx,
-                            StageStatus::DisallowedDependency,
-                            Some(message),
-                        ))
-                    } else {
-                        evaluator.evaluate(&ctx)
-                    }
-                })();
-
-                if let Err(io_err) = std::fs::remove_dir_all(&build_dir)
-                    && io_err.kind() != std::io::ErrorKind::NotFound
-                {
-                    tracing::warn!(
-                        path = %build_dir.display(),
-                        error = %io_err,
-                        "failed to clean up scratch build directory after grading"
-                    );
-                }
-
-                outcome?
-            }
-        };
+        let eval = evaluate_submission(
+            &ctx,
+            &job_root,
+            &checkout_dir,
+            &build_dir,
+            package_dir,
+            &workspace,
+            spec,
+            evaluator,
+        )?;
 
         store.save_eval(&eval)?;
         let grade = crate::grade::grade(&eval, &spec.scoring);
@@ -220,8 +248,6 @@ pub fn grade_batch<F>(
     Ok(grades)
 }
 
-// `grade_batch`'s behavior -- including that of the private
-// `checkout_rules`/`package_rules`/`terminal_eval` helpers, which have no
-// dedicated tests of their own -- lives in `tests/pipeline.rs` as an
-// integration test instead (see that file's doc comment). Nothing else in
-// this module has private logic worth isolating on its own.
+// This module's private helpers have no dedicated tests of their own --
+// their behavior lives in `tests/pipeline.rs` as an integration test instead
+// (see that file's doc comment).

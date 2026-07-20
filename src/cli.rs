@@ -14,12 +14,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Scaffold a brand-new private instructor package (autograder.toml,
-    /// a root Cargo.toml, a reference solution stub, and -- for
-    /// `library`-kind -- a harness/ stub) at `dir`, which must not
-    /// already exist or must be empty.
+    /// Scaffold an assignment.
     Init {
-        /// Directory to create the new package in.
+        /// Directory to create the new workspace.
         dir: PathBuf,
         /// The assignment kind.
         #[arg(long, value_enum)]
@@ -29,11 +26,8 @@ pub enum Command {
         #[arg(long)]
         id: String,
     },
-    /// (Re)resolve the workspace-root `Cargo.lock` shared by `{id}` and the
-    /// harness from their manifests, and record its hash in
-    /// `autograder.toml` as the "blessed" lock every checkout is checked
-    /// against. Run this whenever a dependency changes, before `prefetch`
-    /// or `publish`.
+    /// (Re)resolve the workspace-root `Cargo.lock` and record its hash in
+    /// `autograder.toml` as the "blessed" lock.
     Lock {
         /// Path to the (private) assignment repo.
         assignment: PathBuf,
@@ -45,10 +39,7 @@ pub enum Command {
     },
     /// Run the Fetch stage alone: lands each submission at
     /// `<student_id>/checkout/` under the storage dir and records the
-    /// outcome, without running Prepare/Evaluate/Grade. `grade --fetch`
-    /// runs this same stage first; running it separately is what lets a
-    /// later plain `grade` (no `--fetch`) redo just Prepare/Evaluate/Grade
-    /// against what's already on disk, with no network access needed.
+    /// outcome, without running Prepare/Evaluate/Grade.
     Fetch {
         /// Path to the (private) assignment repo.
         assignment: PathBuf,
@@ -58,15 +49,12 @@ pub enum Command {
         #[arg(long)]
         submissions: PathBuf,
         /// Override the deadline used for push-time commit selection
-        /// ("<datetime>[<IANA zone>]", e.g.
-        /// "2026-02-14T23:59:59[America/Santiago]")
+        /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long)]
         as_of: Option<String>,
     },
     /// Run Prepare -> Evaluate -> Grade -> Report. By default reuses
-    /// whatever a prior `autograder fetch` (or an earlier `grade --fetch`)
-    /// already landed on disk -- pass `--fetch` to run the Fetch stage
-    /// first, in the same command.
+    /// submissions pre-fetched with  `autograder fetch`.
     Grade {
         /// Path to the (private) assignment repo.
         assignment: PathBuf,
@@ -76,14 +64,11 @@ pub enum Command {
         #[arg(long)]
         submissions: PathBuf,
         /// Run the Fetch stage first, before grading (equivalent to
-        /// `autograder fetch` followed by `autograder grade`). Without
-        /// this flag, grading reuses whatever the most recent fetch left
-        /// on disk and never touches the network.
+        /// `autograder fetch` followed by `autograder grade`).
         #[arg(long)]
         fetch: bool,
         /// Override the deadline used for push-time commit selection
-        /// ("<datetime>[<IANA zone>]", e.g.
-        /// "2026-02-14T23:59:59[America/Santiago]")
+        /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long, requires = "fetch")]
         as_of: Option<String>,
         /// Grade using the host-process "local sandbox" instead of podman
@@ -92,7 +77,7 @@ pub enum Command {
     },
     /// Student-facing: run public tests only, advisory.
     Ci {
-        /// Grade using the host-process "local sandbox" instead of podman
+        /// Grade using the host-process "local sandbox" instead of podman.
         #[arg(long)]
         local_sandbox: bool,
     },
@@ -117,9 +102,7 @@ pub enum Command {
     },
     /// Publish the starter/template repo for distribution to students.
     Publish {
-        /// Path to the private instructor package (autograder.toml,
-        /// harness/, and a reference solution directory named after
-        /// [assignment].id).
+        /// Path to the private instructor workspace.
         assignment: PathBuf,
         /// Output directory for the starter template.
         #[arg(long)]
