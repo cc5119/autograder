@@ -143,9 +143,11 @@ base = 0.0
         )
     }
 
-    /// This host has no `cargo-nextest` installed, so the run stage never
-    /// produces a junit report -- the evaluator should report
-    /// `HarnessError`, not crash or silently report a pass.
+    /// This host has no `cargo-nextest` installed. `Library::evaluate`'s
+    /// stage 2 (`cargo nextest archive`, see that module's doc comment)
+    /// needs it just as much as the run stage always did, so it's the one
+    /// that now fails here -- reported as `BuildFailed`, not a crash or a
+    /// silent pass.
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
         let harness_dir = tempfile::tempdir().unwrap();
@@ -187,8 +189,8 @@ base = 0.0
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 
-        assert_eq!(eval.stages.build.status, model::StageStatus::Ok);
-        assert_eq!(eval.stages.run.status, model::StageStatus::HarnessError);
+        assert_eq!(eval.stages.build.status, model::StageStatus::BuildFailed);
+        assert_eq!(eval.stages.run.status, model::StageStatus::Ok);
 
         let report = CiReport {
             eval: Some(&eval),
@@ -271,6 +273,9 @@ base = 0.0
         let store = Store::new(&config.storage_dir);
         let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
         assert_eq!(grades.len(), 1);
-        assert_eq!(grades[0].status, "HarnessError");
+        // This host has no `cargo-nextest`, which stage 2 (archive) now
+        // needs just as much as the run stage always did -- see
+        // `ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest`.
+        assert_eq!(grades[0].status, "BuildFailed");
     }
 }

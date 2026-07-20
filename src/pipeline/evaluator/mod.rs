@@ -64,6 +64,10 @@ pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
 /// that runs before the judge is compiled could overwrite the judge's
 /// source and forge its own grade. `vendor_dir`, if it exists on disk, is mounted read-only
 /// alongside (both evaluators' offline-vendoring layout).
+///
+/// Only safe for a container in which no student-authored code ever
+/// executes (see [`hidden_tests_mounts`] otherwise) -- `harness_dir/tests`
+/// is fully visible here, hidden (non-`keep`) adversarial tests included.
 pub(crate) fn repo_root_mounts(
     repo_root: &Path,
     workspace: &Path,
@@ -95,6 +99,48 @@ pub(crate) fn repo_root_mounts(
         });
     }
     mounts
+}
+
+/// A shared, permanently-empty host directory to shadow a path a container
+/// must see *something* mounted at, but nothing readable -- read-only, and
+/// nothing ever writes into it, so bind-mounting the same host path into
+/// many concurrent containers is safe.
+fn empty_shadow_dir() -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("autograder-empty-mount");
+    crate::exec::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Like [`repo_root_mounts`], except `harness_dir/tests` -- the only
+/// confidential part of the harness (`{harness}/src/**` already ships to
+/// students unstripped via `publish`; only `{harness}/tests/**`'s
+/// non-`keep` items are meant to stay hidden, see `package::publish`'s
+/// module doc comment) -- is shadowed by an empty read-only directory.
+///
+/// Read-only mounting (what `repo_root_mounts` already does) stops writes,
+/// not reads: any code that *executes* inside a container with the real
+/// `harness/tests` mounted -- a student's `build.rs`, or (for `library`
+/// assignments that don't split student code into a separate driver
+/// process) the student's own library code running in-process during the
+/// judge's tests -- can simply read hidden adversarial tests off disk
+/// before/while they run, defeating the point of keeping them hidden. This
+/// is for any container stage in which student-authored code executes
+/// (the student build, and the archived judge run); [`repo_root_mounts`]
+/// remains correct for the stage that only compiles/links the judge, since
+/// nothing student-authored runs there.
+pub(crate) fn hidden_tests_mounts(
+    repo_root: &Path,
+    workspace: &Path,
+    harness_dir: &Path,
+    vendor_dir: &Path,
+) -> Result<Vec<Mount>> {
+    let mut mounts = repo_root_mounts(repo_root, workspace, harness_dir, vendor_dir);
+    mounts.push(Mount {
+        host_path: empty_shadow_dir()?,
+        container_path: harness_dir.join("tests"),
+        mode: MountMode::ReadOnly,
+    });
+    Ok(mounts)
 }
 
 /// Turns a prepared workspace into a raw evaluation result. Real impls
