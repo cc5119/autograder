@@ -31,7 +31,6 @@ pub fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     std::fs::write(path, contents).map_err(|source| io_err(path, source))
 }
 
-/// `std::env::current_dir()`, with the error reported against `.`.
 pub fn current_dir() -> Result<std::path::PathBuf> {
     std::env::current_dir().map_err(|source| io_err(Path::new("."), source))
 }
@@ -77,14 +76,12 @@ pub fn read_dir_entries(dir: &Path) -> Result<Vec<DirEntry>> {
         .collect()
 }
 
-/// `entry.file_type()`, with the error reported against `entry.path()`.
 pub fn file_type(entry: &DirEntry) -> Result<FileType> {
     entry
         .file_type()
         .map_err(|source| io_err(&entry.path(), source))
 }
 
-/// `entry.metadata()`, with the error reported against `entry.path()`.
 pub fn entry_metadata(entry: &DirEntry) -> Result<Metadata> {
     entry
         .metadata()

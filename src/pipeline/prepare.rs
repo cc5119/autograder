@@ -265,8 +265,6 @@ base = 0.0
         ));
     }
 
-    /// Confirms `prepare` never touches `package_dir/harness` or
-    /// `package_dir/<id>/tests`, for either kind.
     #[test]
     fn prepare_never_touches_the_harness_for_either_kind() {
         let workspace = tempfile::tempdir().unwrap();

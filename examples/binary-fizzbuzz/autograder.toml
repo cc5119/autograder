@@ -1,18 +1,3 @@
-# Private, standalone full spec for the `binary-fizzbuzz` example (a
-# `binary`-kind assignment, as opposed to library-stack's `library` one).
-# Self-contained; `autograder publish` derives the public/starter view
-# straight from this package, no separate hand-maintained repo. Which judge
-# tests ship to students is controlled by `keep`/`stub`/`hide` doc-comments
-# on the `#[test]` fns themselves (see ./harness/tests/judge.rs), not by
-# anything declared here.
-#
-# `id` doubles as the student-facing binary target name (no [student]
-# section): the judge lives in ./harness/, a sibling package of the
-# reference solution -- same shape as library-stack's harness, see
-# evaluator::binary's module doc comment for why there's no Cargo
-# dependency edge between them. The reference solution lives in
-# ./fizzbuzz/, named to match `id`.
-
 [assignment]
 id = "fizzbuzz"
 name = "FizzBuzz (binary example)"

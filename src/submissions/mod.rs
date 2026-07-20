@@ -293,7 +293,6 @@ fn hash_tree(dir: &Path) -> Result<String> {
     Ok(format!("{:016x}", hasher.finish()))
 }
 
-/// `git clone <repo_url> <dest>` argv (excluding the `git` binary itself).
 /// A full clone, not shallow: [`last_commit_before_argv`] needs the real
 /// commit history to search when a roster row doesn't pin a `ref`.
 fn clone_argv(repo_url: &str, dest: &Path) -> Vec<String> {
@@ -304,8 +303,7 @@ fn clone_argv(repo_url: &str, dest: &Path) -> Vec<String> {
     ]
 }
 
-/// `git -C <dest> symbolic-ref --short HEAD` argv -- the clone's default
-/// branch, used when a roster row leaves `ref` unset.
+/// Used when a roster row leaves `ref` unset.
 fn default_branch_argv(dest: &Path) -> Vec<String> {
     vec![
         "-C".to_string(),
@@ -316,10 +314,8 @@ fn default_branch_argv(dest: &Path) -> Vec<String> {
     ]
 }
 
-/// `git -C <dest> log --before=<deadline> -1 --format=%H <branch>` argv --
-/// the SHA of the last commit at or before `deadline` on `branch` (push-time
-/// deadline selection). Empty stdout means nothing was pushed before the
-/// deadline.
+/// Push-time deadline selection: the last commit at or before `deadline` on
+/// `branch`. Empty stdout means nothing was pushed before the deadline.
 fn last_commit_before_argv(dest: &Path, branch: &str, deadline: &Zoned) -> Vec<String> {
     vec![
         "-C".to_string(),
@@ -332,8 +328,7 @@ fn last_commit_before_argv(dest: &Path, branch: &str, deadline: &Zoned) -> Vec<S
     ]
 }
 
-/// `git -C <dest> rev-parse <ref>` argv -- resolves a pinned branch/tag/sha
-/// to a full commit SHA.
+/// Resolves a pinned branch/tag/sha to a full commit SHA.
 fn rev_parse_argv(dest: &Path, r#ref: &str) -> Vec<String> {
     vec![
         "-C".to_string(),
@@ -343,7 +338,6 @@ fn rev_parse_argv(dest: &Path, r#ref: &str) -> Vec<String> {
     ]
 }
 
-/// `git -C <dest> checkout <sha>` argv.
 fn checkout_argv(dest: &Path, sha: &str) -> Vec<String> {
     vec![
         "-C".to_string(),

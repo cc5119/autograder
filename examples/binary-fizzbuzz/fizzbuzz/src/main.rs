@@ -1,11 +1,5 @@
 //! A correct reference solution for the `binary-fizzbuzz` example
-//! assignment (see the top-level README's "Try it" section): prints
-//! FizzBuzz for `1..=n`, where `n` is the sole CLI argument. This directory
-//! is named after `[assignment].id` in `../autograder.toml` (`fizzbuzz`) --
-//! `autograder init` requires that to derive the starter's `src/` from it,
-//! and the built binary target must be named `fizzbuzz` to match, since
-//! the judge (`../harness/tests/judge.rs`, a sibling package -- see its
-//! own doc comment) locates and spawns it by that name.
+//! assignment: prints FizzBuzz for `1..=n`, where `n` is the sole CLI argument.
 
 use std::env;
 

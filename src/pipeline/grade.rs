@@ -8,8 +8,8 @@ use crate::spec::{Scoring, ScoringFormula};
 pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     // A stage-level failure means the run never produced a trustworthy set
     // of test results at all, even if a few tests happened to report
-    // before the crash -- the same `stage_failed` short-circuit as before,
-    // just landing on each formula's own floor value instead of 0.0.
+    // before the crash -- so it floors the score at each formula's own
+    // floor value instead of scoring the partial results.
     let stage_failed = eval.stages.fetch.status != StageStatus::Ok
         || eval.stages.build.status != StageStatus::Ok
         || eval.stages.run.status != StageStatus::Ok;

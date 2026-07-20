@@ -4,34 +4,20 @@
 //! behavior (stdout/files/exit code), never on anything the student's own
 //! process self-reports.
 //!
-//! Mirrors `library`'s shape: the judge lives permanently in a separate
-//! harness package, a sibling of `workspace` (`[assignment].id`'s own
-//! crate) under one shared `repo_root`, at the directory named by
-//! `[assignment].harness` -- which also names that package's own
-//! `[package].name`, the two must agree. Build and run both happen with
-//! `workdir = repo_root`, `-p <harness_package>` for `run`, and `-p
-//! <harness_package> -p <id>` for `build` -- unlike `library`, there's no
-//! Cargo dependency edge
-//! from `harness` to `workspace` (a plain `[dependencies]` entry can only
-//! link a *library* target, and `workspace` here is bin-only; Cargo's
-//! artifact-dependencies feature would fix this but is still nightly-gated
-//! as of this writing), so `build` must name both packages explicitly to
-//! get `workspace`'s binary built at all. `run`'s `-p <harness_package>`
-//! alone is what keeps a same-named decoy test in the student's own crate
-//! from ever executing (`grade` trusts every test an `eval` reports with
-//! no name allowlist -- see `attic/same-name-test-target-repro` for a
-//! working repro of exactly this with no package scoping).
+//! Mirrors `library`'s shape (harness as a sibling package under
+//! `repo_root`, `workdir = repo_root`), but since `workspace` is bin-only
+//! there's no Cargo dependency edge to it (a plain `[dependencies]` entry
+//! only links a library target), so `build` names both packages explicitly
+//! (`-p <harness_package> -p <id>`) while `run` scopes to just
+//! `-p <harness_package>` -- which is what keeps a same-named decoy test in
+//! the student's own crate from ever executing (`grade` trusts every test
+//! an `eval` reports with no name allowlist; see
+//! `attic/same-name-test-target-repro`).
 //!
-//! How the harness's own test code then locates and invokes the built
-//! binary (`env!("CARGO_BIN_EXE_<name>")` only resolves within a test's
-//! *own* package, never across a dependency edge, so it can't be used
-//! here) is entirely up to the instructor's own code -- a hand-computed
-//! path via `env!("CARGO_MANIFEST_DIR")` into the shared `target/` dir, the
-//! `escargot` crate, a `build.rs`, whatever. This module has no opinion and
-//! needs none: either a bare `cargo test` (a student/instructor working
-//! without `autograder` at all) or this evaluator's own `-p`-scoped
-//! invocation already guarantees a complete, ordinary build has happened
-//! before any test runs, which is all any of those techniques need.
+//! How the harness locates the built binary (`env!("CARGO_BIN_EXE_<name>")`
+//! doesn't work across a dependency edge) is entirely up to the
+//! instructor's own code; this module has no opinion and needs none, since
+//! its `-p`-scoped build always completes before any test runs.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -377,7 +363,6 @@ base = 0.0
         }
     }
 
-    /// `Binary::new` requires a real `harness/Cargo.toml` to exist.
     fn write_harness_manifest(package_dir: &Path) {
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(

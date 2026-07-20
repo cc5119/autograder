@@ -1,4 +1,4 @@
-//! The trusted driver (design §9.1): reads one operation per line from
+//! The trusted driver: reads one operation per line from
 //! stdin, calls the corresponding student `Stack` API, and writes the
 //! result back on stdout. No assertions live here — a separate judge
 //! process (see `tests/judge.rs`) drives the op sequence and decides

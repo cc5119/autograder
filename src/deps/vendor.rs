@@ -23,7 +23,6 @@ pub fn vendor_config_toml(vendor_dir: &Path) -> String {
     )
 }
 
-/// `package_dir.join("vendor")`, absolutized.
 pub fn absolute_vendor_dir(package_dir: &Path) -> PathBuf {
     absolutize(&package_dir.join("vendor"))
 }

@@ -114,7 +114,6 @@ pub struct EvaluationResult {
     pub diagnostics: Diagnostics,
 }
 
-/// Which named test in the failing/passing breakdown, for reporters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grade {
     pub student_id: StudentId,

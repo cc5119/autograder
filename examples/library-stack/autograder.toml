@@ -1,15 +1,3 @@
-# Private, standalone full spec for the `library-stack` example
-# (design §5.1). Self-contained; `autograder publish` derives the
-# public/starter view straight from this package, no separate
-# hand-maintained repo. Which judge tests ship to students is controlled by
-# `keep`/`stub`/`hide` doc-comments on the `#[test]` fns themselves (see
-# ./harness/tests/judge.rs), not by anything declared here.
-#
-# `id` doubles as the student-facing crate name (no [student] section): the
-# harness's Cargo.toml depends on `library-stack-example`, and the
-# reference solution lives in ./library-stack-example/, named to
-# match.
-
 [assignment]
 id = "library-stack"
 name = "Stack (library example)"

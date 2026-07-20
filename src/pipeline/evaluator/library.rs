@@ -1,46 +1,22 @@
-//! The `library` `Evaluator`: builds the trusted **driver** crate (depends
-//! on the student library via a plain path dependency) and runs the
-//! instructor-authored **judge** under `cargo nextest`, both under a
-//! `Sandbox`. The judge lives permanently at `[assignment].harness`'s
-//! directory, never generated or rewritten by this tool; this module just
-//! drives `cargo build` then `cargo nextest run` and turns the JUnit report
-//! into `TestResult`s.
+//! The `library` `Evaluator`: builds the trusted, permanently-checked-in
+//! **driver** crate at `[assignment].harness` (path-depends on the student
+//! library) and runs it under `cargo nextest`, both inside a `Sandbox`.
 //!
-//! `<harness>/Cargo.toml` declares a plain `<id> = { path = "../<id>" }`
-//! dependency, no `[patch.crates-io]`, because whoever assembles the job
-//! always positions the code under test at that exact sibling location.
-//! `<harness>/` (named by `[assignment].harness`) is overlaid into
-//! `repo_root/<harness>` (`repo_root` being `ctx.workspace`'s parent --
-//! there's no separate `JobContext` field for it, since it's always at that
-//! fixed, derivable location), a *fresh, per-job* sibling of `ctx.workspace`
-//! (never built in place): freshness matters because Cargo rewrites
-//! `Cargo.lock` whenever the path-dependency's contents change, so sharing
+//! The harness is overlaid fresh per job into `repo_root/<harness>`
+//! (`repo_root` = `ctx.workspace`'s parent), never built in place -- sharing
 //! one harness dir across jobs would race different students' builds
-//! against the same lockfile/target dir.
+//! against the same `Cargo.lock`/`target/`, since Cargo rewrites the lock
+//! whenever the path dependency's contents change.
 //!
-//! `repo_root` (the caller's job-build directory for `grade`, or the
-//! published repo root for `ci`) also carries the same root `[workspace]`
-//! manifest `publish` ships to students, listing both the harness and
-//! `workspace` as members -- build and run both happen with `workdir =
-//! repo_root` (never `cd`ed into the harness dir) and `-p <harness_package>`
-//! (`[assignment].harness`, which names both the sibling directory and its
-//! own `[package].name` -- the two must agree), so Cargo resolves one
-//! shared `Cargo.lock`/`target/`
-//! exactly as a student's own `cargo test` would, while `-p` still scopes
-//! package selection to just the harness regardless of cwd, never sweeping
-//! in the student's own crate's tests (`grade` trusts every test an `eval`
-//! reports with no name allowlist, so accidentally running the student's
-//! own tests would let them inflate their own score -- the same class of
-//! attack `pipeline.rs` guards against for `binary` via `Rule::Clean`; see
-//! `attic/same-name-test-target-repro` for a working repro of exactly this
-//! with no package scoping at all). No `--test` filter -- the harness may
-//! define more than one test target, and every one of them should run.
-//! (`-p`, unlike `--manifest-path`, needs an ambient `Cargo.toml` at or
-//! above `workdir`; `repo_root` always has one here, so this is safe.)
-//! Since `repo_root` isn't a descendant of `workspace`, Cargo's
-//! directory-based config discovery still can't find `workspace`'s offline
-//! vendoring config from `repo_root` -- this evaluator passes the
-//! equivalent `[source]` override as `--config` flags directly instead.
+//! Build and run both use `workdir = repo_root` with `-p <harness_package>`
+//! (never `cd`ed into the harness dir, no `--test` filter): `-p` is what
+//! keeps a same-named decoy test in the student's own crate from ever
+//! executing, since `grade` trusts every test an `eval` reports with no
+//! name allowlist (see `attic/same-name-test-target-repro`).
+//!
+//! `repo_root` isn't a descendant of `workspace`, so Cargo can't discover
+//! `workspace`'s offline vendoring config there -- passed as `--config`
+//! flags instead of a `.cargo/config.toml`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -150,13 +126,8 @@ impl<S: Sandbox> Evaluator for Library<S> {
         let env = self.offline_env();
         let mounts = self.mounts(&repo_root, &ctx.workspace);
 
-        // Always invoked with `workdir = repo_root`, never `cd`ed into
-        // `harness/` -- `-p <harness_package>` scopes package selection to
-        // just the harness regardless of cwd, so the student's own crate's
-        // tests are never swept in even if they contain a same-named decoy
-        // test file (`pipeline.rs` guards the same class of attack for
-        // `binary` via `Rule::Clean`). No `--test` filter: every test
-        // target the harness package defines runs.
+        // See this module's doc comment for why `workdir = repo_root` + `-p`
+        // (never `cd`ed into `harness/`) and no `--test` filter.
         let mut build_spec = SandboxSpec::new("cargo", self.build_limits.clone());
         build_spec.args = vec![
             "build".into(),
@@ -568,7 +539,6 @@ base = 0.0
         }
     }
 
-    /// `Library::new` requires a real `harness/Cargo.toml` to exist.
     fn write_harness_manifest(package_dir: &std::path::Path) {
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
@@ -684,9 +654,6 @@ base = 0.0
         assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
         assert!(build_spec.args.contains(&"-p".to_string()));
         assert!(build_spec.args.contains(&"harness".to_string()));
-        // Never runs nextest at all here (build failed), but never a
-        // `--test` filter on the build step either way -- `--test` is
-        // gone entirely now, from either step.
         assert!(!build_spec.args.contains(&"--test".to_string()));
     }
 
@@ -708,8 +675,6 @@ base = 0.0
         let run_spec = &specs[1];
         assert!(run_spec.args.contains(&"-p".to_string()));
         assert!(run_spec.args.contains(&"harness".to_string()));
-        // No `--test` filter: every test target the harness package
-        // defines should run, not just one.
         assert!(!run_spec.args.contains(&"--test".to_string()));
     }
 

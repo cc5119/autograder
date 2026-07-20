@@ -242,7 +242,6 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// Reads `autograder.toml` from `dir`.
     pub fn load(dir: &Path) -> Result<Spec> {
         Self::load_file(&dir.join(SPEC_FILE))
     }

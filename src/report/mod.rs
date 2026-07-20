@@ -15,7 +15,6 @@ pub trait Reporter {
     fn report(&self, grades: &[Grade]) -> Result<()>;
 }
 
-/// Writes `contents` to `out`, or stdout if `out` is `None`.
 fn write_output(out: &Option<PathBuf>, contents: &str) -> Result<()> {
     match out {
         Some(path) => write_file(path, contents),
