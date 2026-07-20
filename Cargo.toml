@@ -10,6 +10,16 @@ autotests = false
 name = "integration"
 path = "tests/integration.rs"
 
+# Opt-in suite needing real podman + the base image; CI runs it with
+# `--features container-tests`, a plain `cargo test` skips it.
+[[test]]
+name = "container"
+path = "tests/container.rs"
+required-features = ["container-tests"]
+
+[features]
+container-tests = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
