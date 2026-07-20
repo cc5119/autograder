@@ -3,6 +3,9 @@ name = "harness"
 version = "0.0.0"
 edition = "2024"
 
+[features]
+student = []
+
 [[bin]]
 name = "harness"
 test = false

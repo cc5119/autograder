@@ -5,9 +5,9 @@
 //! responses. Runs process-per-session under `cargo nextest`: each `#[test]`
 //! spawns its own driver process.
 //!
-//! `push_pop_basic` is marked `keep` below, so it ships to students as the
-//! public test; `many_pushes_then_pops` is left unmarked, so `publish`
-//! drops it -- it never ships, and it's adversarial in the sense the
+//! `push_pop_basic` is unmarked, so it ships to students as the public
+//! test; `many_pushes_then_pops` is gated `#[cfg(not(feature =
+//! "student"))]`, so `publish` drops it -- adversarial in the sense the
 //! design calls for (§9): it can't be satisfied by a solution that
 //! special-cases the couple of ops the public test happens to check.
 
@@ -51,7 +51,6 @@ impl Drop for Session {
     }
 }
 
-#[doc = "autograder: keep"]
 #[test]
 fn push_pop_basic() {
     let mut session = Session::start();
@@ -62,6 +61,7 @@ fn push_pop_basic() {
     assert_eq!(session.send("pop"), "none");
 }
 
+#[cfg(not(feature = "student"))]
 #[test]
 fn many_pushes_then_pops() {
     let mut session = Session::start();

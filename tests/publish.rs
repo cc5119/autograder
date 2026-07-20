@@ -11,12 +11,12 @@ use autograder::spec::SPEC_FILE;
 use crate::common::{binary_package, library_package, write};
 
 const JUDGE_RS: &str = r#"
-    /// autograder: keep
     #[test]
     fn insert_basic() {
         assert!(true);
     }
 
+    #[cfg(not(feature = "student"))]
     #[test]
     fn balance_adversarial() {
         assert!(true);
@@ -24,6 +24,7 @@ const JUDGE_RS: &str = r#"
 "#;
 
 const SOLUTION_SRC: &str = r#"
+    #[cfg(not(feature = "student"))]
     use std::collections::HashSet;
 
     pub struct Stack<T> {
@@ -36,9 +37,21 @@ const SOLUTION_SRC: &str = r#"
         }
 
         pub fn push(&mut self, value: T) {
-            self.items.push(value);
+            cfg_select! {
+                feature = "student" => {
+                    todo!()
+                }
+                _ => {
+                    self.items.push(value);
+                }
+            }
         }
 
+        pub fn len(&self) -> usize {
+            self.items.len()
+        }
+
+        #[cfg(not(feature = "student"))]
         fn dedup_hint(&self) -> HashSet<usize> {
             HashSet::new()
         }
@@ -290,12 +303,12 @@ fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
 }
 
 const BINARY_JUDGE_RS: &str = r#"
-    /// autograder: keep
     #[test]
     fn counts_words() {
         assert!(true);
     }
 
+    #[cfg(not(feature = "student"))]
     #[test]
     fn counts_zero_for_empty_input() {
         assert!(true);

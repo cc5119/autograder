@@ -33,10 +33,8 @@ jiff = { version = "0.2", features = ["serde"] }
 csv = "1"
 semver = "1"
 roxmltree = "0.20"
-quote = "1.0.46"
-proc-macro2 = "1.0.106"
-prettyplease = "0.2.37"
-syn = { version = "2.0.119", features = ["full", "printing", "parsing", "clone-impls"] }
+ra_ap_syntax = "=0.0.331"
+cfg-expr = "=0.20.8"
 tempfile = "3"
 ignore = "0.4"
 include_dir = "0.7"

@@ -24,9 +24,9 @@
 //! `build.rs`, the `escargot` crate, or anything else that locates the
 //! built binary would work exactly as well.
 //!
-//! `fizzbuzz_1_to_15` is marked `keep` below, so it ships to students as
-//! the public test (the classic case); `fizzbuzz_multiples_of_15_and_zero`
-//! is left unmarked, so `publish` drops it -- it never ships, and it's
+//! `fizzbuzz_1_to_15` is unmarked, so it ships to students as the public
+//! test (the classic case); `fizzbuzz_multiples_of_15_and_zero` is gated
+//! `#[cfg(not(feature = "student"))]`, so `publish` drops it --
 //! adversarial in the sense the design calls for (§9): a solution that
 //! special-cases exactly the first 15 lines (matching the public test)
 //! still fails the n=0 (no output) and n=30 (another multiple-of-15 line,
@@ -66,7 +66,6 @@ fn run(n: &str) -> String {
     String::from_utf8(output.stdout).expect("fizzbuzz stdout was not valid utf8")
 }
 
-/// autograder: keep
 #[test]
 fn fizzbuzz_1_to_15() {
     let output = run("15");
@@ -74,6 +73,7 @@ fn fizzbuzz_1_to_15() {
     assert_eq!(output, expected);
 }
 
+#[cfg(not(feature = "student"))]
 #[test]
 fn fizzbuzz_multiples_of_15_and_zero() {
     // n=0 -> no lines at all.

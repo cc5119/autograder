@@ -3,16 +3,21 @@
 //! then strip the sensitive parts in place. No hand-maintained `public/`
 //! sibling repo.
 //!
-//! A test's presence in the published package *is* its visibility -- there
-//! is no separate visibility flag or declared test list to consult.
 //! [`strip_stub`] (already used for `src/**`) strips `harness/tests/**`
-//! too, via the exact same `keep`/`stub`/`hide` doc-comment convention
-//! `crate::package::stub` applies to ordinary items: an unmarked `#[test]` fn is
-//! private and non-`main`, so it's dropped by default like any other
-//! unmarked private item, and only ships when the instructor marks it
-//! `keep` or `stub`. The judge always lives in `harness/`, a sibling
-//! package of `{id}`, for both `library` and `binary` (see
-//! `evaluator::library`'s and `evaluator::binary`'s module doc comments).
+//! too, via the same convention `crate::package::stub` applies to ordinary
+//! items: an unmarked `#[test]` fn ships by default, and only one stacked
+//! with `#[cfg(not(feature = "student"))]` (alongside its own `#[cfg(test)]`,
+//! since that alone isn't a directive -- see that module's doc comment) is
+//! dropped, which is how an adversarial test stays hidden. The judge
+//! always lives in `harness/`, a sibling package of `{id}`, for both
+//! `library` and `binary` (see `evaluator::library`'s and
+//! `evaluator::binary`'s module doc comments).
+//!
+//! Before any of that, [`check_student_view_is_clean`] compiles the
+//! private repo's own `{id}` crate with `--features student` and refuses
+//! to publish on any warning -- checked against the solution source
+//! directly, rather than by running `cargo fix` over generated output the
+//! way this used to work.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,6 +69,26 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
         )));
     }
 
+    // Checked ahead of the real compile below so these still get a clear
+    // `InvalidSpec`, not an opaque `cargo check` failure standing in for it.
+    let solution_dir = package_dir.join(id.as_str());
+    if !solution_dir.is_dir() {
+        return Err(Error::InvalidSpec(format!(
+            "no {}/ solution directory found in {} -- [assignment].id must name a sibling \
+             directory holding the reference solution crate",
+            id.as_str(),
+            package_dir.display()
+        )));
+    }
+    let manifest_path = solution_dir.join("Cargo.toml");
+    validate_package_name(
+        &manifest_path,
+        &fs::read_to_string(&manifest_path)?,
+        id.as_str(),
+    )?;
+
+    check_student_view_is_clean(package_dir, id.as_str())?;
+
     let ctx = Context {
         source_root: package_dir.to_path_buf(),
         substitutions: HashMap::from([
@@ -73,9 +98,6 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     };
 
     overlay::apply(&ctx, out_dir, &rules())?;
-
-    let student_dir = out_dir.join(id.as_str());
-    run_cargo_fix(&student_dir)?;
 
     let workflow_dir = out_dir.join(".github/workflows");
     fs::create_dir_all(&workflow_dir)?;
@@ -90,19 +112,24 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
 
 fn validate_manifest(path: &str, file: MatchedFile, ctx: &Context) -> Result<MatchedFile> {
     let manifest_path = ctx.source_root.join(path);
-    let value: toml::Value = toml::from_str(&file.content).map_err(|source| Error::Toml {
-        path: manifest_path.clone(),
+    let id = ctx
+        .substitutions
+        .get("id")
+        .map(String::as_str)
+        .unwrap_or_default();
+    validate_package_name(&manifest_path, &file.content, id)?;
+    Ok(file)
+}
+
+fn validate_package_name(manifest_path: &Path, content: &str, id: &str) -> Result<()> {
+    let value: toml::Value = toml::from_str(content).map_err(|source| Error::Toml {
+        path: manifest_path.to_path_buf(),
         source: Box::new(source),
     })?;
     let package_name = value
         .get("package")
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str());
-    let id = ctx
-        .substitutions
-        .get("id")
-        .map(String::as_str)
-        .unwrap_or_default();
     if package_name != Some(id) {
         return Err(Error::InvalidSpec(format!(
             "{} has [package].name = {:?}, expected {:?} to match [assignment].id -- \
@@ -112,7 +139,7 @@ fn validate_manifest(path: &str, file: MatchedFile, ctx: &Context) -> Result<Mat
             id
         )));
     }
-    Ok(file)
+    Ok(())
 }
 
 fn strip_stub(
@@ -146,37 +173,60 @@ fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
     )
 }
 
-/// Runs `cargo fix` to prune `use` lines stub-stripping left unused, then
-/// removes the `target/` dir it leaves behind. `--locked` keeps it from
-/// silently rewriting the just-shipped, blessed `Cargo.lock` (student
-/// crate's own manifest dependencies are unchanged by stubbing, so the
-/// existing lock still satisfies it).
-fn run_cargo_fix(student_dir: &Path) -> Result<()> {
+/// `unused_variables`/`dead_code` to allow stubbed body to contain `todo!()`
+const ALLOWED_WARNING_LINTS: [&str; 2] = ["unused_variables", "dead_code"];
+
+/// E.g. catches a `use` that's only reachable from a `cfg_select!` arm
+/// that doesn't survive into the student build. Requires the crate to
+/// declare `[features] student = []`.
+fn check_student_view_is_clean(package_dir: &Path, id: &str) -> Result<()> {
+    let solution_dir = package_dir.join(id);
     let output = std::process::Command::new("cargo")
-        .args([
-            "fix",
-            "--allow-dirty",
-            "--allow-staged",
-            "--allow-no-vcs",
-            "--locked",
-        ])
-        .current_dir(student_dir)
+        .args(["check", "--features", "student", "--message-format=json"])
+        .current_dir(&solution_dir)
         .output()
         .map_err(|source| Error::Io {
-            path: student_dir.to_path_buf(),
+            path: solution_dir.clone(),
             source,
         })?;
+
     if !output.status.success() {
         return Err(Error::Other(format!(
-            "cargo fix failed while stripping the starter at {}:\n{}",
-            student_dir.display(),
+            "cargo check --features student failed at {}:\n{}",
+            solution_dir.display(),
             String::from_utf8_lossy(&output.stderr)
         )));
     }
 
-    let target_dir = student_dir.join("target");
-    if target_dir.is_dir() {
-        fs::remove_dir_all(&target_dir)?;
+    let warnings: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|msg| msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message"))
+        .filter_map(|msg| {
+            let message = msg.get("message")?;
+            if message.get("level")?.as_str()? != "warning" {
+                return None;
+            }
+            let lint = message
+                .get("code")
+                .and_then(|c| c.get("code"))
+                .and_then(|c| c.as_str());
+            if lint.is_some_and(|lint| ALLOWED_WARNING_LINTS.contains(&lint)) {
+                return None;
+            }
+            message.get("rendered")?.as_str().map(str::to_string)
+        })
+        .collect();
+
+    if !warnings.is_empty() {
+        return Err(Error::Other(format!(
+            "refusing to publish: `cargo check --features student` reported {} warning(s) in {} \
+             -- fix them before publishing, since they'd ship to students exactly as they \
+             are:\n\n{}",
+            warnings.len(),
+            solution_dir.display(),
+            warnings.join("\n")
+        )));
     }
 
     Ok(())
@@ -250,7 +300,7 @@ mod tests {
         let matches = vec![
             matched_file(
                 "hw3/src/lib.rs",
-                "/// autograder: keep\npub fn kept() {}\nfn private() {}\n",
+                "pub fn kept() {}\n\n#[cfg(not(feature = \"student\"))]\nfn hidden() {}\n",
             ),
             matched_file("hw3/Cargo.toml", "[package]\nname = \"hw3\"\n"),
         ];
@@ -262,7 +312,7 @@ mod tests {
             .find(|f| f.rel_path.ends_with("lib.rs"))
             .unwrap();
         assert!(rs.content.contains("pub fn kept"));
-        assert!(!rs.content.contains("fn private"));
+        assert!(!rs.content.contains("fn hidden"));
 
         let toml = stripped
             .iter()

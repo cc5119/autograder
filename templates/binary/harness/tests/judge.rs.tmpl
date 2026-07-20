@@ -26,7 +26,6 @@ fn student_binary() -> PathBuf {
     repo_root.join("target/debug/{id}")
 }
 
-/// autograder: keep
 #[test]
 fn example_test() {
     let _binary = Command::new(student_binary());
