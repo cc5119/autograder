@@ -83,14 +83,15 @@ impl<S: Sandbox> Library<S> {
 
     /// `repo_root` (containing both `workspace` and the harness dir) is
     /// mounted read-write, since a workspace build's `Cargo.lock`/`target/`
-    /// land at its root, not under the harness dir. `workspace` is then
-    /// mounted again, more specifically and read-only, which shadows just
-    /// that subtree of
-    /// the broader mount -- the student's own submitted source must never
-    /// be writable inside the sandbox, even though the judge crate and
-    /// build artifacts around it are.
+    /// land at its root, not under the harness dir. `workspace` and the
+    /// harness dir are then each mounted again, more specifically and
+    /// read-only, which shadows just those subtrees of the broader mount --
+    /// neither the student's own submitted source nor the instructor's
+    /// judge crate must be writable inside the sandbox, even though the
+    /// build artifacts around them are.
     fn mounts(&self, repo_root: &Path, workspace: &Path) -> Vec<Mount> {
-        super::repo_root_mounts(repo_root, workspace, &self.vendor_dir())
+        let harness_dir = repo_root.join(&self.harness_package);
+        super::repo_root_mounts(repo_root, workspace, &harness_dir, &self.vendor_dir())
     }
 
     /// The offline vendored-source `--config` override, only when the

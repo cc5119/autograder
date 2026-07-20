@@ -11,6 +11,7 @@ use autograder::id::AssignmentId;
 use autograder::pipeline::evaluator::library::Library;
 use autograder::pipeline::grade_batch;
 use autograder::pipeline::overrides::Overrides;
+use autograder::spec::Spec;
 use autograder::store::Store;
 use autograder::submissions::source::SubmissionsSource;
 use autograder::submissions::{LocalPath, Submission};
@@ -46,7 +47,11 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
     let store_dir = tempfile::tempdir().unwrap();
 
     // Trusted judge scores a known baseline off the student lib.
-    let spec = library_package(package_dir.path(), "hw3");
+    let _ = library_package(package_dir.path(), "hw3");
+    let autograder_toml = package_dir.path().join("autograder.toml");
+    let contents = std::fs::read_to_string(&autograder_toml).unwrap();
+    std::fs::write(&autograder_toml, contents.replace("base = 1.0", "base = 0.0")).unwrap();
+    let spec = Spec::load(package_dir.path()).unwrap();
     write(
         &package_dir.path().join("harness/tests/judge.rs"),
         "#[test]\nfn trusted_judge() {\n    assert!(hw3::example());\n    println!(\"autograder: score=1\");\n}\n",

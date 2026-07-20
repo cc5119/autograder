@@ -81,7 +81,8 @@ impl<S: Sandbox> Binary<S> {
     }
 
     fn mounts(&self, repo_root: &Path, workspace: &Path) -> Vec<Mount> {
-        super::repo_root_mounts(repo_root, workspace, &self.vendor_dir())
+        let harness_dir = repo_root.join(&self.harness_package);
+        super::repo_root_mounts(repo_root, workspace, &harness_dir, &self.vendor_dir())
     }
 }
 

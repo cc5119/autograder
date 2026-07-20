@@ -5,6 +5,7 @@ pub mod overrides;
 pub mod prepare;
 
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -161,6 +162,14 @@ fn evaluate_submission(
             build_dir,
             &package_rules(),
         )?;
+
+        // The sandboxed container process runs as an unprivileged,
+        // rootless-podman-remapped uid, so we must grant "other" write
+        // access to `build_dir` so it can create new entries (Cargo.lock, target/).
+        let mut perms = crate::exec::fs::metadata(build_dir)?.permissions();
+        perms.set_mode(perms.mode() | 0o002);
+        crate::exec::fs::set_permissions(build_dir, perms)?;
+
         let prepared = crate::pipeline::prepare::prepare(workspace, package_dir, spec)?;
         if !prepared.manifest_diagnostics.is_empty() {
             let message = prepared

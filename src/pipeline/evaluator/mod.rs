@@ -35,30 +35,39 @@ pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
 /// Writes `dir/.config/nextest.toml` with `store-success-output = true`, so
 /// a *passing* test's stdout still reaches the JUnit report's
 /// `<system-out>` -- required to see `autograder: score=` lines from tests
-/// that pass with partial credit, not just failing ones. Written by the
-/// trusted evaluator itself (like `prepare`'s `.cargo/config.toml`), never
-/// checked into the student- or instructor-authored harness, so grading
-/// never depends on either remembering to set it.
+/// that pass with partial credit, not just failing ones. Also enables the
+/// JUnit report itself (`[profile.default.junit]`) -- nextest never writes
+/// `target/nextest/<profile>/junit.xml` unless a config says to, and every
+/// evaluator reads that exact path. Written by the trusted evaluator itself
+/// (like `prepare`'s `.cargo/config.toml`), never checked into the
+/// student- or instructor-authored harness, so grading never depends on
+/// either remembering to set it.
 pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
     let config_dir = dir.join(".config");
     crate::exec::fs::create_dir_all(&config_dir)?;
     crate::exec::fs::write(
         &config_dir.join("nextest.toml"),
-        "[profile.default]\nstore-success-output = true\n",
+        "[profile.default]\nstore-success-output = true\n\n\
+         [profile.default.junit]\npath = \"junit.xml\"\n",
     )
 }
 
-/// `repo_root` (containing both `workspace` and `harness/`) is mounted
-/// read-write, since a workspace build's `Cargo.lock`/`target/` land at
-/// its root, not under `harness/`. `workspace` is then mounted again, more
-/// specifically and read-only, which shadows just that subtree of the
-/// broader mount -- the student's own submitted source must never be
-/// writable inside the sandbox, even though the judge crate and build
-/// artifacts around it are. `vendor_dir`, if it exists on disk, is mounted
-/// read-only alongside (both evaluators' offline-vendoring layout).
+/// `repo_root` (containing `workspace`, `harness_dir`, `Cargo.lock` and
+/// `target/`) is mounted read-write, since a workspace build's
+/// `Cargo.lock`/`target/` land at its root, not under `harness_dir`.
+/// `workspace` and `harness_dir` are then each mounted again, more
+/// specifically and read-only, which shadows just those subtrees of the
+/// broader mount: the student's own submitted source must never be
+/// writable inside the sandbox (even though the judge crate and build
+/// artifacts around it are), and neither must the instructor's trusted
+/// judge -- otherwise student-triggered code (a `build.rs`, a proc macro)
+/// that runs before the judge is compiled could overwrite the judge's
+/// source and forge its own grade. `vendor_dir`, if it exists on disk, is mounted read-only
+/// alongside (both evaluators' offline-vendoring layout).
 pub(crate) fn repo_root_mounts(
     repo_root: &Path,
     workspace: &Path,
+    harness_dir: &Path,
     vendor_dir: &Path,
 ) -> Vec<Mount> {
     let mut mounts = vec![
@@ -70,6 +79,11 @@ pub(crate) fn repo_root_mounts(
         Mount {
             host_path: workspace.to_path_buf(),
             container_path: workspace.to_path_buf(),
+            mode: MountMode::ReadOnly,
+        },
+        Mount {
+            host_path: harness_dir.to_path_buf(),
+            container_path: harness_dir.to_path_buf(),
             mode: MountMode::ReadOnly,
         },
     ];

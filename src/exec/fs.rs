@@ -63,6 +63,10 @@ pub fn set_permissions(path: &Path, perms: Permissions) -> Result<()> {
     std::fs::set_permissions(path, perms).map_err(|source| io_err(path, source))
 }
 
+pub fn metadata(path: &Path) -> Result<Metadata> {
+    std::fs::metadata(path).map_err(|source| io_err(path, source))
+}
+
 pub fn read_dir(path: &Path) -> Result<ReadDir> {
     std::fs::read_dir(path).map_err(|source| io_err(path, source))
 }
