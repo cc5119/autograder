@@ -1,4 +1,4 @@
-//! The trusted judge (design §9.1): no student code is linked into *this*
+//! The trusted judge: no student code is linked into *this*
 //! test binary. It only talks to the compiled `driver` binary (which does
 //! link the student's `stack` crate) across a process boundary — a stdin/
 //! stdout protocol — and asserts purely on the driver's observable
@@ -8,7 +8,7 @@
 //! `push_pop_basic` is unmarked, so it ships to students as the public
 //! test; `many_pushes_then_pops` is gated `#[cfg(not(feature =
 //! "student"))]`, so `publish` drops it -- adversarial in the sense the
-//! design calls for (§9): it can't be satisfied by a solution that
+//! design calls for: it can't be satisfied by a solution that
 //! special-cases the couple of ops the public test happens to check.
 
 use std::io::{BufRead, BufReader, Write};

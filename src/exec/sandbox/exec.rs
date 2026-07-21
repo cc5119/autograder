@@ -1,16 +1,13 @@
-//! Child-process execution shared by `LocalSandbox` and `ContainerSandbox`:
-//! both spawn a host child process, enforce a wall-clock timeout, and cap
-//! captured output -- the only difference is which argv is built from the
-//! `SandboxSpec`.
+//! Child-process execution shared by `LocalSandbox` and `ContainerSandbox`,
+//! built on the `subprocess` crate: both spawn a host child process, enforce
+//! a wall-clock timeout, and cap captured output.
 
-use std::io::Read;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::thread;
+use std::io;
 use std::time::{Duration, Instant};
 
-use crate::error::{Error, Result};
+use subprocess::{Exec, Redirection};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
+use crate::error::{Error, Result};
 
 pub struct ExecOutcome {
     pub exit_code: Option<i32>,
@@ -20,81 +17,54 @@ pub struct ExecOutcome {
     pub wall_clock: Duration,
 }
 
-/// Spawns `cmd`, waits up to `wall_clock`, and captures stdout/stderr each
-/// capped at `max_output_bytes`. Kills the child on timeout.
-pub fn run_with_timeout(
-    mut cmd: Command,
+/// Spawns `exec`, capturing stdout/stderr (a combined cap of
+/// `max_output_bytes` across both streams) for up to `wall_clock`.
+/// timeout the child is killed; the caller is responsible for any further
+/// cleanup its own sandbox needs.
+pub fn exec_with_timeout(
+    exec: Exec,
     wall_clock: Duration,
     max_output_bytes: usize,
 ) -> Result<ExecOutcome> {
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let program = format!("{:?}", cmd);
-    let mut child: Child = cmd
-        .spawn()
-        .map_err(|source| Error::Other(format!("failed to spawn {program}: {source}")))?;
-
-    let stdout: ChildStdout = child.stdout.take().expect("piped stdout");
-    let stderr: ChildStderr = child.stderr.take().expect("piped stderr");
-    let stdout_handle = thread::spawn(move || read_capped(stdout, max_output_bytes));
-    let stderr_handle = thread::spawn(move || read_capped(stderr, max_output_bytes));
-
     let start = Instant::now();
-    let mut timed_out = false;
-    loop {
-        if let Some(_status) = child
-            .try_wait()
-            .map_err(|source| Error::Other(format!("failed to poll child: {source}")))?
-        {
-            break;
-        }
-        if start.elapsed() >= wall_clock {
-            timed_out = true;
-            let _ = child.kill();
-            let _ = child.wait();
-            break;
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-    let wall_clock_elapsed = start.elapsed();
 
-    let status = child
-        .wait()
-        .map_err(|source| Error::Other(format!("failed to reap child: {source}")))?;
-    let stdout = stdout_handle.join().expect("stdout reader thread panicked");
-    let stderr = stderr_handle.join().expect("stderr reader thread panicked");
+    let mut job = exec
+        .stdin(Redirection::Null)
+        .stdout(Redirection::Pipe)
+        .stderr(Redirection::Pipe)
+        .start()
+        .map_err(|source| Error::Other(format!("failed to spawn: {source}")))?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let read_result = job
+        .communicate()
+        .map_err(|source| Error::Other(format!("failed to attach to output: {source}")))?
+        .limit_time(wall_clock)
+        .limit_size(max_output_bytes)
+        .read_to(&mut stdout, &mut stderr);
+
+    let timed_out = match read_result {
+        Ok(()) => false,
+        Err(source) if source.kind() == io::ErrorKind::TimedOut => true,
+        Err(source) => return Err(Error::Other(format!("failed reading output: {source}"))),
+    };
+
+    if timed_out {
+        let _ = job.kill(); // SIGKILL; no-op if already reaped
+    }
+
+    let status = job
+        .wait_timeout(Duration::from_secs(2))
+        .map_err(|source| Error::Other(format!("failed to reap: {source}")))?;
 
     Ok(ExecOutcome {
-        exit_code: status.code(),
+        exit_code: status.and_then(|s| s.code()).map(|c| c as i32),
         stdout,
         stderr,
         timed_out,
-        wall_clock: wall_clock_elapsed,
+        wall_clock: start.elapsed(),
     })
-}
-
-/// Reads `source` to completion but stops accumulating once `cap` bytes have
-/// been read, so a chatty/adversarial child can't force unbounded memory
-/// use. Still drains the pipe past the cap so the child doesn't block
-/// writing to a full pipe buffer.
-fn read_capped<R: Read>(mut source: R, cap: usize) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match source.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                if buf.len() < cap {
-                    let remaining = cap - buf.len();
-                    buf.extend_from_slice(&chunk[..n.min(remaining)]);
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    buf
 }
 
 #[cfg(test)]
@@ -103,9 +73,8 @@ mod tests {
 
     #[test]
     fn captures_output_and_exit_code() {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", "echo out; echo err >&2; exit 3"]);
-        let outcome = run_with_timeout(cmd, Duration::from_secs(5), 1024).unwrap();
+        let exec = Exec::cmd("sh").args(&["-c", "echo out; echo err >&2; exit 3"]);
+        let outcome = exec_with_timeout(exec, Duration::from_secs(5), 1024).unwrap();
 
         assert_eq!(outcome.exit_code, Some(3));
         assert_eq!(outcome.stdout, b"out\n");
@@ -115,19 +84,17 @@ mod tests {
 
     #[test]
     fn kills_on_timeout() {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 5"]);
-        let outcome = run_with_timeout(cmd, Duration::from_millis(150), 1024).unwrap();
+        let exec = Exec::cmd("sh").args(&["-c", "sleep 5"]);
+        let outcome = exec_with_timeout(exec, Duration::from_millis(150), 1024).unwrap();
 
         assert!(outcome.timed_out);
         assert!(outcome.wall_clock < Duration::from_secs(2));
     }
 
     #[test]
-    fn caps_output_bytes() {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", "for i in $(seq 1 1000); do echo line$i; done"]);
-        let outcome = run_with_timeout(cmd, Duration::from_secs(5), 10).unwrap();
+    fn caps_combined_output_bytes() {
+        let exec = Exec::cmd("sh").args(&["-c", "for i in $(seq 1 1000); do echo line$i; done"]);
+        let outcome = exec_with_timeout(exec, Duration::from_secs(5), 10).unwrap();
 
         assert_eq!(outcome.stdout.len(), 10);
     }

@@ -6,7 +6,7 @@ use crate::model::{EvaluationResult, Grade};
 
 /// Persists `EvaluationResult`s and `Grade`s as JSON keyed by
 /// `{assignment_id}/{student_id}/{run_id}` under the storage dir, so
-/// grading/regrading is a fast offline re-computation (design §14).
+/// grading/regrading is a fast offline re-computation.
 pub struct Store {
     root: PathBuf,
 }

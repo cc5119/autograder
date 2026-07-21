@@ -1,10 +1,20 @@
+use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
+
+use subprocess::Exec;
 
 use crate::error::{Error, Result};
 use crate::model::ResourceUsage;
 
-use super::exec::run_with_timeout;
+use super::exec::exec_with_timeout;
 use super::{MountMode, Sandbox, SandboxOutcome, SandboxSpec};
+
+/// How long to give `podman kill`/`podman rm -f` to finish once we've
+/// decided a run timed out. These are trusted, fixed-argument commands we
+/// control (not attacker-influenced), so a short bound is just insurance
+/// against podman itself being wedged -- it isn't meant to be tight.
+const CONTAINER_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Podman exit code for a process killed by a signal is 128 + signal
 /// number; SIGKILL is 9, which is what a cgroup OOM-kill delivers -- so
@@ -44,8 +54,10 @@ impl ContainerSandbox {
     }
 
     /// Builds the `podman run` argv, excluding the `podman` binary itself.
-    pub fn build_argv(&self, spec: &SandboxSpec) -> Vec<String> {
+    pub fn build_argv(&self, spec: &SandboxSpec, cidfile: &Path) -> Vec<String> {
         let mut argv = vec!["run".to_string(), "--rm".to_string()];
+
+        argv.push(format!("--cidfile={}", cidfile.display()));
 
         argv.push(if spec.network {
             "--network=bridge".to_string()
@@ -103,9 +115,7 @@ impl ContainerSandbox {
 impl Sandbox for ContainerSandbox {
     /// Runs `podman version` (is podman usable at all?) and `podman image
     /// exists` (was the base image ever built, without a registry round
-    /// trip?) once before any student is touched -- so a broken setup is
-    /// one clear top-level error instead of every student silently scoring
-    /// build_failed. Never builds the image itself.
+    /// trip?) once before any student is touched.
     fn preflight(&self) -> Result<()> {
         let output = Command::new(&self.podman_bin).arg("version").output();
         match output {
@@ -131,11 +141,8 @@ impl Sandbox for ContainerSandbox {
         match exists {
             Ok(status) if status.success() => Ok(()),
             Ok(_) => Err(Error::Other(format!(
-                "container base image {:?} was not found locally. Jobs run with \
-                 --network=none, so the base image must already have the pinned toolchain \
-                 (and cargo-nextest) baked in -- build and tag one before grading, e.g.:\n  \
-                 podman build -t {} -f Containerfile .",
-                self.base_image, self.base_image
+                "container base image {:?} was not found locally",
+                self.base_image
             ))),
             Err(source) => Err(Error::Other(format!(
                 "failed to check for container base image {:?}: {source}",
@@ -144,17 +151,30 @@ impl Sandbox for ContainerSandbox {
         }
     }
 
-    /// **[deferred: needs podman]**
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
-        let argv = self.build_argv(spec);
-        let mut cmd = Command::new(&self.podman_bin);
-        cmd.args(&argv);
+        // `--cidfile` gives us a way to address the container after the
+        // fact: conmon detaches from the `podman run` client process by
+        // design, so on timeout killing that client's pid does not stop
+        // the container. `tempdir()` (rather than a pre-created file) is
+        // required because `podman run --cidfile` refuses to start if the
+        // path already exists; dropping the dir at the end of this
+        // function also cleans up the cidfile.
+        let cidfile_dir = tempfile::tempdir()
+            .map_err(|source| Error::Other(format!("failed to create cidfile dir: {source}")))?;
+        let cidfile_path = cidfile_dir.path().join("cid");
 
-        let outcome = run_with_timeout(
-            cmd,
+        let argv = self.build_argv(spec, &cidfile_path);
+        let exec = Exec::cmd(&self.podman_bin).args(&argv);
+
+        let outcome = exec_with_timeout(
+            exec,
             spec.limits.wall_clock,
             spec.limits.max_output_bytes as usize,
         )?;
+
+        if outcome.timed_out {
+            kill_container_by_cidfile(&self.podman_bin, &cidfile_path);
+        }
 
         let oom = !outcome.timed_out && outcome.exit_code == Some(OOM_LIKELY_EXIT_CODE);
 
@@ -172,9 +192,32 @@ impl Sandbox for ContainerSandbox {
     }
 }
 
-/// Looks for an operator-provided seccomp profile, warning (not failing)
-/// when absent -- podman's own bundled default already denies the
-/// dangerous syscalls, so this is defense-in-depth, not a hard requirement.
+/// Stops and removes the container identified by `cidfile` -- run on
+/// timeout instead of killing the already-detached `podman run` client.
+/// Uses `kill`, not `stop`, to skip the graceful SIGTERM-then-wait step.
+/// Best-effort: a container that already exited, or a cidfile never
+/// written because `podman run` failed first, are expected and ignored.
+fn kill_container_by_cidfile(podman_bin: &str, cidfile: &Path) {
+    let cidfile_arg = format!("--cidfile={}", cidfile.display());
+
+    let kill = Exec::cmd(podman_bin).args(["kill", &cidfile_arg]);
+    match exec_with_timeout(kill, CONTAINER_KILL_TIMEOUT, 0) {
+        Ok(outcome) if outcome.timed_out => {
+            tracing::warn!(cidfile = %cidfile.display(), "`podman kill --cidfile` itself timed out");
+        }
+        _ => {}
+    }
+
+    let rm = Exec::cmd(podman_bin).args(["rm", "-f", &cidfile_arg]);
+    match exec_with_timeout(rm, CONTAINER_KILL_TIMEOUT, 0) {
+        Ok(outcome) if outcome.timed_out => {
+            tracing::warn!(cidfile = %cidfile.display(), "`podman rm -f --cidfile` itself timed out");
+        }
+        _ => {}
+    }
+}
+
+/// Looks for an operator-provided seccomp profile
 fn discover_seccomp_profile() -> Option<std::path::PathBuf> {
     let path = std::path::PathBuf::from(DEFAULT_SECCOMP_PROFILE);
     if path.is_file() {
@@ -182,8 +225,7 @@ fn discover_seccomp_profile() -> Option<std::path::PathBuf> {
     } else {
         tracing::warn!(
             path = DEFAULT_SECCOMP_PROFILE,
-            "no seccomp profile found; falling back to podman's built-in default profile \
-             instead of a custom hardened one"
+            "no seccomp profile found; falling back to podman's built-in default profile"
         );
         None
     }
@@ -229,11 +271,16 @@ mod tests {
         sandbox
     }
 
+    fn cidfile() -> PathBuf {
+        PathBuf::from("/tmp/autograder-test-cid")
+    }
+
     #[test]
     fn argv_contains_the_design_mandated_isolation_flags() {
-        let argv = sandbox().build_argv(&spec());
+        let argv = sandbox().build_argv(&spec(), &cidfile());
         let joined = argv.join(" ");
 
+        assert!(joined.contains("--cidfile=/tmp/autograder-test-cid"));
         assert!(joined.contains("--network=none"));
         assert!(joined.contains("--memory=2147483648"));
         assert!(joined.contains("--memory-swap=2147483648"));
@@ -253,7 +300,7 @@ mod tests {
     fn no_seccomp_flag_when_profile_is_none() {
         let mut sandbox = sandbox();
         sandbox.seccomp_profile = None;
-        let argv = sandbox.build_argv(&spec());
+        let argv = sandbox.build_argv(&spec(), &cidfile());
         assert!(!argv.iter().any(|a| a.starts_with("seccomp=")));
         assert!(argv.contains(&"no-new-privileges".to_string()));
     }
@@ -262,7 +309,7 @@ mod tests {
     fn network_true_uses_bridge_instead_of_none() {
         let mut s = spec();
         s.network = true;
-        let argv = sandbox().build_argv(&s);
+        let argv = sandbox().build_argv(&s, &cidfile());
         assert!(argv.contains(&"--network=bridge".to_string()));
         assert!(!argv.contains(&"--network=none".to_string()));
     }
@@ -271,7 +318,7 @@ mod tests {
     fn program_and_args_are_the_final_argv_entries() {
         let mut s = spec();
         s.args = vec!["--flag".into()];
-        let argv = sandbox().build_argv(&s);
+        let argv = sandbox().build_argv(&s, &cidfile());
         assert_eq!(argv[argv.len() - 2], "/judge.sh");
         assert_eq!(argv[argv.len() - 1], "--flag");
     }
@@ -326,6 +373,5 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("was not found locally"));
         assert!(message.contains("autograder-base:hw3"));
-        assert!(message.contains("podman build"));
     }
 }

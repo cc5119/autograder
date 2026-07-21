@@ -10,7 +10,7 @@ use super::SubmissionsSource;
 const KNOWN_COLUMNS: &[&str] = &["student_id", "repo_url", "ref"];
 
 /// A `SubmissionsSource<GitRepo>` backed by a CSV roster:
-/// `student_id,repo_url,ref,email,section,...` (design §6). Columns beyond
+/// `student_id,repo_url,ref,email,section,...`. Columns beyond
 /// `student_id`/`repo_url`/`ref` are carried into `Submission::metadata`.
 /// `repo_url`/`ref` become the `GitRepo` fetchable (see `crate::submissions`'s
 /// `Fetchable for GitRepo` impl: an unset `ref` is resolved at fetch time

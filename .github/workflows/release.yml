@@ -1,10 +1,9 @@
 name: release
 
 # Cross-compiles the pinned `autograder` binary students' CI download step
-# fetches (design §11.2, docs/plan.md step 19). Triggered by pushing a
-# `v*` tag; the tag name becomes both the release name and the version
-# string a starter template's `.github/workflows/autograde.yml` pins to
-# (see `scaffold::RELEASE_VERSION`).
+# fetches. Triggered by pushing a `v*` tag; the tag name becomes both the
+# release name and the version string a starter template's `.github/workflows/autograde.yml`
+# pins to (see `scaffold::RELEASE_VERSION`).
 on:
   push:
     tags:

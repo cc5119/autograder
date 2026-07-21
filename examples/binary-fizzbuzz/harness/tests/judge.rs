@@ -27,7 +27,7 @@
 //! `fizzbuzz_1_to_15` is unmarked, so it ships to students as the public
 //! test (the classic case); `fizzbuzz_multiples_of_15_and_zero` is gated
 //! `#[cfg(not(feature = "student"))]`, so `publish` drops it --
-//! adversarial in the sense the design calls for (§9): a solution that
+//! adversarial in the sense the design calls for: a solution that
 //! special-cases exactly the first 15 lines (matching the public test)
 //! still fails the n=0 (no output) and n=30 (another multiple-of-15 line,
 //! plus a full second pass through the fizz/buzz cycle) cases.

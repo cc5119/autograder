@@ -1,9 +1,9 @@
-use std::process::Command;
+use subprocess::Exec;
 
 use crate::error::Result;
 use crate::model::ResourceUsage;
 
-use super::exec::run_with_timeout;
+use super::exec::exec_with_timeout;
 use super::{Sandbox, SandboxOutcome, SandboxSpec};
 
 /// Runs the command as a host child process with a wall-clock timeout and
@@ -11,20 +11,20 @@ use super::{Sandbox, SandboxOutcome, SandboxSpec};
 /// kernel-isolated. Mounts and the network flag are no-ops here (the
 /// command already runs against the host filesystem/network); this is what
 /// makes `LocalSandbox` usable without podman, so it's what the CI tier
-/// uses (design §10, §11.3) and what M1/M2 can verify locally.
+/// uses and what M1/M2 can verify locally.
 pub struct LocalSandbox;
 
 impl Sandbox for LocalSandbox {
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
-        let mut cmd = Command::new(&spec.program);
-        cmd.args(&spec.args);
-        cmd.envs(&spec.env);
+        let mut exec = Exec::cmd(&spec.program)
+            .args(&spec.args)
+            .env_extend(&spec.env);
         if let Some(dir) = &spec.workdir {
-            cmd.current_dir(dir);
+            exec = exec.cwd(dir);
         }
 
-        let outcome = run_with_timeout(
-            cmd,
+        let outcome = exec_with_timeout(
+            exec,
             spec.limits.wall_clock,
             spec.limits.max_output_bytes as usize,
         )?;
