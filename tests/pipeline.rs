@@ -220,6 +220,7 @@ impl Evaluator for CapturingEvaluator<'_> {
             tests: Vec::new(),
             resource_usage: ResourceUsage::default(),
             diagnostics: Default::default(),
+            submission_date: None,
         })
     }
 }

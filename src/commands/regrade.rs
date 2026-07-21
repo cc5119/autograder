@@ -25,6 +25,7 @@ pub fn run(assignment_id: AssignmentId, assignment: &Path, config: &Config) -> R
             &overrides,
             &spec.assignment.deadline,
             spec.scoring.late_penalty.as_ref(),
+            eval.submission_date.as_ref(),
         );
         store.save_grade(eval.assignment_id, eval.run_id, &grade)?;
         grades.push(grade);
@@ -112,6 +113,7 @@ max-output-bytes = "64KiB"
             ],
             resource_usage: ResourceUsage::default(),
             diagnostics: Diagnostics::default(),
+            submission_date: None,
         }
     }
 

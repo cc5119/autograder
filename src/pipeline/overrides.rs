@@ -4,9 +4,8 @@
 //! raw `EvaluationResult` itself, so it stays an untouched audit trail no
 //! matter how many times a course re-grades or an appeal changes a score.
 //!
-//! `submitted_at` is operator-supplied, not derived from the resolved
-//! commit's own timestamp: an instructor/TA fills in `overrides.toml`
-//! after checking the real submission time.
+//! `overrides.toml`'s `submitted_at` is a fallback for when the Fetch
+//! stage has no trustworthy timestamp of its own (see `apply`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,6 +17,7 @@ use crate::error::{Error, Result};
 use crate::id::StudentId;
 use crate::model::Grade;
 use crate::spec::LatePenalty;
+use crate::submissions::SubmissionDate;
 
 /// The file name looked up under an assignment package dir, alongside
 /// `autograder.toml` and `harness/`.
@@ -64,23 +64,25 @@ impl Overrides {
     }
 }
 
-/// Applies whichever override applies to `grade.student_id`, in priority
-/// order: a manual override always wins outright (the instructor's final
-/// word); otherwise a late-penalty entry is applied if both the student has
-/// one in `overrides.toml` *and* the spec defines `[scoring.late-penalty]`
-/// (an assignment with no late-penalty policy never docks a score, even if
-/// an operator recorded a late timestamp). Neither present -> `grade`
-/// unchanged.
+/// Priority: manual override, then `submission_date` if trustworthy, then
+/// the manual `overrides.toml` late entry.
 pub fn apply(
     grade: Grade,
     overrides: &Overrides,
     deadline: &Zoned,
     late_policy: Option<&LatePenalty>,
+    submission_date: Option<&SubmissionDate>,
 ) -> Grade {
     if let Some(manual) = overrides.manual.get(&grade.student_id) {
         return apply_manual_override(grade, manual);
     }
-    if let (Some(late), Some(policy)) = (overrides.late.get(&grade.student_id), late_policy) {
+    let Some(policy) = late_policy else {
+        return grade;
+    };
+    if let Some(submitted_at) = submission_date.and_then(SubmissionDate::trusted_submitted_at) {
+        return apply_late_penalty(grade, submitted_at, deadline, policy);
+    }
+    if let Some(late) = overrides.late.get(&grade.student_id) {
         return apply_late_penalty(grade, late.submitted_at, deadline, policy);
     }
     grade
@@ -123,6 +125,7 @@ fn apply_late_penalty(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::submissions::CommitTimestamp;
 
     fn grade(score: f64) -> Grade {
         Grade {
@@ -194,7 +197,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             late: BTreeMap::new(),
         };
 
-        let result = apply(grade(10.0), &overrides, &deadline(), None);
+        let result = apply(grade(10.0), &overrides, &deadline(), None, None);
 
         assert_eq!(result.score, 45.0);
         assert_eq!(result.status, "manual-pass");
@@ -216,7 +219,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             )]),
         };
 
-        let result = apply(grade(80.0), &overrides, &deadline(), Some(&policy()));
+        let result = apply(grade(80.0), &overrides, &deadline(), Some(&policy()), None);
 
         assert_eq!(result.score, 80.0);
         assert!(result.late_penalty_percent.is_none());
@@ -237,7 +240,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()));
+        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()), None);
 
         assert_eq!(result.late_penalty_percent, Some(30.0));
         assert_eq!(result.score, 70.0);
@@ -256,7 +259,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()));
+        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()), None);
 
         assert_eq!(result.late_penalty_percent, Some(50.0));
         assert_eq!(result.score, 50.0);
@@ -275,7 +278,7 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, &deadline(), None);
+        let result = apply(grade(100.0), &overrides, &deadline(), None, None);
 
         assert_eq!(result.score, 100.0);
         assert!(result.late_penalty_percent.is_none());
@@ -301,10 +304,91 @@ submitted_at = "2026-02-16T10:00:00-08:00"
             )]),
         };
 
-        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()));
+        let result = apply(grade(100.0), &overrides, &deadline(), Some(&policy()), None);
 
         assert_eq!(result.score, 90.0);
         assert!(result.late_penalty_percent.is_none());
         assert_eq!(result.status, "override");
+    }
+
+    #[test]
+    fn automatically_resolved_date_wins_over_a_manual_late_entry() {
+        let overrides = Overrides {
+            manual: BTreeMap::new(),
+            late: BTreeMap::from([(
+                StudentId::new("alice"),
+                LateSubmission {
+                    submitted_at: deadline().timestamp()
+                        + std::time::Duration::from_secs(5 * 86_400),
+                },
+            )]),
+        };
+        let submission_date = SubmissionDate::Unblessed(CommitTimestamp {
+            push_event: Some(deadline().timestamp() - std::time::Duration::from_secs(3600)),
+            commit_date: deadline().timestamp() - std::time::Duration::from_secs(3600),
+        });
+
+        let result = apply(
+            grade(100.0),
+            &overrides,
+            &deadline(),
+            Some(&policy()),
+            Some(&submission_date),
+        );
+
+        assert_eq!(result.score, 100.0);
+        assert!(result.late_penalty_percent.is_none());
+    }
+
+    #[test]
+    fn unverified_unblessed_date_falls_back_to_the_manual_late_entry() {
+        let overrides = Overrides {
+            manual: BTreeMap::new(),
+            late: BTreeMap::from([(
+                StudentId::new("alice"),
+                LateSubmission {
+                    submitted_at: deadline().timestamp()
+                        + std::time::Duration::from_secs(49 * 3600),
+                },
+            )]),
+        };
+        let submission_date = SubmissionDate::Unblessed(CommitTimestamp {
+            push_event: None,
+            commit_date: deadline().timestamp() - std::time::Duration::from_secs(3600),
+        });
+
+        let result = apply(
+            grade(100.0),
+            &overrides,
+            &deadline(),
+            Some(&policy()),
+            Some(&submission_date),
+        );
+
+        assert_eq!(result.late_penalty_percent, Some(30.0));
+    }
+
+    #[test]
+    fn blessed_submission_trusts_its_own_commit_date_with_no_manual_entry_needed() {
+        let overrides = Overrides::default();
+        let submission_date = SubmissionDate::Blessed {
+            tag_push_event: None,
+            commit: CommitTimestamp {
+                push_event: None,
+                commit_date: deadline().timestamp()
+                    + std::time::Duration::from_secs(49 * 3600),
+            },
+            fallback: None,
+        };
+
+        let result = apply(
+            grade(100.0),
+            &overrides,
+            &deadline(),
+            Some(&policy()),
+            Some(&submission_date),
+        );
+
+        assert_eq!(result.late_penalty_percent, Some(30.0));
     }
 }

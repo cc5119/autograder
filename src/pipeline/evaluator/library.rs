@@ -286,6 +286,7 @@ impl<S: Sandbox> Evaluator for Library<S> {
             tests,
             resource_usage: run_outcome.resource_usage,
             diagnostics,
+            submission_date: None,
         })
     }
 }
@@ -331,6 +332,7 @@ fn terminal_result(
         tests: Vec::new(),
         resource_usage: ResourceUsage::default(),
         diagnostics,
+        submission_date: None,
     }
 }
 

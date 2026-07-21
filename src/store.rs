@@ -114,6 +114,7 @@ mod tests {
             tests: vec![],
             resource_usage: ResourceUsage::default(),
             diagnostics: Diagnostics::default(),
+            submission_date: None,
         }
     }
 

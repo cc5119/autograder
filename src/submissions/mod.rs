@@ -10,6 +10,7 @@
 //! `repo_url` never helps the common one-fork-per-student case, and a full
 //! clone is what the deadline-based ref search needs anyway).
 
+pub mod github_events;
 pub mod source;
 
 use std::collections::BTreeMap;
@@ -53,6 +54,57 @@ pub struct GitRepo {
     pub r#ref: Option<String>,
 }
 
+/// Tag a student pushes to bless a commit.
+const BLESS_TAG: &str = "listoco";
+
+/// `push_event` is server-verified and unforgeable; `commit_date` is the
+/// commit's own, backdatable author/committer date.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitTimestamp {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_event: Option<Timestamp>,
+    pub commit_date: Timestamp,
+}
+
+/// The latest on-time commit, captured alongside a `Blessed` submission so
+/// grading can still fall back to it later.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackCommit {
+    pub sha: String,
+    pub timestamp: CommitTimestamp,
+}
+
+/// How a submission's date was determined, and how much to trust it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubmissionDate {
+    /// Never deadline-gated.
+    Blessed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag_push_event: Option<Timestamp>,
+        commit: CommitTimestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback: Option<FallbackCommit>,
+    },
+    Unblessed(CommitTimestamp),
+}
+
+impl SubmissionDate {
+    /// `None` unless there's a GitHub-verified timestamp -- except for
+    /// `Blessed`, where `commit_date` alone is fine since blessing already
+    /// bypasses the deadline gate.
+    pub fn trusted_submitted_at(&self) -> Option<Timestamp> {
+        match self {
+            SubmissionDate::Blessed {
+                tag_push_event: Some(t),
+                ..
+            } => Some(*t),
+            SubmissionDate::Blessed { commit, .. } => Some(commit.commit_date),
+            SubmissionDate::Unblessed(commit) => commit.push_event,
+        }
+    }
+}
+
 /// Outcome of the Fetch stage for one submission.
 #[derive(Debug, Clone)]
 pub struct FetchOutcome {
@@ -60,6 +112,7 @@ pub struct FetchOutcome {
     pub workspace: Option<PathBuf>,
     pub graded_commit: Option<String>,
     pub message: Option<String>,
+    pub submission_date: Option<SubmissionDate>,
 }
 
 impl FetchOutcome {
@@ -69,6 +122,7 @@ impl FetchOutcome {
             workspace: None,
             graded_commit: None,
             message: Some(message.into()),
+            submission_date: None,
         }
     }
 
@@ -78,6 +132,7 @@ impl FetchOutcome {
             workspace: Some(workspace),
             graded_commit: Some(graded_commit),
             message: None,
+            submission_date: None,
         }
     }
 }
@@ -116,11 +171,8 @@ impl Fetchable for LocalPath {
 }
 
 impl Fetchable for GitRepo {
-    /// **[deferred: needs network]** -- clones `self.url` into `dest`, then
-    /// checks out `self.ref` if pinned, else the last commit at or before
-    /// `deadline` on the default branch. Every failure degrades to
-    /// `FetchOutcome::failed` rather than a hard `Err`, so one bad repo
-    /// doesn't abort the batch.
+    /// Every failure degrades to `FetchOutcome::failed` rather than a hard `Err`,
+    /// so one bad repo doesn't abort the batch.
     fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
         if dest.exists() {
             fs::remove_dir_all(dest)?;
@@ -136,9 +188,9 @@ impl Fetchable for GitRepo {
             )));
         }
 
-        let sha = match &self.r#ref {
+        let (sha, submission_date) = match &self.r#ref {
             Some(r) => match run_git(GIT_BIN, &rev_parse_argv(dest, r)) {
-                Ok(sha) if !sha.is_empty() => sha,
+                Ok(sha) if !sha.is_empty() => (sha, None),
                 _ => {
                     return Ok(FetchOutcome::failed(format!(
                         "ref {r:?} not found in {}",
@@ -156,14 +208,9 @@ impl Fetchable for GitRepo {
                         )));
                     }
                 };
-                match run_git(GIT_BIN, &last_commit_before_argv(dest, &branch, deadline)) {
-                    Ok(sha) if !sha.is_empty() => sha,
-                    _ => {
-                        return Ok(FetchOutcome::failed(format!(
-                            "no commit on {branch} at or before the deadline ({deadline}) for {}",
-                            self.url
-                        )));
-                    }
+                match resolve_unpinned(dest, &self.url, &branch, deadline) {
+                    Ok((sha, submission_date)) => (sha, Some(submission_date)),
+                    Err(e) => return Ok(FetchOutcome::failed(e)),
                 }
             }
         };
@@ -175,8 +222,96 @@ impl Fetchable for GitRepo {
             )));
         }
 
-        Ok(FetchOutcome::ok(dest.to_path_buf(), sha))
+        Ok(FetchOutcome {
+            submission_date,
+            ..FetchOutcome::ok(dest.to_path_buf(), sha)
+        })
     }
+}
+
+/// A `gh` failure fails the fetch outright, rather than silently falling
+/// back to the forgeable `git log` date for every submission.
+fn resolve_unpinned(
+    dest: &Path,
+    url: &str,
+    branch: &str,
+    deadline: &Zoned,
+) -> std::result::Result<(String, SubmissionDate), String> {
+    let events = match github_events::parse_github_url(url) {
+        Some((owner, repo)) => github_events::list_push_events(&owner, &repo)
+            .map_err(|e| format!("failed to read GitHub push history for {url}: {e}"))?,
+        None => Vec::new(),
+    };
+
+    let fallback = resolve_fallback_commit(dest, branch, deadline, &events)?;
+
+    let tag_ref = format!("refs/tags/{BLESS_TAG}");
+    let tag_sha = run_git(
+        GIT_BIN,
+        &rev_parse_argv(dest, &format!("{tag_ref}^{{commit}}")),
+    )
+    .ok();
+
+    if let Some(sha) = tag_sha.filter(|sha| !sha.is_empty()) {
+        let tag_push_event = github_events::latest(&events, &tag_ref, None).map(|e| e.created_at);
+        let commit_date = commit_date(dest, &sha)?;
+        let submission_date = SubmissionDate::Blessed {
+            tag_push_event,
+            commit: CommitTimestamp {
+                push_event: tag_push_event,
+                commit_date,
+            },
+            fallback,
+        };
+        return Ok((sha, submission_date));
+    }
+
+    match fallback {
+        Some(FallbackCommit { sha, timestamp }) => Ok((sha, SubmissionDate::Unblessed(timestamp))),
+        None => Err(format!(
+            "no commit on {branch} at or before the deadline ({deadline}) for {url}"
+        )),
+    }
+}
+
+/// The latest commit on `branch` at or before `deadline`
+fn resolve_fallback_commit(
+    dest: &Path,
+    branch: &str,
+    deadline: &Zoned,
+    events: &[github_events::PushEvent],
+) -> std::result::Result<Option<FallbackCommit>, String> {
+    let branch_ref = format!("refs/heads/{branch}");
+    if let Some(event) = github_events::latest(events, &branch_ref, Some(deadline.timestamp())) {
+        let commit_date = commit_date(dest, &event.head)?;
+        return Ok(Some(FallbackCommit {
+            sha: event.head.clone(),
+            timestamp: CommitTimestamp {
+                push_event: Some(event.created_at),
+                commit_date,
+            },
+        }));
+    }
+
+    let sha =
+        run_git(GIT_BIN, &last_commit_before_argv(dest, branch, deadline)).unwrap_or_default();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    let commit_date = commit_date(dest, &sha)?;
+    Ok(Some(FallbackCommit {
+        sha,
+        timestamp: CommitTimestamp {
+            push_event: None,
+            commit_date,
+        },
+    }))
+}
+
+fn commit_date(dest: &Path, sha: &str) -> std::result::Result<Timestamp, String> {
+    let raw = run_git(GIT_BIN, &commit_date_argv(dest, sha)).map_err(|e| e.to_string())?;
+    raw.parse()
+        .map_err(|e| format!("failed to parse commit date {raw:?} for {sha}: {e}"))
 }
 
 impl<F: Fetchable> Submission<F> {
@@ -216,7 +351,7 @@ impl SubmissionsSource<LocalPath> for DirectorySource {
                 metadata: Default::default(),
             });
         }
-        submissions.sort_by(|a, b| a.student_id.cmp(&b.student_id));
+        submissions.sort_by_key(|a| a.student_id);
         Ok(submissions)
     }
 }
@@ -230,6 +365,7 @@ pub struct FetchRecord {
     pub graded_commit: Option<String>,
     pub message: Option<String>,
     pub fetched_at: Timestamp,
+    pub submission_date: Option<SubmissionDate>,
 }
 
 fn fetch_record_path(job_root: &Path) -> PathBuf {
@@ -268,6 +404,7 @@ pub fn fetch_batch<F: Fetchable>(
             graded_commit: outcome.graded_commit,
             message: outcome.message,
             fetched_at: Timestamp::now(),
+            submission_date: outcome.submission_date,
         };
         write_fetch_record(&job_root, &record)?;
         records.push((submission.student_id, record));
@@ -343,6 +480,18 @@ fn checkout_argv(dest: &Path, sha: &str) -> Vec<String> {
         "-C".to_string(),
         dest.display().to_string(),
         "checkout".to_string(),
+        sha.to_string(),
+    ]
+}
+
+/// `%cI` so it parses straight into a `Timestamp`.
+fn commit_date_argv(dest: &Path, sha: &str) -> Vec<String> {
+    vec![
+        "-C".to_string(),
+        dest.display().to_string(),
+        "log".to_string(),
+        "-1".to_string(),
+        "--format=%cI".to_string(),
         sha.to_string(),
     ]
 }
@@ -429,6 +578,160 @@ mod tests {
         assert!(err.to_string().contains("failed to run"));
     }
 
-    // `GitRepo::fetch`'s live clone/resolve/checkout sequence needs real
-    // git + network -- [deferred: needs network].
+    // `GitRepo::fetch` itself needs real network -- [deferred]. The
+    // functions below don't, so they're tested directly.
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        git(dir.path(), &["config", "user.email", "test@example.com"]);
+        git(dir.path(), &["config", "user.name", "Test"]);
+        dir
+    }
+
+    /// Commits one file, backdated via `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE`.
+    fn commit(dir: &Path, filename: &str, date: &str) -> String {
+        std::fs::write(dir.join(filename), "x").unwrap();
+        git(dir, &["add", filename]);
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["commit", "-q", "-m", "msg"])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
+    fn deadline(s: &str) -> Zoned {
+        format!("{s}[UTC]").parse().unwrap()
+    }
+
+    #[test]
+    fn resolve_fallback_commit_falls_back_to_git_log_when_no_push_events() {
+        let repo = init_repo();
+        let sha = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
+
+        let fallback =
+            resolve_fallback_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(fallback.sha, sha);
+        assert!(fallback.timestamp.push_event.is_none());
+        assert_eq!(
+            fallback.timestamp.commit_date,
+            "2026-02-10T00:00:00Z".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_fallback_commit_prefers_a_verified_push_event_over_commit_date() {
+        let repo = init_repo();
+        // Backdated to look on-time -- the verified event should still win.
+        let sha = commit(repo.path(), "a.txt", "2026-01-01T00:00:00Z");
+        let events = vec![github_events::PushEvent {
+            created_at: "2026-02-12T00:00:00Z".parse().unwrap(),
+            r#ref: "refs/heads/main".to_string(),
+            head: sha.clone(),
+        }];
+
+        let fallback = resolve_fallback_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &events,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(fallback.sha, sha);
+        assert_eq!(
+            fallback.timestamp.push_event,
+            Some("2026-02-12T00:00:00Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_fallback_commit_is_none_when_nothing_predates_the_deadline() {
+        let repo = init_repo();
+        commit(repo.path(), "a.txt", "2026-02-20T00:00:00Z");
+
+        let fallback =
+            resolve_fallback_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[])
+                .unwrap();
+
+        assert!(fallback.is_none());
+    }
+
+    #[test]
+    fn resolve_unpinned_blessed_tag_bypasses_the_deadline_entirely() {
+        let repo = init_repo();
+        let sha = commit(repo.path(), "a.txt", "2026-03-01T00:00:00Z");
+        git(repo.path(), &["tag", BLESS_TAG]);
+
+        // Deadline is well before the (blessed) commit -- an `Unblessed`
+        // resolution would reject this outright.
+        let (resolved_sha, submission_date) = resolve_unpinned(
+            repo.path(),
+            "local-repo-not-a-github-url",
+            "main",
+            &deadline("2026-01-01T00:00:00Z"),
+        )
+        .unwrap();
+
+        assert_eq!(resolved_sha, sha);
+        assert!(matches!(submission_date, SubmissionDate::Blessed { .. }));
+    }
+
+    #[test]
+    fn resolve_unpinned_unblessed_respects_the_deadline() {
+        let repo = init_repo();
+        let on_time = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
+        commit(repo.path(), "b.txt", "2026-02-20T00:00:00Z");
+
+        let (sha, submission_date) = resolve_unpinned(
+            repo.path(),
+            "local-repo-not-a-github-url",
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+        )
+        .unwrap();
+
+        assert_eq!(sha, on_time);
+        assert!(matches!(submission_date, SubmissionDate::Unblessed(_)));
+    }
+
+    #[test]
+    fn resolve_unpinned_unblessed_errs_when_nothing_predates_the_deadline() {
+        let repo = init_repo();
+        commit(repo.path(), "a.txt", "2026-02-20T00:00:00Z");
+
+        let err = resolve_unpinned(
+            repo.path(),
+            "local-repo-not-a-github-url",
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("no commit on main"));
+    }
 }

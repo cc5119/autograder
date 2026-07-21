@@ -178,6 +178,7 @@ impl Evaluator for StubEvaluator {
             tests,
             resource_usage: ResourceUsage::default(),
             diagnostics: Diagnostics::default(),
+            submission_date: None,
         })
     }
 }

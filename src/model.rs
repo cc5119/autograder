@@ -112,6 +112,8 @@ pub struct EvaluationResult {
     pub resource_usage: ResourceUsage,
     #[serde(default)]
     pub diagnostics: Diagnostics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_date: Option<crate::submissions::SubmissionDate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +196,20 @@ mod tests {
                 compiler_errors: None,
                 stderr_excerpt: Some("…".into()),
             },
+            submission_date: Some(crate::submissions::SubmissionDate::Blessed {
+                tag_push_event: Some("2026-02-13T23:00:00Z".parse().unwrap()),
+                commit: crate::submissions::CommitTimestamp {
+                    push_event: Some("2026-02-13T23:00:00Z".parse().unwrap()),
+                    commit_date: "2026-02-13T22:55:00Z".parse().unwrap(),
+                },
+                fallback: Some(crate::submissions::FallbackCommit {
+                    sha: "abc123".into(),
+                    timestamp: crate::submissions::CommitTimestamp {
+                        push_event: Some("2026-02-14T23:00:00Z".parse().unwrap()),
+                        commit_date: "2026-02-14T22:55:00Z".parse().unwrap(),
+                    },
+                }),
+            }),
         }
     }
 

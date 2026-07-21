@@ -82,6 +82,7 @@ fn terminal_eval(
             compiler_errors: None,
             stderr_excerpt: message,
         },
+        submission_date: None,
     }
 }
 
@@ -197,7 +198,10 @@ fn evaluate_submission(
         );
     }
 
-    outcome
+    outcome.map(|mut eval| {
+        eval.submission_date = fetch_record.submission_date.clone();
+        eval
+    })
 }
 
 /// Stage orchestration for the authoritative-tier `grade` pipeline:
@@ -255,6 +259,7 @@ pub fn grade_batch<F>(
             overrides,
             &spec.assignment.deadline,
             spec.scoring.late_penalty.as_ref(),
+            eval.submission_date.as_ref(),
         );
         store.save_grade(ctx.assignment_id, ctx.run_id, &grade)?;
         grades.push(grade);
