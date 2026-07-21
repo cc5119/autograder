@@ -117,23 +117,24 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recursively collects every regular file under `root`, as paths relative
+/// Recursively collects every *regular file* under `root`, as paths relative
 /// to `root` itself. A missing `root` yields an empty list, not an error.
-pub fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub fn walk_regular_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    walk_files_into(root, root, &mut out)?;
+    walk_regular_files_into(root, root, &mut out)?;
     Ok(out)
 }
 
-fn walk_files_into(root: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn walk_regular_files_into(root: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     if !current.is_dir() {
         return Ok(());
     }
     for entry in read_dir_entries(current)? {
         let path = entry.path();
-        if file_type(&entry)?.is_dir() {
-            walk_files_into(root, &path, out)?;
-        } else {
+        let file_type = file_type(&entry)?;
+        if file_type.is_dir() {
+            walk_regular_files_into(root, &path, out)?;
+        } else if file_type.is_file() {
             out.push(
                 path.strip_prefix(root)
                     .expect("path is under root")
@@ -221,12 +222,12 @@ mod tests {
     }
 
     #[test]
-    fn walk_files_returns_every_file_as_a_root_relative_path() {
+    fn walk_regular_files_returns_every_file_as_a_root_relative_path() {
         let root = tempfile::tempdir().unwrap();
         write(&root.path().join("a.txt"), "x");
         write(&root.path().join("sub/b.txt"), "y");
 
-        let mut files = walk_files(root.path()).unwrap();
+        let mut files = walk_regular_files(root.path()).unwrap();
         files.sort();
 
         assert_eq!(
@@ -236,10 +237,22 @@ mod tests {
     }
 
     #[test]
-    fn walk_files_on_a_missing_root_is_empty_not_an_error() {
+    fn walk_regular_files_on_a_missing_root_is_empty_not_an_error() {
         assert_eq!(
-            walk_files(Path::new("/nonexistent/for/sure")).unwrap(),
+            walk_regular_files(Path::new("/nonexistent/for/sure")).unwrap(),
             Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn walk_regular_files_skips_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        write(&root.path().join("real.txt"), "x");
+        std::os::unix::fs::symlink("/etc/passwd", root.path().join("link.txt")).unwrap();
+
+        assert_eq!(
+            walk_regular_files(root.path()).unwrap(),
+            vec![PathBuf::from("real.txt")]
         );
     }
 

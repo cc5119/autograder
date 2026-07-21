@@ -59,7 +59,7 @@ pub enum Rule {
 }
 
 pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
-    let all_files = fs::walk_files(&ctx.source_root)?;
+    let all_files = fs::walk_regular_files(&ctx.source_root)?;
 
     for rule in rules {
         match rule {
@@ -84,7 +84,7 @@ pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
                 let pattern = ctx.resolve(pattern);
                 // `"."`, not `&ctx.source_root`: `all_files` entries are
                 // already relative to `source_root` (stripped by
-                // `fs::walk_files`), so `ignore`'s own root-stripping in
+                // `fs::walk_regular_files`), so `ignore`'s own root-stripping in
                 // `matched()` must be a no-op here -- passing the real
                 // `source_root` would make it strip a *second* time, which
                 // silently corrupts the match whenever `source_root` is a

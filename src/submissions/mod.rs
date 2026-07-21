@@ -281,7 +281,7 @@ fn hash_tree(dir: &Path) -> Result<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut paths = fs::walk_files(dir)?;
+    let mut paths = fs::walk_regular_files(dir)?;
     paths.sort();
 
     let mut hasher = DefaultHasher::new();
