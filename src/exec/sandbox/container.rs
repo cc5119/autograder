@@ -37,9 +37,7 @@ pub struct ContainerSandbox {
     pub user: String,
     /// A custom seccomp profile for `--security-opt seccomp=...`. `None`
     /// falls back to podman's own bundled default (still denies `mount`,
-    /// `ptrace`, `unshare`, `keyctl`, etc.) -- only worth the custom one
-    /// for authoritative grading of untrusted code, not advisory `ci`
-    /// runs, so a caller like `ci` should overwrite this with `None`.
+    /// `ptrace`, `unshare`, `keyctl`, etc.)
     pub seccomp_profile: Option<std::path::PathBuf>,
 }
 
