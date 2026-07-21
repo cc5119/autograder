@@ -1,6 +1,45 @@
+# ---- isolate builder -------------------------------------------------------
+# Build isolate as a separate stage to keep build toolchain out of the final 
+# image. Same base as the final image to link against the same dynamic 
+# libraries at runtime (libc/libcap/libseccomp/libsystemd)
+FROM docker.io/library/rust:latest AS isolate-build
+
+ARG ISOLATE_VERSION=v2.6
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        git make gcc pkg-config \
+        libcap-dev libseccomp-dev libsystemd-dev \
+        asciidoc; \
+    git clone --depth 1 --branch "${ISOLATE_VERSION}" \
+        https://github.com/ioi/isolate.git /tmp/isolate; \
+    make -C /tmp/isolate install DESTDIR=/out
+
+# ---- final base image ------------------------------------------------------
 FROM docker.io/library/rust:latest
 
 ARG IMAGE_SOURCE=https://github.com/unknown/unknown
 LABEL org.opencontainers.image.source=${IMAGE_SOURCE}
 
 RUN cargo install cargo-nextest --locked
+
+# isolate's runtime shared libraries (the `-dev` headers stay in the builder).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libcap2 libseccomp2 libsystemd0; \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy the setuid-root isolate binary.
+COPY --from=isolate-build /out/ /
+# `make install` sets the setuid bit; re-assert it in case COPY dropped the
+# mode bits (behaviour varies across podman/buildah versions).
+RUN chmod u+s /usr/local/bin/isolate
+
+# Run-stage wrapper: derives isolate's uid block from the container's userns
+# map, writes the config, and preps dirs + cgroups, then execs its args. The
+# run stage prepends it (`... isolate-setup.sh cargo nextest run ...`); build
+# stages call cargo directly and never trigger cgroup manipulation. Not an
+# ENTRYPOINT for exactly that reason.
+COPY isolate-setup.sh /usr/local/bin/isolate-setup.sh
+RUN chmod 0755 /usr/local/bin/isolate-setup.sh
