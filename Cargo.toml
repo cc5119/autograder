@@ -6,6 +6,9 @@ edition = "2024"
 # as its modules) instead of Cargo's default one-binary-per-file-under-tests/.
 autotests = false
 
+[workspace]
+members = ["crates/autograder-test"]
+
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
