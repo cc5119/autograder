@@ -55,7 +55,8 @@ pub struct SandboxLimits {
 }
 
 /// What to run and under what isolation/limits. `LocalSandbox` runs
-/// `program`/`args` directly on the host (mounts/network are no-ops there);
+/// `program`/`args` directly on the host (mounts/network/the fields below
+/// are all no-ops there, since there's no container to configure);
 /// `ContainerSandbox` maps every field onto `podman run` flags.
 #[derive(Debug, Clone)]
 pub struct SandboxSpec {
@@ -67,6 +68,20 @@ pub struct SandboxSpec {
     /// If false, network access is denied (`--network=none`).
     pub network: bool,
     pub limits: SandboxLimits,
+    /// `--cgroupns=private`, needed by a run-stage container that nests
+    /// `isolate` (isolate manages its own cgroup subtree per box).
+    pub cgroupns_private: bool,
+    /// `--cap-add=<X>` per entry -- e.g. `SYS_ADMIN`, which isolate's own
+    /// namespace `clone()` needs even namespaced inside the container.
+    pub cap_add: Vec<String>,
+    /// `--security-opt unmask=<X>` per entry -- e.g. `/sys/fs/cgroup`, so
+    /// nested isolate can write cgroup controllers `--read-only` would
+    /// otherwise mask.
+    pub unmask: Vec<String>,
+    /// `--tmpfs <path>` per entry -- writable scratch space under an
+    /// otherwise `--read-only` rootfs, for paths isolate itself must write
+    /// to (its config file, box root, lock root).
+    pub tmpfs: Vec<PathBuf>,
 }
 
 impl SandboxSpec {
@@ -79,6 +94,10 @@ impl SandboxSpec {
             mounts: Vec::new(),
             network: false,
             limits,
+            cgroupns_private: false,
+            cap_add: Vec::new(),
+            unmask: Vec::new(),
+            tmpfs: Vec::new(),
         }
     }
 }

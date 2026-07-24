@@ -162,10 +162,12 @@ base = 0.0
         write(&harness_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &harness_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [[bin]]\nname = \"driver\"\npath = \"src/bin/driver.rs\"\n\n\
+             [dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
-            &harness_dir.path().join("harness/src/main.rs"),
+            &harness_dir.path().join("harness/src/bin/driver.rs"),
             "fn main() {}\n",
         );
 
@@ -239,10 +241,12 @@ base = 0.0
         write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
         write(
             &assignment_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [[bin]]\nname = \"driver\"\npath = \"src/bin/driver.rs\"\n\n\
+             [dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
         write(
-            &assignment_dir.path().join("harness/src/main.rs"),
+            &assignment_dir.path().join("harness/src/bin/driver.rs"),
             "fn main() {}\n",
         );
 

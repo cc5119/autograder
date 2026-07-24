@@ -1,10 +1,10 @@
 pub mod binary;
 pub mod library;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
-use crate::exec::sandbox::{Mount, MountMode, SandboxLimits};
+use crate::exec::sandbox::{Mount, MountMode, SandboxLimits, SandboxSpec};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
@@ -30,6 +30,36 @@ pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
         pids: run.pids,
         max_output_bytes: run.max_output_bytes.0,
     }
+}
+
+/// Enables nested `isolate` inside the run-stage container: the judge's
+/// tests import `autograder-test`, which shells out to `isolate` to enforce
+/// per-test limits (see `attic/per-test-limits-isolate-design-2026-07-21.md`).
+/// Only the run stage needs this -- build/archive never spawn student code
+/// and so never need cgroup access -- so callers apply this to `run_spec`
+/// alone, never `build_spec`/`archive_spec`.
+///
+/// The flag values themselves are validated in the design doc's spike
+/// (`spike/isolate-podman/`): dropping `SYS_ADMIN` breaks isolate's
+/// namespace `clone()`, dropping the `/sys/fs/cgroup` unmask leaves the
+/// cgroup unwritable. `isolate-setup.sh` (baked into the run-stage image,
+/// see `container/Containerfile`) is the wrapper that preps cgroups/config
+/// before `exec`ing the real command; the tmpfs paths are exactly what it
+/// writes into. Rather than a dedicated `SandboxSpec` field, the wrapper is
+/// spliced directly into `program`/`args` -- the pair that already fully
+/// describes the container's command -- by swapping `program` for the
+/// wrapper and pushing the original `program` back as `args[0]`.
+pub(crate) fn isolate_run_config(run_spec: &mut SandboxSpec) {
+    run_spec.cgroupns_private = true;
+    run_spec.cap_add = vec!["SYS_ADMIN".to_string()];
+    run_spec.unmask = vec!["/sys/fs/cgroup".to_string()];
+    run_spec.tmpfs = vec![
+        PathBuf::from("/usr/local/etc"),
+        PathBuf::from("/var/local/lib/isolate"),
+        PathBuf::from("/run/isolate"),
+    ];
+    let inner_program = std::mem::replace(&mut run_spec.program, "isolate-setup.sh".to_string());
+    run_spec.args.insert(0, inner_program);
 }
 
 /// Writes `dir/.config/nextest.toml` with `store-success-output = true`, so

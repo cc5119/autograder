@@ -1,2 +1,5 @@
 #[test]
-fn example_test() { }
+fn example_test() {
+    let outcome = autograder_test::bin("driver").run();
+    assert!(outcome.success());
+}

@@ -79,6 +79,21 @@ impl ContainerSandbox {
         argv.push("--user".to_string());
         argv.push(self.user.clone());
 
+        if spec.cgroupns_private {
+            argv.push("--cgroupns=private".to_string());
+        }
+        for cap in &spec.cap_add {
+            argv.push(format!("--cap-add={cap}"));
+        }
+        for path in &spec.unmask {
+            argv.push("--security-opt".to_string());
+            argv.push(format!("unmask={path}"));
+        }
+        for path in &spec.tmpfs {
+            argv.push("--tmpfs".to_string());
+            argv.push(path.display().to_string());
+        }
+
         for mount in &spec.mounts {
             let mode = match mount.mode {
                 MountMode::ReadOnly => "ro",
@@ -319,6 +334,36 @@ mod tests {
         let argv = sandbox().build_argv(&s, &cidfile());
         assert_eq!(argv[argv.len() - 2], "/judge.sh");
         assert_eq!(argv[argv.len() - 1], "--flag");
+    }
+
+    #[test]
+    fn a_default_spec_emits_no_isolate_flags() {
+        let argv = sandbox().build_argv(&spec(), &cidfile());
+        let joined = argv.join(" ");
+
+        assert!(!joined.contains("--cgroupns"));
+        assert!(!joined.contains("--cap-add"));
+        assert!(!joined.contains("unmask="));
+        assert!(!joined.contains("--tmpfs"));
+        assert_eq!(argv[argv.len() - 1], "/judge.sh");
+    }
+
+    #[test]
+    fn isolate_fields_produce_the_expected_flags() {
+        let mut s = spec();
+        s.cgroupns_private = true;
+        s.cap_add = vec!["SYS_ADMIN".into()];
+        s.unmask = vec!["/sys/fs/cgroup".into()];
+        s.tmpfs = vec![PathBuf::from("/usr/local/etc"), PathBuf::from("/run/isolate")];
+        let argv = sandbox().build_argv(&s, &cidfile());
+        let joined = argv.join(" ");
+
+        assert!(joined.contains("--cgroupns=private"));
+        assert!(joined.contains("--cap-add=SYS_ADMIN"));
+        assert!(joined.contains("--security-opt unmask=/sys/fs/cgroup"));
+        assert!(joined.contains("--tmpfs /usr/local/etc"));
+        assert!(joined.contains("--tmpfs /run/isolate"));
+        assert_eq!(argv[argv.len() - 1], "/judge.sh");
     }
 
     fn sandbox_with_bin(podman_bin: &str) -> ContainerSandbox {

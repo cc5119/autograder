@@ -1,21 +1,5 @@
-use std::path::PathBuf;
-use std::process::Command;
-
-fn binary() -> PathBuf {
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("harness has a parent (the workspace root)");
-    let status = Command::new("cargo")
-        .args(["build", "-p", "{id}"])
-        .current_dir(repo_root)
-        .status()
-        .expect("run cargo build -p {id}");
-    assert!(status.success(), "cargo build -p {id} failed");
-    repo_root.join("target/debug/{id}")
-}
-
 #[test]
 fn example_test() {
-    let _binary = Command::new(binary());
-    todo!();
+    let outcome = autograder_test::bin("{id}").run();
+    assert!(outcome.success());
 }

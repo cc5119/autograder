@@ -18,7 +18,7 @@ fn init_produces_a_loadable_library_package() {
     assert!(outcome.dir.join("hw3/Cargo.toml").is_file());
     assert!(outcome.dir.join("hw3/src/lib.rs").is_file());
     assert!(outcome.dir.join("harness/Cargo.toml").is_file());
-    assert!(outcome.dir.join("harness/src/main.rs").is_file());
+    assert!(outcome.dir.join("harness/src/bin/driver.rs").is_file());
     assert!(outcome.dir.join("harness/tests/judge.rs").is_file());
 
     let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();
@@ -39,10 +39,19 @@ fn init_produces_a_loadable_binary_package_with_a_harness_dir() {
 
     let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();
     assert_eq!(spec.assignment.kind, AssignmentKind::Binary);
-    assert_eq!(
-        std::fs::read_to_string(outcome.dir.join("Cargo.toml")).unwrap(),
-        "[workspace]\nresolver = \"3\"\nmembers = [\"harness\", \"wc\"]\n"
-    );
+
+    let workspace: toml::Value =
+        toml::from_str(&std::fs::read_to_string(outcome.dir.join("Cargo.toml")).unwrap())
+            .unwrap();
+    assert_eq!(workspace["workspace"]["resolver"].as_str(), Some("3"));
+    let mut members: Vec<_> = workspace["workspace"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap())
+        .collect();
+    members.sort();
+    assert_eq!(members, ["harness", "wc"]);
 }
 
 #[test]

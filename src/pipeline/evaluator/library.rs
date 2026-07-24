@@ -1,6 +1,6 @@
 //! The `library` `Evaluator`: builds the trusted, permanently-checked-in
-//! **driver** crate at `[assignment].harness` (path-depends on the student
-//! library) and runs it under `cargo nextest`, both inside a `Sandbox`.
+//! harness crate at `[assignment].harness` and runs its tests under `cargo
+//! nextest`, both inside a `Sandbox`.
 //!
 //! The harness is overlaid fresh per job into `repo_root/<harness>`
 //! (`repo_root` = `ctx.workspace`'s parent), never built in place -- sharing
@@ -8,11 +8,19 @@
 //! against the same `Cargo.lock`/`target/`, since Cargo rewrites the lock
 //! whenever the path dependency's contents change.
 //!
-//! Build and run both use `workdir = repo_root` with `-p <harness_package>`
-//! (never `cd`ed into the harness dir, no `--test` filter): `-p` is what
-//! keeps a same-named decoy test in the student's own crate from ever
-//! executing, since `grade` trusts every test an `eval` reports with no
-//! name allowlist (see `attic/same-name-test-target-repro`).
+//! Mirrors `binary`'s shape: the harness owns a compiled **driver** binary
+//! (`[[bin]] name = "driver"`, path-depending on the student's library
+//! crate) and the judge's `#[test]`s never call into the student's library
+//! in-process -- they spawn `driver` as a child (via the `autograder-test`
+//! library the harness imports) and assert on its observable behavior,
+//! exactly like `binary`'s judge spawns the compiled student binary. This
+//! uniformity is what lets both assignment kinds share one per-test
+//! sandboxing mechanism -- nested `isolate`, enabled on the run stage via
+//! `evaluator::isolate_run_config` -- instead of per-stage limits only (see
+//! `attic/per-test-limits-isolate-design-2026-07-21.md`).
+//!
+//! Build and run both use `workdir = repo_root` (never `cd`ed into the
+//! harness dir, no `--test` filter).
 //!
 //! `repo_root` isn't a descendant of `workspace`, so Cargo can't discover
 //! `workspace`'s offline vendoring config there -- passed as `--config`
@@ -23,20 +31,22 @@
 //! executes (see `evaluator::hidden_tests_mounts`'s doc comment for why a
 //! read-only mount alone doesn't do that):
 //!
-//! 1. **build student** -- `cargo build -p <id>` only, mounted via
-//!    `hidden_tests_mounts` (harness/tests hidden). A student `build.rs`
-//!    runs here with no hidden test source to read.
+//! 1. **build student** -- `cargo build -p <harness_package> --bin driver`,
+//!    mounted via `hidden_tests_mounts` (harness/tests hidden). This
+//!    transitively compiles the student's own library crate (`driver`'s
+//!    path dependency) and produces the driver binary stage 3 spawns. A
+//!    student `build.rs` runs here with no hidden test source to read.
 //! 2. **archive judge** -- `cargo nextest archive -p <harness>`, mounted
 //!    via the full `repo_root_mounts` (harness fully visible). Nothing
-//!    student-authored *executes* in this stage, only compiles/links
-//!    against the artifact stage 1 already built, so the real hidden
-//!    tests being readable here is harmless.
+//!    student-authored *executes* in this stage, only the judge's own test
+//!    binaries are compiled -- it doesn't even need `driver` already built
+//!    -- so the real hidden tests being readable here is harmless.
 //! 3. **run** -- `cargo nextest run --archive-file`, again via
-//!    `hidden_tests_mounts`. Student code actually executes here
-//!    (in-process, since `library` links the student crate straight into
-//!    the judge's test binary), but the archive contains only compiled
-//!    binaries -- there's no hidden test source anywhere in this
-//!    container to read regardless.
+//!    `hidden_tests_mounts`, with nested `isolate` enabled. Student code
+//!    actually executes here -- the archived judge spawns the already-built
+//!    `driver` binary, which links the student crate -- but the archive
+//!    contains only compiled binaries, so there's no hidden test source
+//!    anywhere in this container to read regardless.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -50,7 +60,9 @@ use crate::model::{
 };
 use crate::spec::Spec;
 
-use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
+use super::{
+    Evaluator, build_sandbox_limits, isolate_run_config, run_sandbox_limits, write_nextest_config,
+};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
 /// writes to; mirrors `vendor::prefetch`'s output layout.
@@ -167,7 +179,9 @@ impl<S: Sandbox> Evaluator for Library<S> {
             "build".into(),
             "--offline".into(),
             "-p".into(),
-            ctx.assignment_id.to_string(),
+            self.harness_package.clone(),
+            "--bin".into(),
+            "driver".into(),
         ];
         build_spec.args.extend(config_args.iter().cloned());
         build_spec.workdir = Some(repo_root.clone());
@@ -237,6 +251,7 @@ impl<S: Sandbox> Evaluator for Library<S> {
         ];
         run_spec.workdir = Some(repo_root.clone());
         run_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
+        isolate_run_config(&mut run_spec);
 
         let run_outcome = self.sandbox.run(&run_spec)?;
         if run_outcome.timed_out {
@@ -615,7 +630,9 @@ base = 0.0
         std::fs::create_dir_all(package_dir.join("harness")).unwrap();
         std::fs::write(
             package_dir.join("harness/Cargo.toml"),
-            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [[bin]]\nname = \"driver\"\npath = \"src/bin/driver.rs\"\n\n\
+             [dependencies]\nhw3 = { path = \"../hw3\" }\n",
         )
         .unwrap();
     }
@@ -713,7 +730,7 @@ base = 0.0
     }
 
     #[test]
-    fn stage_1_builds_only_the_student_crate_with_harness_tests_hidden() {
+    fn stage_1_builds_the_harness_driver_bin_with_harness_tests_hidden() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
@@ -726,12 +743,13 @@ base = 0.0
         let specs = specs.lock().unwrap();
         let build_spec = &specs[0];
         assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
+        // Scoped to the harness's `driver` bin target, never the student
+        // crate directly -- building it transitively compiles the
+        // student's library crate (`driver`'s path dependency).
         assert!(build_spec.args.contains(&"-p".to_string()));
-        // Scoped to the student's own crate, never the harness package --
-        // stage 1 must not need to build (and thus doesn't need to see)
-        // anything harness-related.
-        assert!(build_spec.args.contains(&"hw3".to_string()));
-        assert!(!build_spec.args.contains(&"harness".to_string()));
+        assert!(build_spec.args.contains(&"harness".to_string()));
+        assert!(build_spec.args.contains(&"--bin".to_string()));
+        assert!(build_spec.args.contains(&"driver".to_string()));
         assert!(!build_spec.args.contains(&"--test".to_string()));
 
         let shadow = build_spec
@@ -799,10 +817,12 @@ base = 0.0
     #[test]
     fn a_custom_assignment_harness_name_drives_both_the_directory_and_the_p_arg() {
         let package_dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(package_dir.path().join("driver")).unwrap();
+        std::fs::create_dir_all(package_dir.path().join("judge")).unwrap();
         std::fs::write(
-            package_dir.path().join("driver/Cargo.toml"),
-            "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
+            package_dir.path().join("judge/Cargo.toml"),
+            "[package]\nname = \"judge\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [[bin]]\nname = \"driver\"\npath = \"src/bin/driver.rs\"\n\n\
+             [dependencies]\nhw3 = { path = \"../hw3\" }\n",
         )
         .unwrap();
         let toml = r#"
@@ -811,7 +831,7 @@ id = "hw3"
 name = "Binary search tree"
 kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-harness = "driver"
+harness = "judge"
 cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [sandbox]
@@ -841,14 +861,16 @@ base = 0.0
         let (workspace, _harness_dir) = job_dirs(repo_root.path());
 
         // Stage 1 (student build) succeeds; stage 2 (archive, scoped to
-        // the custom harness package name) fails -- that's the one that
-        // should reference "driver".
+        // the custom harness package name) fails.
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
         let evaluator = Library::new(&spec, package_dir.path(), sandbox).unwrap();
         evaluator.evaluate(&ctx(workspace)).unwrap();
 
         let specs = specs.lock().unwrap();
-        assert!(!specs[0].args.contains(&"driver".to_string()));
-        assert!(specs[1].args.contains(&"driver".to_string()));
+        // Both stages reference the custom harness package name -- stage 1
+        // because it now builds `-p <harness_package> --bin driver`, stage 2
+        // because it archives `-p <harness_package>`.
+        assert!(specs[0].args.contains(&"judge".to_string()));
+        assert!(specs[1].args.contains(&"judge".to_string()));
     }
 }

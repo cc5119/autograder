@@ -55,7 +55,9 @@ use crate::model::{
 use crate::spec::Spec;
 
 use super::library::parse_junit_report;
-use super::{Evaluator, build_sandbox_limits, run_sandbox_limits, write_nextest_config};
+use super::{
+    Evaluator, build_sandbox_limits, isolate_run_config, run_sandbox_limits, write_nextest_config,
+};
 
 const VENDOR_DIR_NAME: &str = "vendor";
 
@@ -221,6 +223,7 @@ impl<S: Sandbox> Evaluator for Binary<S> {
         run_spec.workdir = Some(repo_root.clone());
         run_spec.env = env;
         run_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
+        isolate_run_config(&mut run_spec);
 
         let run_outcome = self.sandbox.run(&run_spec)?;
         if run_outcome.timed_out {
