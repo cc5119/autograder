@@ -5,7 +5,7 @@
 //! schema/template shape.
 
 use autograder::error::Error;
-use autograder::package::publish::{publish, PublishMode};
+use autograder::package::publish::{PublishMode, publish};
 use autograder::spec::SPEC_FILE;
 
 use crate::common::{binary_package, library_package, write};

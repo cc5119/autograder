@@ -130,7 +130,10 @@ fn evaluate_batch_reports_fetch_failed_when_the_checkout_has_no_id_directory() {
 
     // No `hw3/` under `alice/` -- the fetch itself succeeded, but the
     // checkout has no crate matching `[assignment].id`.
-    write(&submissions_dir.path().join("alice/src/lib.rs"), "// student code");
+    write(
+        &submissions_dir.path().join("alice/src/lib.rs"),
+        "// student code",
+    );
     write_fetch_record(submissions_dir.path(), "alice", &ok_fetch_record());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();
@@ -307,4 +310,3 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
             .contains("tokio")
     );
 }
-

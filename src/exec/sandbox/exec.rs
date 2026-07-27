@@ -80,8 +80,7 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code() {
         let exec = Exec::cmd("sh").args(&["-c", "echo out; echo err >&2; exit 3"]);
-        let outcome =
-            exec_with_timeout(exec, Some(Duration::from_secs(5)), Some(1024)).unwrap();
+        let outcome = exec_with_timeout(exec, Some(Duration::from_secs(5)), Some(1024)).unwrap();
 
         assert_eq!(outcome.exit_code, Some(3));
         assert_eq!(outcome.stdout, b"out\n");

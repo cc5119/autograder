@@ -38,7 +38,9 @@ pub fn ok_fetch_record() -> FetchRecord {
 /// `evaluate_batch` fixture.
 pub fn write_fetch_record(submissions_dir: &Path, student_id: &str, record: &FetchRecord) {
     write(
-        &submissions_dir.join(".meta").join(format!("{student_id}.json")),
+        &submissions_dir
+            .join(".meta")
+            .join(format!("{student_id}.json")),
         &serde_json::to_string(record).unwrap(),
     );
 }

@@ -39,7 +39,11 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
     let _ = library_package(package_dir.path(), "hw3");
     let autograder_toml = package_dir.path().join("autograder.toml");
     let contents = std::fs::read_to_string(&autograder_toml).unwrap();
-    std::fs::write(&autograder_toml, contents.replace("base = 1.0", "base = 0.0")).unwrap();
+    std::fs::write(
+        &autograder_toml,
+        contents.replace("base = 1.0", "base = 0.0"),
+    )
+    .unwrap();
     let spec = Spec::load(package_dir.path()).unwrap();
     write(
         &package_dir.path().join("harness/tests/judge.rs"),

@@ -787,8 +787,7 @@ base = 0.0
         std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
-        let (sandbox, specs) =
-            ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
         let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
         evaluator.evaluate(&ctx(workspace)).unwrap();
 

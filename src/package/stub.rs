@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 
-use ra_ap_syntax::{ast, ast::AstNode, Edition, NodeOrToken, SourceFile, SyntaxNode, TextRange};
+use ra_ap_syntax::{Edition, NodeOrToken, SourceFile, SyntaxNode, TextRange, ast, ast::AstNode};
 
 use crate::error::{Error, Result};
 
@@ -177,17 +177,23 @@ fn find_edit(
                 } else {
                     owner.text_range() // drop the whole thing
                 };
-                return Ok(Some((range.start().into(), range.end().into(), String::new())));
+                return Ok(Some((
+                    range.start().into(),
+                    range.end().into(),
+                    String::new(),
+                )));
             }
             continue;
         }
 
         if let Some(call) = ast::MacroCall::cast(node.clone()) {
-            let is_cfg_select = call.path().is_some_and(|p| p.syntax().text() == "cfg_select");
+            let is_cfg_select = call
+                .path()
+                .is_some_and(|p| p.syntax().text() == "cfg_select");
             if is_cfg_select {
-                let tt = call
-                    .token_tree()
-                    .ok_or_else(|| Error::Other("cfg_select! call has no token tree".to_string()))?;
+                let tt = call.token_tree().ok_or_else(|| {
+                    Error::Other("cfg_select! call has no token tree".to_string())
+                })?;
                 let mut winner = None;
                 for (pred, body) in cfg_select_arms(&tt) {
                     let offset: usize = body.text_range().start().into();

@@ -383,7 +383,10 @@ mod tests {
         s.cgroupns_private = true;
         s.cap_add = vec!["SYS_ADMIN".into()];
         s.unmask = vec!["/sys/fs/cgroup".into()];
-        s.tmpfs = vec![PathBuf::from("/usr/local/etc"), PathBuf::from("/run/isolate")];
+        s.tmpfs = vec![
+            PathBuf::from("/usr/local/etc"),
+            PathBuf::from("/run/isolate"),
+        ];
         let argv = sandbox().build_argv(&s, &cidfile());
         let joined = argv.join(" ");
 

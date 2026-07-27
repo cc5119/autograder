@@ -41,8 +41,7 @@ fn init_produces_a_loadable_binary_package_with_a_harness_dir() {
     assert_eq!(spec.assignment.kind, AssignmentKind::Binary);
 
     let workspace: toml::Value =
-        toml::from_str(&std::fs::read_to_string(outcome.dir.join("Cargo.toml")).unwrap())
-            .unwrap();
+        toml::from_str(&std::fs::read_to_string(outcome.dir.join("Cargo.toml")).unwrap()).unwrap();
     assert_eq!(workspace["workspace"]["resolver"].as_str(), Some("3"));
     let mut members: Vec<_> = workspace["workspace"]["members"]
         .as_array()

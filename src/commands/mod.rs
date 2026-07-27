@@ -264,13 +264,7 @@ base = 0.0
             storage_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
         };
 
-        evaluate::run(
-            assignment_dir.path(),
-            submissions_dir.path(),
-            true,
-            &config,
-        )
-        .unwrap();
+        evaluate::run(assignment_dir.path(), submissions_dir.path(), true, &config).unwrap();
         grade::run(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
 
         let store = Store::new(&config.storage_dir);

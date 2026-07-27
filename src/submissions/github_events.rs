@@ -67,9 +67,8 @@ pub fn list_push_events(owner: &str, repo: &str) -> Result<Vec<PushEvent>> {
 fn parse_push_events(stdout: &[u8]) -> Result<Vec<PushEvent>> {
     let mut events = Vec::new();
     for page in serde_json::Deserializer::from_slice(stdout).into_iter::<Vec<RawEvent>>() {
-        let page = page.map_err(|source| {
-            Error::Other(format!("failed to parse `gh api` output: {source}"))
-        })?;
+        let page = page
+            .map_err(|source| Error::Other(format!("failed to parse `gh api` output: {source}")))?;
         for raw in page {
             if raw.r#type != "PushEvent" {
                 continue;
