@@ -1,5 +1,6 @@
 pub mod ci;
 pub mod csv;
+pub mod evaluate;
 pub mod json;
 
 use std::path::{Path, PathBuf};

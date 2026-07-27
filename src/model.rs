@@ -51,6 +51,20 @@ pub enum StageStatus {
     HarnessError,
 }
 
+impl StageStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            StageStatus::Ok => "ok",
+            StageStatus::BuildFailed => "build failed",
+            StageStatus::Timeout => "timeout",
+            StageStatus::Oom => "out of memory",
+            StageStatus::DisallowedDependency => "disallowed dependency",
+            StageStatus::FetchFailed => "fetch failed",
+            StageStatus::HarnessError => "harness error",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageReport {
     pub status: StageStatus,

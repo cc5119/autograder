@@ -63,7 +63,7 @@ impl<'a> CiReport<'a> {
             let _ = writeln!(
                 out,
                 "autograde: build failed ({})",
-                stage_status_label(eval.stages.build.status)
+                eval.stages.build.status.label()
             );
             return out;
         }
@@ -78,7 +78,7 @@ impl<'a> CiReport<'a> {
             let _ = writeln!(
                 out,
                 "autograde: run failed ({})",
-                stage_status_label(eval.stages.run.status)
+                eval.stages.run.status.label()
             );
             return out;
         }
@@ -106,18 +106,6 @@ impl<'a> CiReport<'a> {
             eval.tests.len()
         );
         out
-    }
-}
-
-fn stage_status_label(status: StageStatus) -> &'static str {
-    match status {
-        StageStatus::Ok => "ok",
-        StageStatus::BuildFailed => "build failed",
-        StageStatus::Timeout => "timeout",
-        StageStatus::Oom => "out of memory",
-        StageStatus::DisallowedDependency => "disallowed dependency",
-        StageStatus::FetchFailed => "fetch failed",
-        StageStatus::HarnessError => "harness error",
     }
 }
 
