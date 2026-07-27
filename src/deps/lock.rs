@@ -124,7 +124,7 @@ cargo-lock-sha256 = "{sha256}"
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits]
+[build-limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"

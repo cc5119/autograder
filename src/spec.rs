@@ -126,7 +126,7 @@ impl<'de> Deserialize<'de> for Duration {
 /// stage is `isolate`'s job, configured in the harness's own test code, not
 /// here.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Limits {
+pub struct BuildLimits {
     #[serde(rename = "wall-clock")]
     pub wall_clock: Duration,
     pub cpus: u32,
@@ -223,7 +223,8 @@ impl<'de> Deserialize<'de> for Scoring {
 pub struct Spec {
     pub assignment: Assignment,
     pub sandbox: Sandbox,
-    pub limits: Limits,
+    #[serde(rename = "build-limits")]
+    pub build_limits: BuildLimits,
     pub scoring: Scoring,
 }
 
@@ -258,7 +259,7 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits]
+[build-limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
@@ -283,7 +284,7 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits]
+[build-limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
@@ -302,12 +303,12 @@ scale-max = 7.0
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
         assert_eq!(spec.assignment.kind, AssignmentKind::Library);
-        assert_eq!(spec.limits.memory, ByteSize(2 * 1024 * 1024 * 1024));
+        assert_eq!(spec.build_limits.memory, ByteSize(2 * 1024 * 1024 * 1024));
         assert_eq!(
-            spec.limits.wall_clock,
+            spec.build_limits.wall_clock,
             Duration(std::time::Duration::from_secs(120))
         );
-        assert_eq!(spec.limits.max_output_bytes, ByteSize(1024 * 1024));
+        assert_eq!(spec.build_limits.max_output_bytes, ByteSize(1024 * 1024));
         assert_eq!(spec.scoring.formula, ScoringFormula::Sum { base: 1.0 });
     }
 

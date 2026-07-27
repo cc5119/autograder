@@ -7,12 +7,12 @@ use crate::exec::sandbox::{Mount, MountMode, SandboxLimits, SandboxSpec};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
-use crate::spec::Limits;
+use crate::spec::BuildLimits;
 
 /// Applied to the two build stages only -- the run stage gets no
 /// `SandboxLimits` at all (see `isolate_run_config`), so there's no second
 /// tier to map here.
-pub(crate) fn sandbox_limits(limits: &Limits) -> SandboxLimits {
+pub(crate) fn sandbox_limits(limits: &BuildLimits) -> SandboxLimits {
     SandboxLimits {
         wall_clock: limits.wall_clock.0,
         cpus: limits.cpus,

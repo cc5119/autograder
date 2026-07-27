@@ -84,7 +84,7 @@ impl<S: Sandbox> Nextest<S> {
         Ok(Self {
             sandbox,
             package_dir,
-            limits: sandbox_limits(&spec.limits),
+            limits: sandbox_limits(&spec.build_limits),
             harness_package: spec.assignment.harness.clone(),
         })
     }
@@ -553,7 +553,7 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits]
+[build-limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
@@ -828,7 +828,7 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits]
+[build-limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"

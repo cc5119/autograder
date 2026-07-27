@@ -9,7 +9,7 @@ cargo-lock-sha256 = "df010df7f6ca240b0fd5d292440e4665b16ef4ff761464701f866f801bc
 [sandbox]
 image = "ghcr.io/cc5119/autograder-base:1.97.1"
 
-[limits]
+[build-limits]
 wall-clock = "60s"
 cpus = 2
 memory = "1GiB"
