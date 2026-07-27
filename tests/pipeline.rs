@@ -1,16 +1,15 @@
 //! Integration tests for `autograder::pipeline::evaluate_batch`. Only
 //! touches public API (`evaluate_batch`, `Store`, `evaluator::StubEvaluator`,
-//! `pipeline::grade::grade`, `overrides::apply`) -- `checkout_rules`/
-//! `package_rules`/`terminal_eval` are private and have no dedicated tests
-//! of their own; their behavior is only observable through `evaluate_batch`
-//! itself, which is exactly what's exercised here. Submissions dirs are
-//! built by hand (`common::write`/`common::write_fetch_record`) rather than
-//! run through `fetch_batch` -- fetching itself (real git, no fake-fetch
-//! seam) has its own coverage in `src/submissions/mod.rs`. Scoring
-//! (`pipeline::grade::grade`/`overrides::apply`) is `autograder grade`'s job
-//! now, not `evaluate_batch`'s -- tests that used to assert on a `Grade`
-//! call those functions directly on the persisted eval, mirroring what
-//! `autograder grade` itself does.
+//! `pipeline::grade::grade`) -- `checkout_rules`/`package_rules`/
+//! `terminal_eval` are private and have no dedicated tests of their own;
+//! their behavior is only observable through `evaluate_batch` itself, which
+//! is exactly what's exercised here. Submissions dirs are built by hand
+//! (`common::write`/`common::write_fetch_record`) rather than run through
+//! `fetch_batch` -- fetching itself (real git, no fake-fetch seam) has its
+//! own coverage in `src/submissions/mod.rs`. Scoring (`pipeline::grade::grade`)
+//! is `autograder grade`'s job now, not `evaluate_batch`'s -- tests that
+//! used to assert on a `Grade` call it directly on the persisted eval,
+//! mirroring what `autograder grade` itself does.
 
 use autograder::id::AssignmentId;
 use autograder::model::{
@@ -19,7 +18,6 @@ use autograder::model::{
 };
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::{Evaluator, StubEvaluator};
-use autograder::pipeline::overrides::{ManualOverride, Overrides};
 use autograder::spec::Spec;
 use autograder::store::Store;
 
@@ -310,64 +308,3 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
     );
 }
 
-#[test]
-fn grade_applies_a_manual_override_after_evaluate_persists_the_eval() {
-    let package_dir = tempfile::tempdir().unwrap();
-    let submissions_dir = tempfile::tempdir().unwrap();
-    let work_dir = tempfile::tempdir().unwrap();
-    let store_dir = tempfile::tempdir().unwrap();
-
-    write(
-        &package_dir.path().join("Cargo.toml"),
-        "[workspace]\nmembers = [\"hw3\"]\n",
-    );
-    write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write(
-        &submissions_dir.path().join("alice/hw3/src/lib.rs"),
-        "// student code",
-    );
-    write_fetch_record(submissions_dir.path(), "alice", &ok_fetch_record());
-
-    let spec: Spec = toml::from_str(&spec_toml()).unwrap();
-    let evaluator = StubEvaluator {
-        tests: vec![passing_test("insert_basic")],
-    };
-    let store = Store::new(store_dir.path());
-    let overrides = Overrides {
-        manual: std::collections::BTreeMap::from([(
-            "alice".into(),
-            ManualOverride {
-                score: 3.0,
-                status: Some("manual-review".into()),
-                reason: "Partial credit for a documented edge case".into(),
-            },
-        )]),
-        late: Default::default(),
-    };
-
-    let evals = evaluate_batch(
-        submissions_dir.path(),
-        &evaluator,
-        package_dir.path(),
-        &spec,
-        work_dir.path(),
-        &store,
-    )
-    .unwrap();
-
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
-    let grade = autograder::pipeline::overrides::apply(
-        grade,
-        &overrides,
-        &spec.assignment.deadline,
-        spec.scoring.late_penalty.as_ref(),
-        None,
-    );
-
-    assert_eq!(grade.score, 3.0);
-    assert_eq!(grade.status, "manual-review");
-    assert!(grade.override_reason.is_some());
-
-    let persisted = store.latest_evals(AssignmentId::new("hw3")).unwrap();
-    assert_eq!(persisted[0].tests[0].status, TestStatus::Pass);
-}

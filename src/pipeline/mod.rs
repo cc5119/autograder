@@ -1,7 +1,6 @@
 pub mod evaluator;
 pub mod grade;
 pub mod manifest_check;
-pub mod overrides;
 pub mod prepare;
 
 use std::collections::HashMap;

@@ -38,8 +38,7 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
         Command::Grade {
             assignment_id,
             assignment,
-            fetched,
-        } => grade::run(assignment_id, &assignment, fetched.as_deref(), config),
+        } => grade::run(assignment_id, &assignment, config),
         Command::Report {
             assignment_id,
             format,
@@ -268,7 +267,7 @@ base = 0.0
             &config,
         )
         .unwrap();
-        grade::run(AssignmentId::new("hw3"), assignment_dir.path(), None, &config).unwrap();
+        grade::run(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
 
         let store = Store::new(&config.storage_dir);
         let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();

@@ -61,8 +61,6 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
         max,
         status,
         failing_tests,
-        override_reason: None,
-        late_penalty_percent: None,
     }
 }
 
@@ -138,7 +136,6 @@ mod tests {
     fn sum_policy(base: f64) -> Scoring {
         Scoring {
             formula: ScoringFormula::Sum { base },
-            late_penalty: None,
         }
     }
 
@@ -149,7 +146,6 @@ mod tests {
                 scale_min,
                 scale_max,
             },
-            late_penalty: None,
         }
     }
 

@@ -90,10 +90,6 @@ impl<'de> Deserialize<'de> for ByteSize {
 pub struct Duration(pub std::time::Duration);
 
 impl Duration {
-    fn zero() -> Self {
-        Duration(std::time::Duration::ZERO)
-    }
-
     fn parse(s: &str) -> std::result::Result<Self, String> {
         let s = s.trim();
         let digits = s.trim_end_matches(|c: char| c.is_alphabetic());
@@ -136,19 +132,6 @@ pub struct BuildLimits {
     pub max_output_bytes: ByteSize,
 }
 
-/// A late-submission penalty: a grace period, then a percentage of the
-/// score deducted per day late, capped at `max-percent`. Absent, no late
-/// penalty is ever applied, even with an `overrides.toml` late entry.
-#[derive(Debug, Clone, Deserialize)]
-pub struct LatePenalty {
-    #[serde(default = "Duration::zero")]
-    pub grace: Duration,
-    #[serde(rename = "per-day-percent")]
-    pub per_day_percent: f64,
-    #[serde(rename = "max-percent")]
-    pub max_percent: f64,
-}
-
 /// How a submission's score is computed from the sum of `score=` lines
 /// tests report at run time (see `crate::pipeline::grade`). No per-test point
 /// declarations here -- a test's contribution is whatever it reports, or
@@ -168,7 +151,6 @@ pub enum ScoringFormula {
 #[derive(Debug, Clone)]
 pub struct Scoring {
     pub formula: ScoringFormula,
-    pub late_penalty: Option<LatePenalty>,
 }
 
 #[derive(Deserialize)]
@@ -183,8 +165,6 @@ struct RawScoring {
     scale_min: Option<f64>,
     #[serde(default, rename = "scale-max")]
     scale_max: Option<f64>,
-    #[serde(default, rename = "late-penalty")]
-    late_penalty: Option<LatePenalty>,
 }
 
 impl<'de> Deserialize<'de> for Scoring {
@@ -212,10 +192,7 @@ impl<'de> Deserialize<'de> for Scoring {
                 )));
             }
         };
-        Ok(Scoring {
-            formula,
-            late_penalty: raw.late_penalty,
-        })
+        Ok(Scoring { formula })
     }
 }
 
@@ -343,12 +320,6 @@ scale-max = 7.0
     }
 
     #[test]
-    fn scoring_with_no_late_penalty_table_parses_to_none() {
-        let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
-        assert!(spec.scoring.late_penalty.is_none());
-    }
-
-    #[test]
     fn parses_the_image_and_accepts_a_registry_reference() {
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.sandbox.image, "autograder-base:1.86.0");
@@ -366,22 +337,6 @@ scale-max = 7.0
         let toml = PUBLIC_TOML.replace("[sandbox]\nimage = \"autograder-base:1.86.0\"\n", "");
         let result: std::result::Result<Spec, _> = toml::from_str(&toml);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn late_penalty_table_parses_grace_hours_and_percentages() {
-        let toml = PUBLIC_TOML.replace(
-            "[scoring]\nformula = \"sum\"\nbase = 1.0",
-            "[scoring]\nformula = \"sum\"\nbase = 1.0\n\n[scoring.late-penalty]\ngrace = \"24h\"\nper-day-percent = 10\nmax-percent = 50",
-        );
-        let spec: Spec = toml::from_str(&toml).unwrap();
-        let penalty = spec.scoring.late_penalty.unwrap();
-        assert_eq!(
-            penalty.grace,
-            Duration(std::time::Duration::from_secs(24 * 3600))
-        );
-        assert_eq!(penalty.per_day_percent, 10.0);
-        assert_eq!(penalty.max_percent, 50.0);
     }
 
     #[test]

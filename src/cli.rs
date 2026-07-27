@@ -79,19 +79,13 @@ pub enum Command {
         local_sandbox: bool,
     },
     /// Compute scores from persisted `evaluate` results: applies the
-    /// current scoring policy and `overrides.toml` fresh every time.
+    /// current scoring policy fresh every time.
     Grade {
         /// Assignment id to grade.
         assignment_id: AssignmentId,
         /// Path to the assignment repo (for the current scoring policy).
         #[arg(long)]
         assignment: PathBuf,
-        /// Directory previously produced by `autograder fetch --out`, to
-        /// read `.meta/<student_id>.json` fetch records from for each
-        /// student's submission date, for late-penalty scoring. Without it,
-        /// only `overrides.toml`'s `[late.*]` table applies.
-        #[arg(long)]
-        fetched: Option<PathBuf>,
     },
     /// Emit a report from persisted grades.
     Report {

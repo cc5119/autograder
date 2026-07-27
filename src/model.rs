@@ -126,15 +126,6 @@ pub struct Grade {
     pub status: String,
     #[serde(default)]
     pub failing_tests: Vec<String>,
-    /// Set when a manual `overrides.toml` entry replaced the
-    /// policy-computed score for this student -- recorded here, never by
-    /// mutating the persisted raw `EvaluationResult`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_reason: Option<String>,
-    /// Set when a late-penalty policy docked this student's score; the
-    /// percentage actually deducted (already reflected in `score`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub late_penalty_percent: Option<f64>,
 }
 
 #[cfg(test)]
