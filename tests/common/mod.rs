@@ -8,41 +8,11 @@
 use std::path::Path;
 use std::process::Command;
 
-use autograder::model::StageStatus;
 use autograder::spec::{AssignmentKind, Spec};
-use autograder::submissions::FetchRecord;
 
 pub fn write(path: &Path, contents: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, contents).unwrap();
-}
-
-/// A `FetchRecord` reporting success, as `autograder fetch` would have
-/// written it -- the common case for tests that just need `evaluate_batch`
-/// to see a prior fetch as having gone fine.
-pub fn ok_fetch_record() -> FetchRecord {
-    FetchRecord {
-        status: StageStatus::Ok,
-        graded_commit: Some("fixture".to_string()),
-        message: None,
-        fetched_at: jiff::Timestamp::now(),
-        submission_date: None,
-    }
-}
-
-/// Writes `record` to `<submissions_dir>/.meta/<student_id>.json` --
-/// the exact layout `autograder fetch --out` produces, hand-built instead
-/// of run through `fetch_batch` (which needs a real git remote). Pair with
-/// writing the submission's own files directly at
-/// `<submissions_dir>/<student_id>/<assignment.id>/...` for a complete
-/// `evaluate_batch` fixture.
-pub fn write_fetch_record(submissions_dir: &Path, student_id: &str, record: &FetchRecord) {
-    write(
-        &submissions_dir
-            .join(".meta")
-            .join(format!("{student_id}.json")),
-        &serde_json::to_string(record).unwrap(),
-    );
 }
 
 /// Scaffolds a real `library`-kind instructor package at `dir` (via

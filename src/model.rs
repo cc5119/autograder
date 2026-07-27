@@ -2,13 +2,16 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{AssignmentId, RunId, StudentId};
+use crate::id::{AssignmentId, RunId, StudentId, SubmissionId};
 
-/// Per-job context threaded through the pipeline stages.
+/// Per-job context threaded through the pipeline stages. `submission_id`
+/// identifies a submission directory, not a student -- evaluate never
+/// knows or cares which student it came from (see
+/// `pipeline::evaluate_batch`'s module doc comment).
 #[derive(Debug, Clone)]
 pub struct JobContext {
     pub assignment_id: AssignmentId,
-    pub student_id: StudentId,
+    pub submission_id: SubmissionId,
     pub run_id: RunId,
     pub workspace: PathBuf,
 }
@@ -38,7 +41,10 @@ pub struct TestResult {
     pub reported_score: Option<f64>,
 }
 
-/// Terminal status of a pipeline stage (fetch/build/run).
+/// Terminal status of a pipeline stage (build/run). Fetch has its own,
+/// separate status type now (`submissions::FetchStatus`) -- evaluate
+/// never inspects a fetch outcome, so there's no `FetchFailed` variant
+/// here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageStatus {
@@ -47,7 +53,6 @@ pub enum StageStatus {
     Timeout,
     Oom,
     DisallowedDependency,
-    FetchFailed,
     HarnessError,
 }
 
@@ -59,7 +64,6 @@ impl StageStatus {
             StageStatus::Timeout => "timeout",
             StageStatus::Oom => "out of memory",
             StageStatus::DisallowedDependency => "disallowed dependency",
-            StageStatus::FetchFailed => "fetch failed",
             StageStatus::HarnessError => "harness error",
         }
     }
@@ -102,17 +106,18 @@ pub struct Diagnostics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageReports {
-    pub fetch: StageReport,
     pub build: StageReport,
     pub run: StageReport,
 }
 
 /// The sole contract between untrusted execution and scoring.
+/// `submission_id` identifies the submission this ran, not a student --
+/// see `JobContext`'s doc comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
     pub schema_version: u32,
     pub assignment_id: AssignmentId,
-    pub student_id: StudentId,
+    pub submission_id: SubmissionId,
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graded_commit: Option<String>,
@@ -150,13 +155,12 @@ mod tests {
         EvaluationResult {
             schema_version: 1,
             assignment_id: AssignmentId::new("hw3"),
-            student_id: StudentId::new("alice"),
+            submission_id: SubmissionId::new("alice"),
             run_id: RunId::new("2026-07-17T18-03-00Z-ab12"),
             graded_commit: Some("a1b2c3d".into()),
             instructor_commit: Some("f9e8d7".into()),
             public_harness_commit: Some("c0ffee".into()),
             stages: StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport {
                     status: StageStatus::Ok,
                     duration_ms: Some(8123),

@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use crate::error::Result;
-use crate::model::StageStatus;
 use crate::spec::Spec;
 use crate::submissions;
+use crate::submissions::FetchStatus;
 use crate::submissions::source::CsvRoster;
 
 pub fn run(assignment: &Path, roster: &Path, out: &Path, as_of: Option<jiff::Zoned>) -> Result<()> {
@@ -14,7 +14,7 @@ pub fn run(assignment: &Path, roster: &Path, out: &Path, as_of: Option<jiff::Zon
     let records = submissions::fetch_batch(&source, out, &deadline)?;
 
     for (student_id, record) in &records {
-        if record.status == StageStatus::Ok {
+        if record.status == FetchStatus::Ok {
             tracing::info!(
                 %student_id,
                 graded_commit = record.graded_commit.as_deref().unwrap_or(""),

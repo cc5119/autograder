@@ -268,13 +268,12 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         Ok(EvaluationResult {
             schema_version: 1,
             assignment_id: ctx.assignment_id,
-            student_id: ctx.student_id,
+            submission_id: ctx.submission_id,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,
             stages: StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport::ok(),
                 run: StageReport::ok(),
             },
@@ -299,13 +298,12 @@ fn terminal_result(
     EvaluationResult {
         schema_version: 1,
         assignment_id: ctx.assignment_id,
-        student_id: ctx.student_id,
+        submission_id: ctx.submission_id,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
         public_harness_commit: None,
         stages: StageReports {
-            fetch: StageReport::ok(),
             build: match stage {
                 Stage::Build => StageReport {
                     status,
@@ -590,7 +588,7 @@ base = 0.0
     fn ctx(workspace: PathBuf) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
-            student_id: "alice".into(),
+            submission_id: "alice".into(),
             run_id: "run-1".into(),
             workspace,
         }

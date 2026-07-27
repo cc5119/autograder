@@ -1,17 +1,18 @@
 //! Integration tests for `autograder::pipeline::evaluate_batch`. Only
-//! touches public API (`evaluate_batch`, `Store`, `evaluator::StubEvaluator`,
+//! touches public API (`evaluate_batch`, `evaluator::StubEvaluator`,
 //! `pipeline::grade::grade`) -- `checkout_rules`/`package_rules`/
 //! `terminal_eval` are private and have no dedicated tests of their own;
 //! their behavior is only observable through `evaluate_batch` itself, which
 //! is exactly what's exercised here. Submissions dirs are built by hand
-//! (`common::write`/`common::write_fetch_record`) rather than run through
-//! `fetch_batch` -- fetching itself (real git, no fake-fetch seam) has its
-//! own coverage in `src/submissions/mod.rs`. Scoring (`pipeline::grade::grade`)
-//! is `autograder grade`'s job now, not `evaluate_batch`'s -- tests that
-//! used to assert on a `Grade` call it directly on the persisted eval,
-//! mirroring what `autograder grade` itself does.
+//! (`common::write`) rather than run through `fetch_batch` -- fetching
+//! itself (real git, no fake-fetch seam) has its own coverage in
+//! `src/submissions/mod.rs`, and evaluate never reads a fetch record at
+//! all. Scoring (`pipeline::grade::grade`) is `autograder grade`'s job now,
+//! not `evaluate_batch`'s -- tests that used to assert on a `Grade` call it
+//! directly on the persisted eval, mirroring what `autograder grade` itself
+//! does.
 
-use autograder::id::AssignmentId;
+use autograder::exec::json::read_json;
 use autograder::model::{
     EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, StageStatus,
     TestResult, TestStatus,
@@ -19,9 +20,8 @@ use autograder::model::{
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::{Evaluator, StubEvaluator};
 use autograder::spec::Spec;
-use autograder::store::Store;
 
-use crate::common::{ok_fetch_record, write, write_fetch_record};
+use crate::common::write;
 
 /// Written to `package_dir/Cargo.lock` in every test that calls
 /// `evaluate_batch` -- `prepare` (via `Cargo.lock`'s hash) needs it there
@@ -68,12 +68,27 @@ fn passing_test(name: &str) -> TestResult {
     }
 }
 
+/// The most recent `.eval/<submission_id>/*.eval.json` under
+/// `submissions_dir`, for asserting `evaluate_batch` actually persisted
+/// what it returned.
+fn persisted_evals(
+    submissions_dir: &std::path::Path,
+    submission_id: &str,
+) -> Vec<EvaluationResult> {
+    let dir = submissions_dir.join(".eval").join(submission_id);
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| read_json(&e.unwrap().path()).unwrap())
+        .collect()
+}
+
 #[test]
 fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
     let package_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
-    let work_dir = tempfile::tempdir().unwrap();
-    let store_dir = tempfile::tempdir().unwrap();
 
     write(
         &package_dir.path().join("Cargo.toml"),
@@ -84,77 +99,65 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",
     );
-    write_fetch_record(submissions_dir.path(), "alice", &ok_fetch_record());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
         tests: vec![passing_test("insert_basic")],
     };
-    let store = Store::new(store_dir.path());
 
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
         package_dir.path(),
         &spec,
-        work_dir.path(),
-        &store,
     )
     .unwrap();
 
     assert_eq!(evals.len(), 1);
-    assert_eq!(evals[0].student_id, "alice");
+    assert_eq!(evals[0].submission_id, "alice");
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
     assert_eq!(grade.score, 1.0);
     assert_eq!(grade.max, None);
 
-    let persisted = store.latest_evals(AssignmentId::new("hw3")).unwrap();
+    let persisted = persisted_evals(submissions_dir.path(), "alice");
     assert_eq!(persisted.len(), 1);
 
-    // Flat: no `checkout/` nesting under the student's own dir.
+    // Flat: no `checkout/` nesting under the submission's own dir.
     assert!(
         submissions_dir
             .path()
             .join("alice/hw3/src/lib.rs")
             .is_file()
     );
-    assert!(!work_dir.path().join("alice/build").exists());
 }
 
 #[test]
-fn evaluate_batch_reports_fetch_failed_when_the_checkout_has_no_id_directory() {
+fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
     let package_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
-    let work_dir = tempfile::tempdir().unwrap();
-    let store_dir = tempfile::tempdir().unwrap();
 
-    // No `hw3/` under `alice/` -- the fetch itself succeeded, but the
-    // checkout has no crate matching `[assignment].id`.
+    // No `hw3/` under `alice/` -- the checkout has no crate matching
+    // `[assignment].id`.
     write(
         &submissions_dir.path().join("alice/src/lib.rs"),
         "// student code",
     );
-    write_fetch_record(submissions_dir.path(), "alice", &ok_fetch_record());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
         tests: vec![passing_test("insert_basic")],
     };
-    let store = Store::new(store_dir.path());
 
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
         package_dir.path(),
         &spec,
-        work_dir.path(),
-        &store,
     )
     .unwrap();
 
     assert_eq!(evals.len(), 1);
-    assert_eq!(evals[0].stages.fetch.status, StageStatus::FetchFailed);
-    assert!(!work_dir.path().join("alice/build").exists());
+    assert_eq!(evals[0].stages.build.status, StageStatus::BuildFailed);
 }
 
 /// Records the sorted file names in `harness/tests/` (a sibling of
@@ -177,13 +180,12 @@ impl Evaluator for CapturingEvaluator<'_> {
         Ok(EvaluationResult {
             schema_version: 1,
             assignment_id: ctx.assignment_id,
-            student_id: ctx.student_id,
+            submission_id: ctx.submission_id,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,
             stages: StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport::ok(),
                 run: StageReport::ok(),
             },
@@ -203,8 +205,6 @@ impl Evaluator for CapturingEvaluator<'_> {
 fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package() {
     let package_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
-    let work_dir = tempfile::tempdir().unwrap();
-    let store_dir = tempfile::tempdir().unwrap();
 
     write(
         &package_dir.path().join("Cargo.toml"),
@@ -230,7 +230,6 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
         &submissions_dir.path().join("alice/harness/tests/decoy.rs"),
         "#[test]\nfn fake_pass() { assert!(true); }\n",
     );
-    write_fetch_record(submissions_dir.path(), "alice", &ok_fetch_record());
 
     let toml = spec_toml()
         .replace("kind = \"library\"", "kind = \"binary\"")
@@ -238,15 +237,12 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
     let spec: Spec = toml::from_str(&toml).unwrap();
     let seen = std::sync::Mutex::new(None);
     let evaluator = CapturingEvaluator { seen: &seen };
-    let store = Store::new(store_dir.path());
 
     evaluate_batch(
         submissions_dir.path(),
         &evaluator,
         package_dir.path(),
         &spec,
-        work_dir.path(),
-        &store,
     )
     .unwrap();
 
@@ -260,8 +256,6 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
 fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_evaluator() {
     let package_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
-    let work_dir = tempfile::tempdir().unwrap();
-    let store_dir = tempfile::tempdir().unwrap();
 
     write(
         &package_dir.path().join("Cargo.toml"),
@@ -276,21 +270,17 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
         &submissions_dir.path().join("alice/hw3/Cargo.toml"),
         "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1\"\n",
     );
-    write_fetch_record(submissions_dir.path(), "alice", &ok_fetch_record());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
         tests: vec![passing_test("insert_basic")],
     };
-    let store = Store::new(store_dir.path());
 
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
         package_dir.path(),
         &spec,
-        work_dir.path(),
-        &store,
     )
     .unwrap();
 
@@ -299,7 +289,7 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
     assert_eq!(grade.score, 0.0);
     assert_eq!(grade.status, "DisallowedDependency");
 
-    let persisted = store.latest_evals(AssignmentId::new("hw3")).unwrap();
+    let persisted = persisted_evals(submissions_dir.path(), "alice");
     assert_eq!(persisted.len(), 1);
     assert!(
         persisted[0]

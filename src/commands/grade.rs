@@ -1,37 +1,72 @@
 use std::path::Path;
 
-use crate::config::Config;
 use crate::error::Result;
-use crate::id::AssignmentId;
+use crate::exec::fs;
+use crate::exec::json::read_json;
+use crate::model::EvaluationResult;
 use crate::pipeline::grade;
+use crate::report::csv;
 use crate::spec::Spec;
-use crate::store::Store;
+
+/// Where `evaluate_batch` persisted results, and where this command writes
+/// the gradebook -- both alongside the submission checkouts under
+/// `submissions_dir` (see `pipeline::evaluate_batch`'s doc comment).
+const EVAL_DIR: &str = ".eval";
+const GRADES_DIR: &str = ".grades";
+const GRADES_FILE: &str = "grades.csv";
 
 /// Computes scores from persisted `EvaluationResult`s (no student code, no
 /// evaluator) -- applies `spec.scoring` fresh from disk every time, so
 /// editing it always reflects the current policy, never one baked in
-/// earlier.
-pub fn run(assignment_id: AssignmentId, assignment: &Path, config: &Config) -> Result<()> {
+/// earlier. Writes a single gradebook CSV to
+/// `<submissions>/.grades/grades.csv`.
+pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
     let spec = Spec::load(assignment)?;
-    let store = Store::new(&config.storage_dir);
-    let evals = store.latest_evals(assignment_id)?;
+    let evals = latest_evals(submissions)?;
 
-    let mut grades = Vec::new();
-    for eval in &evals {
-        let grade = grade::grade(eval, &spec.scoring);
-        store.save_grade(eval.assignment_id, eval.run_id, &grade)?;
-        grades.push(grade);
+    let grades: Vec<_> = evals
+        .iter()
+        .map(|eval| grade::grade(eval, &spec.scoring))
+        .collect();
+
+    let grades_dir = submissions.join(GRADES_DIR);
+    fs::create_dir_all(&grades_dir)?;
+    fs::write(&grades_dir.join(GRADES_FILE), csv::render(&grades)?)?;
+
+    Ok(())
+}
+
+/// The most recent persisted `EvaluationResult` per submission under
+/// `<submissions>/.eval/`, by run_id sort order.
+fn latest_evals(submissions_dir: &Path) -> Result<Vec<EvaluationResult>> {
+    let eval_dir = submissions_dir.join(EVAL_DIR);
+    if !eval_dir.is_dir() {
+        return Ok(Vec::new());
     }
-
-    super::report::write_reports(assignment_id, &grades, config)
+    let mut evals = Vec::new();
+    for entry in fs::read_dir_entries(&eval_dir)? {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let mut runs: Vec<_> = fs::read_dir_entries(&entry.path())?
+            .into_iter()
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().ends_with(".eval.json"))
+            .collect();
+        runs.sort();
+        if let Some(latest) = runs.last() {
+            evals.push(read_json(latest)?);
+        }
+    }
+    Ok(evals)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::json::write_json;
     use crate::model::{
-        Diagnostics, EvaluationResult, ResourceUsage, StageReport, StageReports, TestResult,
-        TestStatus,
+        Diagnostics, ResourceUsage, StageReport, StageReports, TestResult, TestStatus,
     };
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -70,13 +105,12 @@ max-output-bytes = "64KiB"
         EvaluationResult {
             schema_version: 1,
             assignment_id: "hw3".into(),
-            student_id: "alice".into(),
+            submission_id: "alice".into(),
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,
             stages: StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport::ok(),
                 run: StageReport::ok(),
             },
@@ -104,24 +138,23 @@ max-output-bytes = "64KiB"
     #[test]
     fn grade_recomputes_scores_from_a_changed_policy_without_reevaluating() {
         let assignment_dir = tempfile::tempdir().unwrap();
-        let store_dir = tempfile::tempdir().unwrap();
-        let config = Config {
-            storage_dir: store_dir.path().to_path_buf(),
-        };
+        let submissions_dir = tempfile::tempdir().unwrap();
 
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
             &spec_toml("[scoring]\nformula = \"sum\"\nbase = 0.0"),
         );
-        let store = Store::new(&config.storage_dir);
-        store.save_eval(&persisted_eval()).unwrap();
+        write_json(
+            &submissions_dir.path().join(".eval/alice/run-1.eval.json"),
+            &persisted_eval(),
+        )
+        .unwrap();
 
-        run(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
-        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
-        assert_eq!(grades.len(), 1);
+        run(assignment_dir.path(), submissions_dir.path()).unwrap();
+        let gradebook =
+            std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
         // insert_basic passes (1.0 default), balance_adversarial fails (0.0).
-        assert_eq!(grades[0].score, 1.0);
-        assert_eq!(grades[0].max, None);
+        assert!(gradebook.contains("alice,1,,fail"));
 
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
@@ -129,9 +162,9 @@ max-output-bytes = "64KiB"
                 "[scoring]\nformula = \"affine\"\nmax-sum = 2.0\nscale-min = 0.0\nscale-max = 10.0",
             ),
         );
-        run(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
-        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
-        assert_eq!(grades[0].score, 5.0);
-        assert_eq!(grades[0].max, Some(10.0));
+        run(assignment_dir.path(), submissions_dir.path()).unwrap();
+        let gradebook =
+            std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
+        assert!(gradebook.contains("alice,5,10,fail"));
     }
 }

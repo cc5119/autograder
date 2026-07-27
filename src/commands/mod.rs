@@ -6,19 +6,17 @@ pub mod init;
 pub mod lock;
 pub mod prefetch;
 pub mod publish;
-pub mod report;
 
 use std::path::Path;
 
 use crate::cli::Command;
-use crate::config::Config;
 use crate::error::Result;
 use crate::exec::sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
 use crate::pipeline::evaluator::Evaluator;
 use crate::pipeline::evaluator::nextest::Nextest;
 use crate::spec::Spec;
 
-pub fn dispatch(command: Command, config: &Config) -> Result<()> {
+pub fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Init { dir, kind, id } => init::run(&dir, &id, kind.into()),
         Command::Lock { assignment } => lock::run(&assignment),
@@ -33,17 +31,12 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
             assignment,
             submissions,
             local_sandbox,
-        } => evaluate::run(&assignment, &submissions, local_sandbox, config),
+        } => evaluate::run(&assignment, &submissions, local_sandbox),
         Command::Ci { local_sandbox } => ci::run(local_sandbox),
         Command::Grade {
-            assignment_id,
             assignment,
-        } => grade::run(assignment_id, &assignment, config),
-        Command::Report {
-            assignment_id,
-            format,
-            out,
-        } => report::run(assignment_id, format, out, config),
+            submissions,
+        } => grade::run(&assignment, &submissions),
         Command::Publish {
             assignment,
             out,
@@ -84,11 +77,9 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::exec::sandbox::LocalSandbox;
-    use crate::id::AssignmentId;
     use crate::model::{self, JobContext};
     use crate::pipeline::prepare;
     use crate::report::ci::CiReport;
-    use crate::store::Store;
 
     fn write(path: &std::path::Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -168,7 +159,7 @@ base = 0.0
         let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            student_id: "local".into(),
+            submission_id: "local".into(),
             run_id: "run-1".into(),
             workspace,
         };
@@ -213,9 +204,6 @@ base = 0.0
     /// require Podman.
     #[test]
     fn evaluate_with_local_sandbox_never_requires_podman() {
-        use crate::model::StageStatus;
-        use crate::submissions::{FetchRecord, fetch_record_path};
-
         let assignment_dir = tempfile::tempdir().unwrap();
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
@@ -237,8 +225,8 @@ base = 0.0
             "fn main() {}\n",
         );
 
-        // The flat layout `autograder fetch --out` produces: a checkout per
-        // student plus a `.meta/<student_id>.json` fetch record.
+        // Just a submission checkout -- evaluate never looks for a fetch
+        // record at all.
         let submissions_dir = tempfile::tempdir().unwrap();
         write(
             &submissions_dir.path().join("alice/hw3/Cargo.toml"),
@@ -248,30 +236,14 @@ base = 0.0
             &submissions_dir.path().join("alice/hw3/src/lib.rs"),
             "pub fn noop() {}\n",
         );
-        let record = FetchRecord {
-            status: StageStatus::Ok,
-            graded_commit: Some("abc123".into()),
-            message: None,
-            fetched_at: jiff::Timestamp::now(),
-            submission_date: None,
-        };
-        write(
-            &fetch_record_path(submissions_dir.path(), &"alice".into()),
-            &serde_json::to_string(&record).unwrap(),
-        );
 
-        let config = Config {
-            storage_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
-        };
+        evaluate::run(assignment_dir.path(), submissions_dir.path(), true).unwrap();
+        grade::run(assignment_dir.path(), submissions_dir.path()).unwrap();
 
-        evaluate::run(assignment_dir.path(), submissions_dir.path(), true, &config).unwrap();
-        grade::run(AssignmentId::new("hw3"), assignment_dir.path(), &config).unwrap();
-
-        let store = Store::new(&config.storage_dir);
-        let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
-        assert_eq!(grades.len(), 1);
+        let gradebook =
+            std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
         // This host has no `cargo-nextest`, which only stage 3 (run) needs
         // -- see `ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest`.
-        assert_eq!(grades[0].status, "HarnessError");
+        assert!(gradebook.contains("alice,0,,HarnessError"));
     }
 }

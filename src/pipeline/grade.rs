@@ -1,18 +1,22 @@
+use crate::id::StudentId;
 use crate::model::{EvaluationResult, Grade, StageStatus, TestResult, TestStatus};
 use crate::spec::{Scoring, ScoringFormula};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
 /// untrusted code runs here, and no pre-declared test-name table is
 /// consulted -- every test `eval` reports feeds the sum, whatever its
-/// runtime name.
+/// runtime name. `eval.submission_id` names a submission, not a student --
+/// `autograder fetch` always chooses that name to be the student's own id
+/// (see `submissions` module doc comment), so it's reused verbatim as the
+/// `Grade`'s `student_id` here, the one place submission identity turns
+/// back into student identity.
 pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     // A stage-level failure means the run never produced a trustworthy set
     // of test results at all, even if a few tests happened to report
     // before the crash -- so it floors the score at each formula's own
     // floor value instead of scoring the partial results.
-    let stage_failed = eval.stages.fetch.status != StageStatus::Ok
-        || eval.stages.build.status != StageStatus::Ok
-        || eval.stages.run.status != StageStatus::Ok;
+    let stage_failed =
+        eval.stages.build.status != StageStatus::Ok || eval.stages.run.status != StageStatus::Ok;
 
     let failing_tests: Vec<String> = eval
         .tests
@@ -56,7 +60,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     };
 
     Grade {
-        student_id: eval.student_id,
+        student_id: StudentId::new(eval.submission_id.as_str()),
         score,
         max,
         status,
@@ -75,11 +79,7 @@ fn contribution(test: &TestResult) -> f64 {
 }
 
 fn stage_status_label(eval: &EvaluationResult) -> String {
-    for status in [
-        eval.stages.fetch.status,
-        eval.stages.build.status,
-        eval.stages.run.status,
-    ] {
+    for status in [eval.stages.build.status, eval.stages.run.status] {
         if status != StageStatus::Ok {
             return format!("{status:?}");
         }
@@ -96,7 +96,7 @@ mod tests {
         EvaluationResult {
             schema_version: 1,
             assignment_id: "hw3".into(),
-            student_id: "alice".into(),
+            submission_id: "alice".into(),
             run_id: "run1".into(),
             graded_commit: None,
             instructor_commit: None,
@@ -110,7 +110,6 @@ mod tests {
 
     fn ok_stages() -> StageReports {
         StageReports {
-            fetch: StageReport::ok(),
             build: StageReport::ok(),
             run: StageReport::ok(),
         }
@@ -215,7 +214,6 @@ mod tests {
         );
         let harness_error_eval = eval_with(
             StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport::ok(),
                 run: StageReport {
                     status: StageStatus::HarnessError,
@@ -240,7 +238,6 @@ mod tests {
     fn build_failed_floors_the_sum_formula_at_base() {
         let eval = eval_with(
             StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport {
                     status: StageStatus::BuildFailed,
                     duration_ms: None,
@@ -259,7 +256,6 @@ mod tests {
     fn build_failed_floors_the_affine_formula_at_scale_min() {
         let eval = eval_with(
             StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport {
                     status: StageStatus::BuildFailed,
                     duration_ms: None,

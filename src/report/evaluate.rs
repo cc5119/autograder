@@ -1,13 +1,13 @@
 //! Human-readable summary of an `autograder evaluate` batch: one line per
-//! student plus an aggregate tally, printed straight to stdout regardless
-//! of the tracing/log level -- this is the only feedback `evaluate` gives
-//! by default, so it must never depend on `RUST_LOG`.
+//! submission plus an aggregate tally, printed straight to stdout
+//! regardless of the tracing/log level -- this is the only feedback
+//! `evaluate` gives by default, so it must never depend on `RUST_LOG`.
 //!
 //! Every element of `evals` already reflects a real `EvaluationResult` --
-//! `pipeline::evaluate_batch` never skips a student, even one whose fetch
-//! or build failed (see its own doc comment) -- so an empty `evals` here
-//! means no student was ever recorded (e.g. `submissions_dir/.meta/` is
-//! missing or empty), not that every one of them failed silently.
+//! `pipeline::evaluate_batch` never skips a submission (see its own doc
+//! comment) -- so an empty `evals` here means no submission directory was
+//! ever found under `submissions_dir` (e.g. an empty or wrong
+//! `--submissions` path), not that every one of them failed silently.
 
 use std::fmt::Write as _;
 
@@ -19,8 +19,8 @@ pub fn render_evaluate_summary(evals: &[EvaluationResult]) -> String {
     if evals.is_empty() {
         let _ = writeln!(
             out,
-            "autograde: 0 students evaluated -- no fetch records found under \
-             <submissions>/.meta/ (run `autograder fetch` first, or check --submissions)"
+            "autograde: 0 submissions evaluated -- no submission directories found under \
+             --submissions (run `autograder fetch` first, or check the path)"
         );
         return out;
     }
@@ -38,33 +38,29 @@ pub fn render_evaluate_summary(evals: &[EvaluationResult]) -> String {
             let _ = writeln!(
                 out,
                 "{}: ok ({passed}/{} tests passed)",
-                eval.student_id,
+                eval.submission_id,
                 eval.tests.len()
             );
         } else {
-            let _ = writeln!(out, "{}: {}", eval.student_id, stage_status.label());
+            let _ = writeln!(out, "{}: {}", eval.submission_id, stage_status.label());
         }
     }
 
     let _ = writeln!(
         out,
-        "\n{} students evaluated: {ok} ok, {} not ok",
+        "\n{} submissions evaluated: {ok} ok, {} not ok",
         evals.len(),
         evals.len() - ok
     );
     out
 }
 
-/// The first non-`Ok` stage in fetch -> build -> run order, or `Ok` if all
-/// three succeeded -- mirrors the order the pipeline itself short-circuits
-/// in (`pipeline::evaluate_submission`).
+/// The first non-`Ok` stage in build -> run order, or `Ok` if both
+/// succeeded -- mirrors the order the pipeline itself short-circuits in
+/// (`pipeline::evaluate_submission`).
 fn worst_stage_status(eval: &EvaluationResult) -> StageStatus {
-    [
-        eval.stages.fetch.status,
-        eval.stages.build.status,
-        eval.stages.run.status,
-    ]
-    .into_iter()
-    .find(|status| *status != StageStatus::Ok)
-    .unwrap_or(StageStatus::Ok)
+    [eval.stages.build.status, eval.stages.run.status]
+        .into_iter()
+        .find(|status| *status != StageStatus::Ok)
+        .unwrap_or(StageStatus::Ok)
 }

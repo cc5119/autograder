@@ -172,13 +172,12 @@ impl Evaluator for StubEvaluator {
         Ok(EvaluationResult {
             schema_version: 1,
             assignment_id: ctx.assignment_id,
-            student_id: ctx.student_id,
+            submission_id: ctx.submission_id,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,
             stages: StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport::ok(),
                 run: StageReport::ok(),
             },
@@ -208,7 +207,7 @@ mod tests {
         };
         let ctx = JobContext {
             assignment_id: "hw3".into(),
-            student_id: "alice".into(),
+            submission_id: "alice".into(),
             run_id: "run-1".into(),
             workspace: PathBuf::from("/tmp/does-not-matter"),
         };

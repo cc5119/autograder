@@ -129,13 +129,12 @@ mod tests {
         EvaluationResult {
             schema_version: 1,
             assignment_id: "hw3".into(),
-            student_id: "local".into(),
+            submission_id: "local".into(),
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,
             public_harness_commit: None,
             stages: StageReports {
-                fetch: StageReport::ok(),
                 build: StageReport::ok(),
                 run: StageReport::ok(),
             },

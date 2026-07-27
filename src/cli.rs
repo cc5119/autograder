@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::id::AssignmentId;
 use crate::package::publish::PublishMode;
 use crate::spec::AssignmentKind;
 
@@ -40,7 +39,7 @@ pub enum Command {
     },
     /// Run the Fetch stage alone: lands each submission at
     /// `<out>/<student_id>/` and records the outcome at
-    /// `<out>/.meta/<student_id>.json`, without running
+    /// `<out>/.fetch/<student_id>.json`, without running
     /// Prepare/Evaluate/Grade.
     Fetch {
         /// Path to the (private) assignment repo.
@@ -49,7 +48,7 @@ pub enum Command {
         #[arg(long)]
         roster: PathBuf,
         /// Destination directory for fetched submissions (flat: one
-        /// `<student_id>/` subdirectory per student, plus a `.meta/`
+        /// `<student_id>/` subdirectory per student, plus a `.fetch/`
         /// directory of per-student fetch records).
         #[arg(long)]
         out: PathBuf,
@@ -58,15 +57,16 @@ pub enum Command {
         #[arg(long)]
         as_of: Option<jiff::Zoned>,
     },
-    /// Run Prepare -> Evaluate and persist raw results, one directory
-    /// regardless of how its submissions were fetched. Never fetches itself
-    /// and never scores -- run `autograder grade` afterwards for that.
+    /// Run Prepare -> Evaluate and persist raw results, one submission
+    /// directory at a time, and never touching how (or whether) it was
+    /// fetched. Never fetches itself and never scores -- run `autograder
+    /// grade` afterwards for that.
     Evaluate {
         /// Path to the (private) assignment repo.
         assignment: PathBuf,
-        /// Directory shaped like `autograder fetch --out`'s own output:
-        /// `<student_id>/<assignment.id>/...` per student, plus
-        /// `.meta/<student_id>.json` fetch records.
+        /// A directory containing one subdirectory per submission (e.g.
+        /// `autograder fetch --out`'s own output) -- any dot-prefixed
+        /// entries (`.fetch/`, `.eval/`, ...) are skipped.
         #[arg(long)]
         submissions: PathBuf,
         /// Grade using the host-process "local sandbox" instead of podman
@@ -79,25 +79,16 @@ pub enum Command {
         #[arg(long)]
         local_sandbox: bool,
     },
-    /// Compute scores from persisted `evaluate` results: applies the
-    /// current scoring policy fresh every time.
+    /// Compute scores from persisted `evaluate` results (`<submissions>/.eval/`):
+    /// applies the current scoring policy fresh every time, and writes a
+    /// gradebook CSV to `<submissions>/.grades/grades.csv`.
     Grade {
-        /// Assignment id to grade.
-        assignment_id: AssignmentId,
         /// Path to the assignment repo (for the current scoring policy).
-        #[arg(long)]
         assignment: PathBuf,
-    },
-    /// Emit a report from persisted grades.
-    Report {
-        /// Assignment id to report on.
-        assignment_id: AssignmentId,
-        /// Output format.
-        #[arg(long, value_enum, default_value = "json")]
-        format: ReportFormat,
-        /// Output path (defaults to stdout).
+        /// The same directory `autograder evaluate --submissions` was
+        /// pointed at.
         #[arg(long)]
-        out: Option<PathBuf>,
+        submissions: PathBuf,
     },
     /// Publish either the starter/template repo (for distribution to
     /// students) or the solution repo (real implementations, kept out of
@@ -112,12 +103,6 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "starter")]
         mode: PublishModeArg,
     },
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum ReportFormat {
-    Json,
-    Csv,
 }
 
 /// Mirrors `spec::AssignmentKind`, kept separate so `spec` stays free of a

@@ -1,9 +1,11 @@
 //! The Fetch stage: pulls each student's submission onto disk at
 //! `out_dir/<student_id>/` (flat) and a `FetchRecord` at
-//! `out_dir/.meta/<student_id>.json`, independently of grading --
-//! `fetch_batch` is what `autograder fetch` runs. `autograder evaluate` never
-//! touches this module directly; it just reads the [`FetchRecord`] a prior
-//! `fetch_batch` run left behind via [`read_fetch_record`].
+//! `out_dir/.fetch/<student_id>.json`, independently of grading --
+//! `fetch_batch` is what `autograder fetch` runs. Neither `autograder
+//! evaluate` nor `autograder grade` touch this module or read a
+//! `FetchRecord` back -- a submission directory dropped in by hand works
+//! exactly like one `fetch_batch` produced. [`read_fetch_record`] exists
+//! for whatever external tooling wants to know what a prior fetch did.
 //!
 //! `GitRepo::fetch` shells out to `git` on `PATH` -- a full, fresh clone
 //! into `dest` on every call, no shared bare-clone cache (a cache keyed by
@@ -22,9 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::exec::fs;
+use crate::exec::json::{read_json, write_json};
 use crate::id::StudentId;
-use crate::model::StageStatus;
-use crate::store::{read_json, write_json};
 use crate::submissions::source::CsvRoster;
 
 const GIT_BIN: &str = "git";
@@ -98,10 +99,20 @@ impl SubmissionDate {
     }
 }
 
+/// Terminal status of the Fetch stage alone -- distinct from
+/// `model::StageStatus`, which is Evaluate's own build/run vocabulary and
+/// has no notion of fetching at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FetchStatus {
+    Ok,
+    Failed,
+}
+
 /// Outcome of the Fetch stage for one submission.
 #[derive(Debug, Clone)]
 pub struct FetchOutcome {
-    pub status: StageStatus,
+    pub status: FetchStatus,
     pub workspace: Option<PathBuf>,
     pub graded_commit: Option<String>,
     pub message: Option<String>,
@@ -111,7 +122,7 @@ pub struct FetchOutcome {
 impl FetchOutcome {
     fn failed(message: impl Into<String>) -> Self {
         Self {
-            status: StageStatus::FetchFailed,
+            status: FetchStatus::Failed,
             workspace: None,
             graded_commit: None,
             message: Some(message.into()),
@@ -121,7 +132,7 @@ impl FetchOutcome {
 
     fn ok(workspace: PathBuf, graded_commit: String) -> Self {
         Self {
-            status: StageStatus::Ok,
+            status: FetchStatus::Ok,
             workspace: Some(workspace),
             graded_commit: Some(graded_commit),
             message: None,
@@ -281,13 +292,14 @@ impl Submission {
 }
 
 /// Durable record of the last fetch attempt for one student, written by
-/// `fetch_batch` to `<out>/.meta/<student_id>.json` (kept out of
+/// `fetch_batch` to `<out>/.fetch/<student_id>.json` (kept out of
 /// `<out>/<student_id>/`, the submission's own flat checkout dir, so nothing
-/// downstream ever needs to filter it out) and read back by
-/// `crate::pipeline::evaluate_batch`/`crate::commands::grade`.
+/// downstream ever needs to filter it out). Nothing in this codebase reads
+/// it back except [`read_fetch_record`] itself -- see this module's doc
+/// comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRecord {
-    pub status: StageStatus,
+    pub status: FetchStatus,
     pub graded_commit: Option<String>,
     pub message: Option<String>,
     pub fetched_at: Timestamp,
@@ -295,7 +307,7 @@ pub struct FetchRecord {
 }
 
 pub(crate) fn fetch_record_path(out_dir: &Path, student_id: &StudentId) -> PathBuf {
-    out_dir.join(".meta").join(format!("{student_id}.json"))
+    out_dir.join(".fetch").join(format!("{student_id}.json"))
 }
 
 fn write_fetch_record(out_dir: &Path, student_id: &StudentId, record: &FetchRecord) -> Result<()> {
@@ -313,7 +325,7 @@ pub fn read_fetch_record(out_dir: &Path, student_id: &StudentId) -> Result<Optio
 
 /// Runs the Fetch stage alone: lands each submission at `out_dir/<student_id>/`
 /// (flat -- no `checkout/` nesting) and records the outcome at
-/// `out_dir/.meta/<student_id>.json`. Safe to run again -- always overwrites
+/// `out_dir/.fetch/<student_id>.json`. Safe to run again -- always overwrites
 /// both.
 pub fn fetch_batch(
     source: &CsvRoster,

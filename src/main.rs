@@ -1,4 +1,4 @@
-use autograder::{cli::Cli, config::Config};
+use autograder::cli::Cli;
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
@@ -7,7 +7,6 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let config = Config::default();
-    autograder::dispatch(cli.command, &config)?;
+    autograder::dispatch(cli.command)?;
     Ok(())
 }

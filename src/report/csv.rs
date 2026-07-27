@@ -3,14 +3,7 @@ use std::path::PathBuf;
 use crate::error::{Error, Result};
 use crate::model::Grade;
 
-use super::{Reporter, write_output};
-
 /// Gradebook CSV: `student_id,score,max,status`.
-pub struct CsvReporter {
-    /// Destination file; `None` writes to stdout.
-    pub out: Option<PathBuf>,
-}
-
 pub fn render(grades: &[Grade]) -> Result<String> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer
@@ -36,12 +29,6 @@ pub fn render(grades: &[Grade]) -> Result<String> {
         .into_inner()
         .map_err(|e| Error::Other(e.to_string()))?;
     String::from_utf8(bytes).map_err(|e| Error::Other(e.to_string()))
-}
-
-impl Reporter for CsvReporter {
-    fn report(&self, grades: &[Grade]) -> Result<()> {
-        write_output(&self.out, &render(grades)?)
-    }
 }
 
 #[cfg(test)]
