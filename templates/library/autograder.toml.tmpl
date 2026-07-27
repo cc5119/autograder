@@ -8,11 +8,11 @@ harness = "harness"
 image = "autograder-base:1.86.0"
 
 [build-limits]
-wall-clock = "120s"
+wall-clock = "180s"
 cpus = 2
 memory = "2GiB"
 pids = 256
-max-output-bytes = "1MiB"
+max-output-bytes = "2MiB"
 
 [scoring]
 formula = "sum"
