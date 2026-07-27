@@ -15,9 +15,8 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::exec::sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
 use crate::pipeline::evaluator::Evaluator;
-use crate::pipeline::evaluator::binary::Binary;
-use crate::pipeline::evaluator::library::Library;
-use crate::spec::{AssignmentKind, Spec};
+use crate::pipeline::evaluator::nextest::Nextest;
+use crate::spec::Spec;
 
 pub fn dispatch(command: Command, config: &Config) -> Result<()> {
     match command {
@@ -81,10 +80,7 @@ fn build_evaluator_for(
     package_dir: &Path,
     sandbox: impl Sandbox + 'static,
 ) -> Result<Box<dyn Evaluator>> {
-    match spec.assignment.kind {
-        AssignmentKind::Library => Ok(Box::new(Library::new(spec, package_dir, sandbox)?)),
-        AssignmentKind::Binary => Ok(Box::new(Binary::new(spec, package_dir, sandbox)?)),
-    }
+    Ok(Box::new(Nextest::new(spec, package_dir, sandbox)?))
 }
 
 #[cfg(test)]
@@ -121,17 +117,10 @@ cargo-lock-sha256 = "{}"
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "30s"
 cpus = 1
 memory = "512MiB"
-pids = 64
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "256MiB"
 pids = 64
 max-output-bytes = "64KiB"
 
@@ -143,11 +132,9 @@ base = 0.0
         )
     }
 
-    /// This host has no `cargo-nextest` installed. `Library::evaluate`'s
-    /// stage 2 (`cargo nextest archive`, see that module's doc comment)
-    /// needs it just as much as the run stage always did, so it's the one
-    /// that now fails here -- reported as `BuildFailed`, not a crash or a
-    /// silent pass.
+    /// This host has no `cargo-nextest`. Only stage 3 needs it, so the two
+    /// build stages succeed and this reports `HarnessError` (no junit
+    /// written), not a crash or a silent pass.
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
         let harness_dir = tempfile::tempdir().unwrap();
@@ -191,8 +178,8 @@ base = 0.0
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 
-        assert_eq!(eval.stages.build.status, model::StageStatus::BuildFailed);
-        assert_eq!(eval.stages.run.status, model::StageStatus::Ok);
+        assert_eq!(eval.stages.build.status, model::StageStatus::Ok);
+        assert_eq!(eval.stages.run.status, model::StageStatus::HarnessError);
 
         let report = CiReport {
             eval: Some(&eval),
@@ -201,10 +188,12 @@ base = 0.0
         assert!(!report.passed());
     }
 
+    /// Evaluator construction is kind-agnostic now (see
+    /// `pipeline::evaluator::nextest`'s module doc comment) -- it only
+    /// needs the harness manifest to exist, regardless of `kind`.
     #[test]
-    fn ci_evaluator_selection_builds_binary_when_its_harness_dir_exists() {
-        let toml = public_spec().replace("kind = \"library\"", "kind = \"binary\"");
-        let spec: Spec = toml::from_str(&toml).unwrap();
+    fn ci_evaluator_selection_succeeds_when_the_harness_dir_exists() {
+        let spec: Spec = toml::from_str(&public_spec()).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
         write(
@@ -216,9 +205,8 @@ base = 0.0
     }
 
     #[test]
-    fn ci_evaluator_selection_errors_clearly_when_binary_dir_is_missing() {
-        let toml = public_spec().replace("kind = \"library\"", "kind = \"binary\"");
-        let spec: Spec = toml::from_str(&toml).unwrap();
+    fn ci_evaluator_selection_errors_clearly_when_the_harness_dir_is_missing() {
+        let spec: Spec = toml::from_str(&public_spec()).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
         let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
@@ -277,9 +265,8 @@ base = 0.0
         let store = Store::new(&config.storage_dir);
         let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();
         assert_eq!(grades.len(), 1);
-        // This host has no `cargo-nextest`, which stage 2 (archive) now
-        // needs just as much as the run stage always did -- see
-        // `ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest`.
-        assert_eq!(grades[0].status, "BuildFailed");
+        // This host has no `cargo-nextest`, which only stage 3 (run) needs
+        // -- see `ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest`.
+        assert_eq!(grades[0].status, "HarnessError");
     }
 }

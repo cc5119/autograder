@@ -61,17 +61,10 @@ cargo-lock-sha256 = "{sha}"
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "30s"
 cpus = 1
 memory = "512MiB"
-pids = 64
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "256MiB"
 pids = 64
 max-output-bytes = "64KiB"
 

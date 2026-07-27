@@ -1,52 +1,44 @@
-//! The `library` `Evaluator`: builds the trusted, permanently-checked-in
-//! harness crate at `[assignment].harness` and runs its tests under `cargo
-//! nextest`, both inside a `Sandbox`.
+//! `Nextest`: the one `Evaluator` for both `library` and `binary`
+//! assignments, kind-agnostic.
 //!
 //! The harness is overlaid fresh per job into `repo_root/<harness>`
 //! (`repo_root` = `ctx.workspace`'s parent), never built in place -- sharing
 //! one harness dir across jobs would race different students' builds
 //! against the same `Cargo.lock`/`target/`, since Cargo rewrites the lock
-//! whenever the path dependency's contents change.
+//! whenever a path dependency's contents change.
 //!
-//! Mirrors `binary`'s shape: the harness owns a compiled **driver** binary
-//! (`[[bin]] name = "driver"`, path-depending on the student's library
-//! crate) and the judge's `#[test]`s never call into the student's library
-//! in-process -- they spawn `driver` as a child (via the `autograder-test`
-//! library the harness imports) and assert on its observable behavior,
-//! exactly like `binary`'s judge spawns the compiled student binary. This
-//! uniformity is what lets both assignment kinds share one per-test
-//! sandboxing mechanism -- nested `isolate`, enabled on the run stage via
-//! `evaluator::isolate_run_config` -- instead of per-stage limits only (see
-//! `attic/per-test-limits-isolate-design-2026-07-21.md`).
+//! The judge's `#[test]`s spawn student code as a child (via
+//! `autograder-test`, which shells out to `isolate`) rather than calling
+//! into it in-process, so `evaluate` never needs to know whether that child
+//! is the student's own binary or a harness-owned driver: it builds
+//! `-p <id>` and `-p <harness_package>` unconditionally and lets Cargo
+//! build whatever targets each package declares.
 //!
-//! Build and run both use `workdir = repo_root` (never `cd`ed into the
-//! harness dir, no `--test` filter).
+//! `evaluate` runs three sandboxed stages:
+//!
+//! 1. **build `<id>`** -- `cargo build -p <id>`, `hidden_tests_mounts`
+//!    (harness/tests hidden, so a student `build.rs` can't read it).
+//! 2. **build `<harness_package>`** -- a *separate* sandbox call from stage
+//!    1, never combined into one `cargo build -p a -p b`: that would force
+//!    student and harness compilation to share one mount set. `full_mounts`
+//!    (real `harness/tests`): `<id>` is already built and cached from stage
+//!    1, so nothing student-authored newly executes here, only the
+//!    harness's own trusted code -- and hiding `harness/tests` would break
+//!    any harness `Cargo.toml` that declares an explicit `[[test]]` target
+//!    path, since Cargo validates declared target paths exist while
+//!    loading the manifest, even for a plain `cargo build`.
+//! 3. **run** -- `cargo nextest run -p <harness_package>`, directly against
+//!    real source (no archive), `repo_root_mounts` (harness/tests visible)
+//!    and no `SandboxLimits`. Both are safe now because the only
+//!    student-authored code executing here is `isolate`-boxed: it can't see
+//!    `harness/tests` regardless of this container's mounts (verified in
+//!    `spike/isolate-podman/`), and its resource limits come from
+//!    `autograder-test` calls in the harness's own test code, not from
+//!    `autograder.toml`.
 //!
 //! `repo_root` isn't a descendant of `workspace`, so Cargo can't discover
 //! `workspace`'s offline vendoring config there -- passed as `--config`
 //! flags instead of a `.cargo/config.toml`.
-//!
-//! `evaluate` runs three sandboxed stages, not one, to keep hidden judge
-//! test content out of any container in which student-authored code
-//! executes (see `evaluator::hidden_tests_mounts`'s doc comment for why a
-//! read-only mount alone doesn't do that):
-//!
-//! 1. **build student** -- `cargo build -p <harness_package> --bin driver`,
-//!    mounted via `hidden_tests_mounts` (harness/tests hidden). This
-//!    transitively compiles the student's own library crate (`driver`'s
-//!    path dependency) and produces the driver binary stage 3 spawns. A
-//!    student `build.rs` runs here with no hidden test source to read.
-//! 2. **archive judge** -- `cargo nextest archive -p <harness>`, mounted
-//!    via the full `repo_root_mounts` (harness fully visible). Nothing
-//!    student-authored *executes* in this stage, only the judge's own test
-//!    binaries are compiled -- it doesn't even need `driver` already built
-//!    -- so the real hidden tests being readable here is harmless.
-//! 3. **run** -- `cargo nextest run --archive-file`, again via
-//!    `hidden_tests_mounts`, with nested `isolate` enabled. Student code
-//!    actually executes here -- the archived judge spawns the already-built
-//!    `driver` binary, which links the student crate -- but the archive
-//!    contains only compiled binaries, so there's no hidden test source
-//!    anywhere in this container to read regardless.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -60,26 +52,23 @@ use crate::model::{
 };
 use crate::spec::Spec;
 
-use super::{
-    Evaluator, build_sandbox_limits, isolate_run_config, run_sandbox_limits, write_nextest_config,
-};
+use super::{Evaluator, isolate_run_config, sandbox_limits, write_nextest_config};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
 /// writes to; mirrors `vendor::prefetch`'s output layout.
 const VENDOR_DIR_NAME: &str = "vendor";
 
-pub struct Library<S> {
+pub struct Nextest<S> {
     sandbox: S,
     package_dir: PathBuf,
-    build_limits: SandboxLimits,
-    run_limits: SandboxLimits,
+    limits: SandboxLimits,
     /// `[assignment].harness` -- names both the harness's sibling directory
     /// and its own `[package].name`, which must agree. Cloned once at
     /// construction so `evaluate` can pass `-p <harness_package>`.
     harness_package: String,
 }
 
-impl<S: Sandbox> Library<S> {
+impl<S: Sandbox> Nextest<S> {
     pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
         let package_dir = package_dir.into();
         let harness_manifest = package_dir
@@ -87,7 +76,7 @@ impl<S: Sandbox> Library<S> {
             .join("Cargo.toml");
         if !harness_manifest.is_file() {
             return Err(Error::InvalidSpec(format!(
-                "library assignment missing {} -- the harness must be a real, \
+                "assignment missing {} -- the harness must be a real, \
                  instructor-authored crate (no default is generated)",
                 harness_manifest.display()
             )));
@@ -95,8 +84,7 @@ impl<S: Sandbox> Library<S> {
         Ok(Self {
             sandbox,
             package_dir,
-            build_limits: build_sandbox_limits(&spec.limits.build, &spec.limits.run),
-            run_limits: run_sandbox_limits(&spec.limits.run),
+            limits: sandbox_limits(&spec.limits),
             harness_package: spec.assignment.harness.clone(),
         })
     }
@@ -117,9 +105,7 @@ impl<S: Sandbox> Library<S> {
         repo_root.join(&self.harness_package)
     }
 
-    /// Full visibility, harness/tests included -- only safe for the
-    /// archive stage, where nothing student-authored executes (see this
-    /// module's doc comment).
+    /// For the run stage (see this module's doc comment).
     fn full_mounts(&self, repo_root: &Path, workspace: &Path) -> Vec<Mount> {
         super::repo_root_mounts(
             repo_root,
@@ -129,8 +115,7 @@ impl<S: Sandbox> Library<S> {
         )
     }
 
-    /// harness/tests hidden -- for any stage in which student-authored code
-    /// executes (the student build, and the archived judge run).
+    /// For the two build stages (see this module's doc comment).
     fn hidden_tests_mounts(&self, repo_root: &Path, workspace: &Path) -> Result<Vec<Mount>> {
         super::hidden_tests_mounts(
             repo_root,
@@ -159,7 +144,7 @@ impl<S: Sandbox> Library<S> {
     }
 }
 
-impl<S: Sandbox> Evaluator for Library<S> {
+impl<S: Sandbox> Evaluator for Nextest<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let repo_root = ctx
             .workspace
@@ -171,31 +156,53 @@ impl<S: Sandbox> Evaluator for Library<S> {
         let config_args = self.config_args();
         let env = self.offline_env();
 
-        // Stage 1: build only the student's own crate. harness/tests is
-        // hidden (see `hidden_tests_mounts`'s doc comment) -- a student
-        // `build.rs` runs here with nothing hidden to read.
-        let mut build_spec = SandboxSpec::new("cargo", self.build_limits.clone());
-        build_spec.args = vec![
+        // Stage 1 (see this module's doc comment).
+        let mut build_id_spec = SandboxSpec::new("cargo", Some(self.limits.clone()));
+        build_id_spec.args = vec![
+            "build".into(),
+            "--offline".into(),
+            "-p".into(),
+            ctx.assignment_id.to_string(),
+        ];
+        build_id_spec.args.extend(config_args.iter().cloned());
+        build_id_spec.workdir = Some(repo_root.clone());
+        build_id_spec.env = env.clone();
+        build_id_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
+
+        let build_id_outcome = self.sandbox.run(&build_id_spec)?;
+        if !build_id_outcome.succeeded() {
+            return Ok(terminal_result(
+                ctx,
+                Stage::Build,
+                build_stage_status(&build_id_outcome),
+                Diagnostics {
+                    compiler_errors: Some(capped_utf8(&build_id_outcome.stderr)),
+                    stderr_excerpt: None,
+                },
+            ));
+        }
+
+        // Stage 2 (see this module's doc comment).
+        let mut build_harness_spec = SandboxSpec::new("cargo", Some(self.limits.clone()));
+        build_harness_spec.args = vec![
             "build".into(),
             "--offline".into(),
             "-p".into(),
             self.harness_package.clone(),
-            "--bin".into(),
-            "driver".into(),
         ];
-        build_spec.args.extend(config_args.iter().cloned());
-        build_spec.workdir = Some(repo_root.clone());
-        build_spec.env = env.clone();
-        build_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
+        build_harness_spec.args.extend(config_args.iter().cloned());
+        build_harness_spec.workdir = Some(repo_root.clone());
+        build_harness_spec.env = env.clone();
+        build_harness_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
 
-        let build_outcome = self.sandbox.run(&build_spec)?;
-        if !build_outcome.succeeded() {
+        let build_harness_outcome = self.sandbox.run(&build_harness_spec)?;
+        if !build_harness_outcome.succeeded() {
             return Ok(terminal_result(
                 ctx,
                 Stage::Build,
-                build_stage_status(&build_outcome),
+                build_stage_status(&build_harness_outcome),
                 Diagnostics {
-                    compiler_errors: Some(capped_utf8(&build_outcome.stderr)),
+                    compiler_errors: Some(capped_utf8(&build_harness_outcome.stderr)),
                     stderr_excerpt: None,
                 },
             ));
@@ -203,54 +210,18 @@ impl<S: Sandbox> Evaluator for Library<S> {
 
         write_nextest_config(&repo_root)?;
 
-        // Stage 2: compile + archive the judge, harness fully visible.
-        // Nothing student-authored executes in this stage -- only linking
-        // against the artifact stage 1 already built -- so hidden test
-        // source being readable here is harmless (see this module's doc
-        // comment).
-        let archive_path = repo_root.join("target/nextest-archive.tar.zst");
-        let mut archive_spec = SandboxSpec::new("cargo", self.build_limits.clone());
-        archive_spec.args = vec![
-            "nextest".into(),
-            "archive".into(),
-            "--offline".into(),
-            "-p".into(),
-            self.harness_package.clone(),
-            "--archive-file".into(),
-            archive_path.display().to_string(),
-        ];
-        archive_spec.args.extend(config_args);
-        archive_spec.workdir = Some(repo_root.clone());
-        archive_spec.env = env;
-        archive_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
-
-        let archive_outcome = self.sandbox.run(&archive_spec)?;
-        if !archive_outcome.succeeded() {
-            return Ok(terminal_result(
-                ctx,
-                Stage::Build,
-                build_stage_status(&archive_outcome),
-                Diagnostics {
-                    compiler_errors: Some(capped_utf8(&archive_outcome.stderr)),
-                    stderr_excerpt: None,
-                },
-            ));
-        }
-
-        // Stage 3: run the archived judge. harness/tests hidden again --
-        // student code actually executes here (`library` links the
-        // student crate straight into the judge's test binary), but the
-        // archive contains only compiled binaries, so there's no hidden
-        // test source anywhere in this container to read regardless.
-        let mut run_spec = SandboxSpec::new("cargo", self.run_limits.clone());
+        // Stage 3 (see this module's doc comment).
+        let mut run_spec = SandboxSpec::new("cargo", None);
         run_spec.args = vec![
             "nextest".into(),
             "run".into(),
-            "--archive-file".into(),
-            archive_path.display().to_string(),
+            "-p".into(),
+            self.harness_package.clone(),
         ];
+        run_spec.args.extend(config_args);
         run_spec.workdir = Some(repo_root.clone());
-        run_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
+        run_spec.env = env;
+        run_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
         isolate_run_config(&mut run_spec);
 
         let run_outcome = self.sandbox.run(&run_spec)?;
@@ -515,7 +486,7 @@ autograder: case=b score=0.25
         assert!(results.iter().all(|t| t.reported_score.is_none()));
     }
 
-    /// Returns canned outcomes for the build then run invocation, in order.
+    /// Returns canned outcomes for each sandboxed call, in order.
     struct ScriptedSandbox {
         outcomes: Mutex<Vec<SandboxOutcome>>,
         specs: std::sync::Arc<Mutex<Vec<SandboxSpec>>>,
@@ -531,7 +502,7 @@ autograder: case=b score=0.25
 
         /// Like `new`, but also returns a handle to every `SandboxSpec`
         /// this sandbox is run with -- for tests that need to inspect the
-        /// argv `Library` builds, even though `Library::new` consumes the
+        /// argv `Nextest` builds, even though `Nextest::new` consumes the
         /// sandbox by value.
         fn spy(outcomes: Vec<SandboxOutcome>) -> (Self, std::sync::Arc<Mutex<Vec<SandboxSpec>>>) {
             let sandbox = Self::new(outcomes);
@@ -582,19 +553,11 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-
-[limits.build]
+[limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
 pids = 256
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "512MiB"
-pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
@@ -605,7 +568,7 @@ base = 0.0
     }
 
     /// `workspace` and `harness/` as real siblings under one `repo_root`,
-    /// matching the invariant `Library::evaluate` relies on in production
+    /// matching the invariant `Nextest::evaluate` relies on in production
     /// (see this module's doc comment). Returns `(workspace, harness_dir)`
     /// -- callers that don't need `harness_dir` for their own assertions
     /// can ignore it.
@@ -641,7 +604,7 @@ base = 0.0
     fn new_errors_clearly_when_the_harness_is_missing() {
         let package_dir = tempfile::tempdir().unwrap();
 
-        let result = Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+        let result = Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
 
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
@@ -651,7 +614,7 @@ base = 0.0
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let evaluator =
-            Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+            Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
         assert!(evaluator.config_args().is_empty());
     }
@@ -662,7 +625,7 @@ base = 0.0
         write_harness_manifest(package_dir.path());
         std::fs::create_dir_all(package_dir.path().join("vendor")).unwrap();
         let evaluator =
-            Library::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+            Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
         let args = evaluator.config_args();
 
@@ -674,20 +637,38 @@ base = 0.0
     }
 
     #[test]
-    fn build_failure_short_circuits_before_running_nextest() {
+    fn stage_1_build_failure_short_circuits_before_stage_2() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
         let (workspace, _harness_dir) = job_dirs(repo_root.path());
 
-        let sandbox = ScriptedSandbox::new(vec![failed_outcome()]);
-        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
         assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
         assert!(eval.diagnostics.compiler_errors.unwrap().contains("E0433"));
         assert!(eval.tests.is_empty());
+        assert_eq!(specs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stage_2_build_failure_short_circuits_before_stage_3() {
+        let package_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
+        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+
+        let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
+
+        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
+
+        assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
+        assert!(eval.tests.is_empty());
+        assert_eq!(specs.lock().unwrap().len(), 2);
     }
 
     #[test]
@@ -697,10 +678,10 @@ base = 0.0
         let repo_root = tempfile::tempdir().unwrap();
         let (workspace, _harness_dir) = job_dirs(repo_root.path());
 
-        // build, archive, run -- all three stages succeed, but no junit
-        // report is on disk afterwards.
+        // build id, build harness, run -- all three stages succeed, but no
+        // junit report is on disk afterwards.
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
@@ -720,7 +701,7 @@ base = 0.0
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
@@ -730,27 +711,23 @@ base = 0.0
     }
 
     #[test]
-    fn stage_1_builds_the_harness_driver_bin_with_harness_tests_hidden() {
+    fn stage_1_builds_only_id_with_harness_tests_hidden_and_build_limits() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
         let (workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
         evaluator.evaluate(&ctx(workspace)).unwrap();
 
         let specs = specs.lock().unwrap();
         let build_spec = &specs[0];
         assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
-        // Scoped to the harness's `driver` bin target, never the student
-        // crate directly -- building it transitively compiles the
-        // student's library crate (`driver`'s path dependency).
-        assert!(build_spec.args.contains(&"-p".to_string()));
-        assert!(build_spec.args.contains(&"harness".to_string()));
-        assert!(build_spec.args.contains(&"--bin".to_string()));
-        assert!(build_spec.args.contains(&"driver".to_string()));
+        assert_eq!(build_spec.args[..4], ["build", "--offline", "-p", "hw3"]);
+        assert!(!build_spec.args.contains(&"harness".to_string()));
         assert!(!build_spec.args.contains(&"--test".to_string()));
+        assert!(build_spec.limits.is_some());
 
         let shadow = build_spec
             .mounts
@@ -762,23 +739,31 @@ base = 0.0
     }
 
     #[test]
-    fn stage_2_archives_the_harness_package_with_full_visibility() {
+    fn stage_2_builds_only_harness_in_its_own_sandbox_call_with_harness_tests_visible() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
         let (workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
         evaluator.evaluate(&ctx(workspace)).unwrap();
 
         let specs = specs.lock().unwrap();
-        let archive_spec = &specs[1];
-        assert!(archive_spec.args.contains(&"archive".to_string()));
-        assert!(archive_spec.args.contains(&"-p".to_string()));
-        assert!(archive_spec.args.contains(&"harness".to_string()));
+        let build_spec = &specs[1];
+        assert_eq!(
+            build_spec.args[..4],
+            ["build", "--offline", "-p", "harness"]
+        );
+        // Never combined with stage 1's `-p hw3` into one invocation.
+        assert!(!build_spec.args.contains(&"hw3".to_string()));
+        assert!(build_spec.limits.is_some());
+
+        // Real harness/tests, not shadowed -- `<id>` is already built by
+        // stage 1, so nothing student-authored newly executes here (see
+        // this module's doc comment).
         assert!(
-            archive_spec
+            build_spec
                 .mounts
                 .iter()
                 .all(|m| m.container_path != harness_dir.join("tests"))
@@ -786,7 +771,7 @@ base = 0.0
     }
 
     #[test]
-    fn stage_3_runs_from_the_archive_with_no_p_flag_and_harness_tests_hidden_again() {
+    fn stage_3_runs_direct_from_source_with_harness_tests_visible_and_no_limits() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
@@ -797,25 +782,31 @@ base = 0.0
 
         let (sandbox, specs) =
             ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Library::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
         evaluator.evaluate(&ctx(workspace)).unwrap();
 
         let specs = specs.lock().unwrap();
         let run_spec = &specs[2];
-        assert!(run_spec.args.contains(&"--archive-file".to_string()));
-        assert!(!run_spec.args.contains(&"-p".to_string()));
-        assert!(!run_spec.args.contains(&"--test".to_string()));
+        assert_eq!(run_spec.program, "cargo");
+        assert!(!run_spec.args.contains(&"--archive-file".to_string()));
+        assert_eq!(run_spec.args[..4], ["nextest", "run", "-p", "harness"]);
+        assert!(run_spec.limits.is_none());
 
-        let shadow = run_spec
-            .mounts
-            .iter()
-            .find(|m| m.container_path == harness_dir.join("tests"))
-            .expect("stage 3 shadows harness/tests");
-        assert_eq!(shadow.mode, crate::exec::sandbox::MountMode::ReadOnly);
+        // harness/tests is real here, not shadowed -- safe per the isolate
+        // filesystem-confinement spike (see this module's doc comment).
+        assert!(
+            run_spec
+                .mounts
+                .iter()
+                .all(|m| m.container_path != harness_dir.join("tests"))
+        );
+
+        assert!(run_spec.cgroupns_private);
+        assert!(run_spec.cap_add.contains(&"SYS_ADMIN".to_string()));
     }
 
     #[test]
-    fn a_custom_assignment_harness_name_drives_both_the_directory_and_the_p_arg() {
+    fn a_custom_assignment_harness_name_drives_both_the_directory_and_the_p_args() {
         let package_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(package_dir.path().join("judge")).unwrap();
         std::fs::write(
@@ -837,19 +828,11 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-
-[limits.build]
+[limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
 pids = 256
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "512MiB"
-pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
@@ -860,17 +843,15 @@ base = 0.0
         let repo_root = tempfile::tempdir().unwrap();
         let (workspace, _harness_dir) = job_dirs(repo_root.path());
 
-        // Stage 1 (student build) succeeds; stage 2 (archive, scoped to
-        // the custom harness package name) fails.
+        // Stage 1 (build id) succeeds; stage 2 (build harness, scoped to
+        // the custom harness package name) fails -- that's the one that
+        // should reference "judge".
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Library::new(&spec, package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec, package_dir.path(), sandbox).unwrap();
         evaluator.evaluate(&ctx(workspace)).unwrap();
 
         let specs = specs.lock().unwrap();
-        // Both stages reference the custom harness package name -- stage 1
-        // because it now builds `-p <harness_package> --bin driver`, stage 2
-        // because it archives `-p <harness_package>`.
-        assert!(specs[0].args.contains(&"judge".to_string()));
+        assert!(!specs[0].args.contains(&"judge".to_string()));
         assert!(specs[1].args.contains(&"judge".to_string()));
     }
 }

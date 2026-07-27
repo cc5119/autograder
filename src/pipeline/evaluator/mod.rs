@@ -1,5 +1,4 @@
-pub mod binary;
-pub mod library;
+pub mod nextest;
 
 use std::path::{Path, PathBuf};
 
@@ -8,47 +7,33 @@ use crate::exec::sandbox::{Mount, MountMode, SandboxLimits, SandboxSpec};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
 };
-use crate::spec::{BuildLimits, RunLimits};
+use crate::spec::Limits;
 
-/// Shared by both evaluators: `[limits.build]` carries no `max-output-bytes`
-/// of its own, so compiler output reuses the run stage's cap.
-pub(crate) fn build_sandbox_limits(build: &BuildLimits, run: &RunLimits) -> SandboxLimits {
+/// Applied to the two build stages only -- the run stage gets no
+/// `SandboxLimits` at all (see `isolate_run_config`), so there's no second
+/// tier to map here.
+pub(crate) fn sandbox_limits(limits: &Limits) -> SandboxLimits {
     SandboxLimits {
-        wall_clock: build.wall_clock.0,
-        cpus: build.cpus,
-        memory_bytes: build.memory.0,
-        pids: build.pids,
-        max_output_bytes: run.max_output_bytes.0,
+        wall_clock: limits.wall_clock.0,
+        cpus: limits.cpus,
+        memory_bytes: limits.memory.0,
+        pids: limits.pids,
+        max_output_bytes: limits.max_output_bytes.0,
     }
 }
 
-pub(crate) fn run_sandbox_limits(run: &RunLimits) -> SandboxLimits {
-    SandboxLimits {
-        wall_clock: run.wall_clock.0,
-        cpus: run.cpus,
-        memory_bytes: run.memory.0,
-        pids: run.pids,
-        max_output_bytes: run.max_output_bytes.0,
-    }
-}
-
-/// Enables nested `isolate` inside the run-stage container: the judge's
-/// tests import `autograder-test`, which shells out to `isolate` to enforce
-/// per-test limits (see `attic/per-test-limits-isolate-design-2026-07-21.md`).
-/// Only the run stage needs this -- build/archive never spawn student code
-/// and so never need cgroup access -- so callers apply this to `run_spec`
-/// alone, never `build_spec`/`archive_spec`.
+/// Enables nested `isolate` inside the run-stage container. Run stage only
+/// -- the build stages never spawn student code.
 ///
-/// The flag values themselves are validated in the design doc's spike
-/// (`spike/isolate-podman/`): dropping `SYS_ADMIN` breaks isolate's
-/// namespace `clone()`, dropping the `/sys/fs/cgroup` unmask leaves the
-/// cgroup unwritable. `isolate-setup.sh` (baked into the run-stage image,
-/// see `container/Containerfile`) is the wrapper that preps cgroups/config
-/// before `exec`ing the real command; the tmpfs paths are exactly what it
-/// writes into. Rather than a dedicated `SandboxSpec` field, the wrapper is
-/// spliced directly into `program`/`args` -- the pair that already fully
-/// describes the container's command -- by swapping `program` for the
-/// wrapper and pushing the original `program` back as `args[0]`.
+/// Flag values validated in `spike/isolate-podman/`: dropping `SYS_ADMIN`
+/// breaks isolate's namespace `clone()`, dropping the `/sys/fs/cgroup`
+/// unmask leaves the cgroup unwritable.
+///
+/// Deliberately doesn't touch `program`/`args` to prepend
+/// `isolate-setup.sh` -- that only exists inside the real container image.
+/// `ContainerSandbox::build_argv` prepends it instead, keyed off
+/// `cgroupns_private`; `LocalSandbox` ignores these fields and runs
+/// `program`/`args` as given, which is what local/CI dev needs.
 pub(crate) fn isolate_run_config(run_spec: &mut SandboxSpec) {
     run_spec.cgroupns_private = true;
     run_spec.cap_add = vec!["SYS_ADMIN".to_string()];
@@ -58,8 +43,6 @@ pub(crate) fn isolate_run_config(run_spec: &mut SandboxSpec) {
         PathBuf::from("/var/local/lib/isolate"),
         PathBuf::from("/run/isolate"),
     ];
-    let inner_program = std::mem::replace(&mut run_spec.program, "isolate-setup.sh".to_string());
-    run_spec.args.insert(0, inner_program);
 }
 
 /// Writes `dir/.config/nextest.toml` with `store-success-output = true`, so
@@ -147,17 +130,11 @@ fn empty_shadow_dir() -> Result<std::path::PathBuf> {
 /// non-`keep` items are meant to stay hidden, see `package::publish`'s
 /// module doc comment) -- is shadowed by an empty read-only directory.
 ///
-/// Read-only mounting (what `repo_root_mounts` already does) stops writes,
-/// not reads: any code that *executes* inside a container with the real
-/// `harness/tests` mounted -- a student's `build.rs`, or (for `library`
-/// assignments that don't split student code into a separate driver
-/// process) the student's own library code running in-process during the
-/// judge's tests -- can simply read hidden adversarial tests off disk
-/// before/while they run, defeating the point of keeping them hidden. This
-/// is for any container stage in which student-authored code executes
-/// (the student build, and the archived judge run); [`repo_root_mounts`]
-/// remains correct for the stage that only compiles/links the judge, since
-/// nothing student-authored runs there.
+/// Read-only mounting stops writes, not reads: a `build.rs` executing here
+/// could otherwise just read hidden tests off disk while compiling. Only
+/// stage 1 (building `<id>`) needs this, since `<id>`'s own `build.rs` is
+/// the thing that could read it; stage 2 and the run stage use plain
+/// [`repo_root_mounts`] instead.
 pub(crate) fn hidden_tests_mounts(
     repo_root: &Path,
     workspace: &Path,
@@ -173,8 +150,8 @@ pub(crate) fn hidden_tests_mounts(
     Ok(mounts)
 }
 
-/// Turns a prepared workspace into a raw evaluation result. Real impls
-/// (`Library`, `Binary`) launch a trusted judge process against a
+/// Turns a prepared workspace into a raw evaluation result. The real impl
+/// (`nextest::Nextest`) launches a trusted judge process against a
 /// `Sandbox`.
 pub trait Evaluator {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult>;

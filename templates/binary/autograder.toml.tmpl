@@ -7,18 +7,11 @@ harness = "harness"
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "60s"
 cpus = 2
 memory = "1GiB"
 pids = 128
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "256MiB"
-pids = 64
 max-output-bytes = "64KiB"
 
 [scoring]

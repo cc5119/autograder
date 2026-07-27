@@ -67,7 +67,11 @@ pub struct SandboxSpec {
     pub mounts: Vec<Mount>,
     /// If false, network access is denied (`--network=none`).
     pub network: bool,
-    pub limits: SandboxLimits,
+    /// `None` means genuinely unbounded -- no `--memory`/`--cpus`/
+    /// `--pids-limit`, no wall-clock timeout, no output cap. Only the run
+    /// stage uses this: the student process it spawns is bounded by
+    /// `isolate` instead.
+    pub limits: Option<SandboxLimits>,
     /// `--cgroupns=private`, needed by a run-stage container that nests
     /// `isolate` (isolate manages its own cgroup subtree per box).
     pub cgroupns_private: bool,
@@ -85,7 +89,7 @@ pub struct SandboxSpec {
 }
 
 impl SandboxSpec {
-    pub fn new(program: impl Into<String>, limits: SandboxLimits) -> Self {
+    pub fn new(program: impl Into<String>, limits: Option<SandboxLimits>) -> Self {
         Self {
             program: program.into(),
             args: Vec::new(),

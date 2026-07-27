@@ -122,19 +122,11 @@ impl<'de> Deserialize<'de> for Duration {
     }
 }
 
+/// Applies to the build stages only -- per-test enforcement during the run
+/// stage is `isolate`'s job, configured in the harness's own test code, not
+/// here.
 #[derive(Debug, Clone, Deserialize)]
-pub struct BuildLimits {
-    #[serde(rename = "wall-clock")]
-    pub wall_clock: Duration,
-    pub cpus: u32,
-    pub memory: ByteSize,
-    pub pids: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RunLimits {
-    #[serde(rename = "cpu-time")]
-    pub cpu_time: Duration,
+pub struct Limits {
     #[serde(rename = "wall-clock")]
     pub wall_clock: Duration,
     pub cpus: u32,
@@ -142,12 +134,6 @@ pub struct RunLimits {
     pub pids: u32,
     #[serde(rename = "max-output-bytes")]
     pub max_output_bytes: ByteSize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Limits {
-    pub build: BuildLimits,
-    pub run: RunLimits,
 }
 
 /// A late-submission penalty: a grace period, then a percentage of the
@@ -272,18 +258,11 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
 pids = 256
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "512MiB"
-pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
@@ -304,18 +283,11 @@ cargo-lock-sha256 = "00000000000000000000000000000000000000000000000000000000000
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
 pids = 256
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "512MiB"
-pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]
@@ -330,12 +302,12 @@ scale-max = 7.0
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
         assert_eq!(spec.assignment.kind, AssignmentKind::Library);
-        assert_eq!(spec.limits.build.memory, ByteSize(2 * 1024 * 1024 * 1024));
+        assert_eq!(spec.limits.memory, ByteSize(2 * 1024 * 1024 * 1024));
         assert_eq!(
-            spec.limits.build.wall_clock,
+            spec.limits.wall_clock,
             Duration(std::time::Duration::from_secs(120))
         );
-        assert_eq!(spec.limits.run.max_output_bytes, ByteSize(1024 * 1024));
+        assert_eq!(spec.limits.max_output_bytes, ByteSize(1024 * 1024));
         assert_eq!(spec.scoring.formula, ScoringFormula::Sum { base: 1.0 });
     }
 

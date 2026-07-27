@@ -1,4 +1,4 @@
-//! Grade-integrity regression tests driving the real `Library` evaluator
+//! Grade-integrity regression tests driving the real `Nextest` evaluator
 //! against a real `ContainerSandbox` -- needs podman + the base image (gated
 //! by `Cargo.toml`'s `container-tests` feature).
 
@@ -8,7 +8,7 @@ mod common;
 use autograder::error::Result;
 use autograder::exec::sandbox::{ContainerSandbox, Sandbox};
 use autograder::id::AssignmentId;
-use autograder::pipeline::evaluator::library::Library;
+use autograder::pipeline::evaluator::nextest::Nextest;
 use autograder::pipeline::grade_batch;
 use autograder::pipeline::overrides::Overrides;
 use autograder::spec::Spec;
@@ -76,7 +76,7 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         fetchable: LocalPath(submission_src.path().to_path_buf()),
         metadata: Default::default(),
     }]);
-    let evaluator = Library::new(&spec, package_dir.path(), sandbox()).unwrap();
+    let evaluator = Nextest::new(&spec, package_dir.path(), sandbox()).unwrap();
     let store = Store::new(store_dir.path());
 
     let deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"

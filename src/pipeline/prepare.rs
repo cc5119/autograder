@@ -31,8 +31,8 @@ pub struct PrepareOutcome {
 /// student's `Cargo.toml` against the allowlist. Has no involvement in
 /// wiring the judge/harness to `workspace` -- the caller has already
 /// positioned that correctly by the time this runs (see
-/// `evaluator::library`'s and `evaluator::binary`'s module doc comments),
-/// so this function doesn't need to know the tier or assignment kind.
+/// `evaluator::nextest`'s module doc comment), so this function doesn't
+/// need to know the assignment kind.
 ///
 /// Checks `package_dir/Cargo.lock` against the blessed hash first
 /// (`crate::deps::lock::verify`) -- a mismatch (a student's edited/deleted lock
@@ -61,12 +61,13 @@ pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<Prep
 /// Writes `workspace/.cargo/config.toml` to replace the crates.io source
 /// with the assignment's vendored crates, and returns the
 /// `CARGO_NET_OFFLINE` env var the sandbox spec must set. A no-op when the
-/// package hasn't been prefetched. `library`'s build doesn't discover this
-/// file (it always runs with `workdir` at the shared `repo_root`, never a
-/// descendant of `workspace` -- `Library` passes the equivalent `--config`
-/// override directly instead),
-/// but `diagnose_manifest` below still reads it, and `binary` still uses
-/// it as-is since it builds directly in `workspace`.
+/// package hasn't been prefetched. The sandboxed evaluator's own builds
+/// don't discover this file -- they always run with `workdir` at the shared
+/// `repo_root`, never a descendant of `workspace` (`nextest::Nextest`
+/// passes the equivalent `--config` override directly instead) -- but
+/// `diagnose_manifest` below still reads it, and it's what a student's own
+/// local `cargo test`/`ci` run (which does build directly in `workspace`)
+/// picks up.
 fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEnv> {
     let vendor_dir = package_dir.join("vendor");
     if !vendor_dir.is_dir() {
@@ -140,18 +141,11 @@ cargo-lock-sha256 = "{cargo_lock_sha256}"
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "120s"
 cpus = 2
 memory = "2GiB"
 pids = 256
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "512MiB"
-pids = 128
 max-output-bytes = "1MiB"
 
 [scoring]

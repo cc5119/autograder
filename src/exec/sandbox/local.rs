@@ -25,8 +25,8 @@ impl Sandbox for LocalSandbox {
 
         let outcome = exec_with_timeout(
             exec,
-            spec.limits.wall_clock,
-            spec.limits.max_output_bytes as usize,
+            spec.limits.as_ref().map(|l| l.wall_clock),
+            spec.limits.as_ref().map(|l| l.max_output_bytes as usize),
         )?;
 
         Ok(SandboxOutcome {
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn runs_a_command_to_completion() {
-        let spec = SandboxSpec::new("true", limits(Duration::from_secs(5)));
+        let spec = SandboxSpec::new("true", Some(limits(Duration::from_secs(5))));
         let outcome = LocalSandbox.run(&spec).unwrap();
 
         assert!(outcome.succeeded());
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn kills_a_runaway_command_on_wall_clock_timeout() {
-        let mut spec = SandboxSpec::new("sleep", limits(Duration::from_millis(150)));
+        let mut spec = SandboxSpec::new("sleep", Some(limits(Duration::from_millis(150))));
         spec.args = vec!["5".into()];
 
         let outcome = LocalSandbox.run(&spec).unwrap();
@@ -83,12 +83,21 @@ mod tests {
 
     #[test]
     fn caps_captured_output() {
-        let mut spec = SandboxSpec::new("sh", limits(Duration::from_secs(5)));
-        spec.limits.max_output_bytes = 5;
+        let mut spec = SandboxSpec::new("sh", Some(limits(Duration::from_secs(5))));
+        spec.limits.as_mut().unwrap().max_output_bytes = 5;
         spec.args = vec!["-c".into(), "printf '0123456789'".into()];
 
         let outcome = LocalSandbox.run(&spec).unwrap();
 
         assert_eq!(outcome.stdout, b"01234");
+    }
+
+    #[test]
+    fn none_limits_runs_with_no_timeout_or_output_cap() {
+        let spec = SandboxSpec::new("true", None);
+        let outcome = LocalSandbox.run(&spec).unwrap();
+
+        assert!(outcome.succeeded());
+        assert!(!outcome.timed_out);
     }
 }

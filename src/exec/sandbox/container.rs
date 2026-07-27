@@ -26,6 +26,11 @@ const OOM_LIKELY_EXIT_CODE: i32 = 137;
 /// `ContainerSandbox::new` to pick up.
 const DEFAULT_SECCOMP_PROFILE: &str = "/etc/autograder/seccomp.json";
 
+/// Preps cgroups/config before `exec`ing the real command; baked into the
+/// image (`container/isolate-setup.sh`). Prepended whenever
+/// `cgroupns_private` signals an isolate-enabled run.
+const ISOLATE_SETUP_WRAPPER: &str = "isolate-setup.sh";
+
 /// Rootless-podman shell-out: builds a `podman run` argv from a
 /// `SandboxSpec` and runs it as a host child process. Live execution needs
 /// podman; argv construction and outcome parsing are pure and unit-tested
@@ -63,11 +68,13 @@ impl ContainerSandbox {
             "--network=none".to_string()
         });
 
-        let mem = spec.limits.memory_bytes;
-        argv.push(format!("--memory={mem}"));
-        argv.push(format!("--memory-swap={mem}"));
-        argv.push(format!("--cpus={}", spec.limits.cpus));
-        argv.push(format!("--pids-limit={}", spec.limits.pids));
+        if let Some(limits) = &spec.limits {
+            let mem = limits.memory_bytes;
+            argv.push(format!("--memory={mem}"));
+            argv.push(format!("--memory-swap={mem}"));
+            argv.push(format!("--cpus={}", limits.cpus));
+            argv.push(format!("--pids-limit={}", limits.pids));
+        }
         argv.push("--read-only".to_string());
         argv.push("--cap-drop=ALL".to_string());
         argv.push("--security-opt".to_string());
@@ -118,6 +125,14 @@ impl ContainerSandbox {
         }
 
         argv.push(self.base_image.clone());
+        // `cgroupns_private` doubles as the isolate-enabled signal (see
+        // `evaluator::isolate_run_config`); the wrapper lives only inside
+        // the container image, so it's applied here rather than spliced
+        // into `spec.program`/`args` (`LocalSandbox` would then try to
+        // exec it and fail).
+        if spec.cgroupns_private {
+            argv.push(ISOLATE_SETUP_WRAPPER.to_string());
+        }
         argv.push(spec.program.clone());
         argv.extend(spec.args.iter().cloned());
 
@@ -181,8 +196,8 @@ impl Sandbox for ContainerSandbox {
 
         let outcome = exec_with_timeout(
             exec,
-            spec.limits.wall_clock,
-            spec.limits.max_output_bytes as usize,
+            spec.limits.as_ref().map(|l| l.wall_clock),
+            spec.limits.as_ref().map(|l| l.max_output_bytes as usize),
         )?;
 
         if outcome.timed_out {
@@ -214,7 +229,7 @@ fn kill_container_by_cidfile(podman_bin: &str, cidfile: &Path) {
     let cidfile_arg = format!("--cidfile={}", cidfile.display());
 
     let kill = Exec::cmd(podman_bin).args(["kill", &cidfile_arg]);
-    match exec_with_timeout(kill, CONTAINER_KILL_TIMEOUT, 0) {
+    match exec_with_timeout(kill, Some(CONTAINER_KILL_TIMEOUT), Some(0)) {
         Ok(outcome) if outcome.timed_out => {
             tracing::warn!(cidfile = %cidfile.display(), "`podman kill --cidfile` itself timed out");
         }
@@ -222,7 +237,7 @@ fn kill_container_by_cidfile(podman_bin: &str, cidfile: &Path) {
     }
 
     let rm = Exec::cmd(podman_bin).args(["rm", "-f", &cidfile_arg]);
-    match exec_with_timeout(rm, CONTAINER_KILL_TIMEOUT, 0) {
+    match exec_with_timeout(rm, Some(CONTAINER_KILL_TIMEOUT), Some(0)) {
         Ok(outcome) if outcome.timed_out => {
             tracing::warn!(cidfile = %cidfile.display(), "`podman rm -f --cidfile` itself timed out");
         }
@@ -255,13 +270,13 @@ mod tests {
     fn spec() -> SandboxSpec {
         let mut spec = SandboxSpec::new(
             "/judge.sh",
-            SandboxLimits {
+            Some(SandboxLimits {
                 wall_clock: Duration::from_secs(10),
                 cpus: 2,
                 memory_bytes: 2 * 1024 * 1024 * 1024,
                 pids: 256,
                 max_output_bytes: 1024 * 1024,
-            },
+            }),
         );
         spec.mounts = vec![
             Mount {
@@ -337,6 +352,20 @@ mod tests {
     }
 
     #[test]
+    fn none_limits_omits_resource_flags_but_keeps_other_isolation_flags() {
+        let spec = SandboxSpec::new("/judge.sh", None);
+        let argv = sandbox().build_argv(&spec, &cidfile());
+        let joined = argv.join(" ");
+
+        assert!(!joined.contains("--memory"));
+        assert!(!joined.contains("--cpus"));
+        assert!(!joined.contains("--pids-limit"));
+        assert!(joined.contains("--read-only"));
+        assert!(joined.contains("--cap-drop=ALL"));
+        assert!(joined.contains("no-new-privileges"));
+    }
+
+    #[test]
     fn a_default_spec_emits_no_isolate_flags() {
         let argv = sandbox().build_argv(&spec(), &cidfile());
         let joined = argv.join(" ");
@@ -349,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn isolate_fields_produce_the_expected_flags() {
+    fn isolate_fields_produce_the_expected_flags_and_prepend_the_setup_wrapper() {
         let mut s = spec();
         s.cgroupns_private = true;
         s.cap_add = vec!["SYS_ADMIN".into()];
@@ -363,7 +392,17 @@ mod tests {
         assert!(joined.contains("--security-opt unmask=/sys/fs/cgroup"));
         assert!(joined.contains("--tmpfs /usr/local/etc"));
         assert!(joined.contains("--tmpfs /run/isolate"));
+
+        // wrapper, then program, as the final two argv entries (spec()'s
+        // args is empty).
+        assert_eq!(argv[argv.len() - 2], "isolate-setup.sh");
         assert_eq!(argv[argv.len() - 1], "/judge.sh");
+    }
+
+    #[test]
+    fn no_wrapper_when_cgroupns_private_is_false() {
+        let argv = sandbox().build_argv(&spec(), &cidfile());
+        assert!(!argv.iter().any(|a| a == "isolate-setup.sh"));
     }
 
     fn sandbox_with_bin(podman_bin: &str) -> ContainerSandbox {

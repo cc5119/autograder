@@ -18,13 +18,15 @@ pub struct ExecOutcome {
 }
 
 /// Spawns `exec`, capturing stdout/stderr (a combined cap of
-/// `max_output_bytes` across both streams) for up to `wall_clock`.
-/// timeout the child is killed; the caller is responsible for any further
-/// cleanup its own sandbox needs.
+/// `max_output_bytes` across both streams, when given) for up to
+/// `wall_clock` (when given). `None` for either means genuinely unbounded --
+/// used by stages that carry no `SandboxLimits` at all (the run stage
+/// relies on `isolate` instead). On timeout the child is killed; the caller
+/// is responsible for any further cleanup its own sandbox needs.
 pub fn exec_with_timeout(
     exec: Exec,
-    wall_clock: Duration,
-    max_output_bytes: usize,
+    wall_clock: Option<Duration>,
+    max_output_bytes: Option<usize>,
 ) -> Result<ExecOutcome> {
     let start = Instant::now();
 
@@ -37,12 +39,16 @@ pub fn exec_with_timeout(
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let read_result = job
+    let mut communicator = job
         .communicate()
-        .map_err(|source| Error::Other(format!("failed to attach to output: {source}")))?
-        .limit_time(wall_clock)
-        .limit_size(max_output_bytes)
-        .read_to(&mut stdout, &mut stderr);
+        .map_err(|source| Error::Other(format!("failed to attach to output: {source}")))?;
+    if let Some(wall_clock) = wall_clock {
+        communicator = communicator.limit_time(wall_clock);
+    }
+    if let Some(max_output_bytes) = max_output_bytes {
+        communicator = communicator.limit_size(max_output_bytes);
+    }
+    let read_result = communicator.read_to(&mut stdout, &mut stderr);
 
     let timed_out = match read_result {
         Ok(()) => false,
@@ -74,7 +80,8 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code() {
         let exec = Exec::cmd("sh").args(&["-c", "echo out; echo err >&2; exit 3"]);
-        let outcome = exec_with_timeout(exec, Duration::from_secs(5), 1024).unwrap();
+        let outcome =
+            exec_with_timeout(exec, Some(Duration::from_secs(5)), Some(1024)).unwrap();
 
         assert_eq!(outcome.exit_code, Some(3));
         assert_eq!(outcome.stdout, b"out\n");
@@ -85,7 +92,8 @@ mod tests {
     #[test]
     fn kills_on_timeout() {
         let exec = Exec::cmd("sh").args(&["-c", "sleep 5"]);
-        let outcome = exec_with_timeout(exec, Duration::from_millis(150), 1024).unwrap();
+        let outcome =
+            exec_with_timeout(exec, Some(Duration::from_millis(150)), Some(1024)).unwrap();
 
         assert!(outcome.timed_out);
         assert!(outcome.wall_clock < Duration::from_secs(2));
@@ -94,8 +102,18 @@ mod tests {
     #[test]
     fn caps_combined_output_bytes() {
         let exec = Exec::cmd("sh").args(&["-c", "for i in $(seq 1 1000); do echo line$i; done"]);
-        let outcome = exec_with_timeout(exec, Duration::from_secs(5), 10).unwrap();
+        let outcome = exec_with_timeout(exec, Some(Duration::from_secs(5)), Some(10)).unwrap();
 
         assert_eq!(outcome.stdout.len(), 10);
+    }
+
+    #[test]
+    fn none_wall_clock_and_output_cap_run_unbounded() {
+        let exec = Exec::cmd("sh").args(&["-c", "echo out; exit 0"]);
+        let outcome = exec_with_timeout(exec, None, None).unwrap();
+
+        assert_eq!(outcome.exit_code, Some(0));
+        assert_eq!(outcome.stdout, b"out\n");
+        assert!(!outcome.timed_out);
     }
 }
