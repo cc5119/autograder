@@ -7,8 +7,12 @@ edition = "2024"
 student = []
 
 [[bin]]
-name = "harness"
+name = "driver"
+path = "src/bin/driver.rs"
 test = false
 
 [dependencies]
 library-stack = { path = "../library-stack" }
+
+[dev-dependencies]
+autograder-test = { git = "https://github.com/nilehmann/autograder" }

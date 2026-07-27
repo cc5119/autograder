@@ -4,23 +4,16 @@ name = "Stack (library example)"
 kind = "library"
 deadline = "2099-01-01T00:00:00[UTC]"
 harness = "harness"
-cargo-lock-sha256 = "5fdb98a23f0d720850c5e04771c74b926301dd51c16e1c001fc9a166654c1566"
+cargo-lock-sha256 = "df010df7f6ca240b0fd5d292440e4665b16ef4ff761464701f866f801bcedce9"
 
 [sandbox]
 image = "ghcr.io/cc5119/autograder-base:1.97.1"
 
-[limits.build]
+[limits]
 wall-clock = "60s"
 cpus = 2
 memory = "1GiB"
 pids = 128
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "256MiB"
-pids = 64
 max-output-bytes = "64KiB"
 
 [scoring]

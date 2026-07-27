@@ -1,8 +1,9 @@
-//! The trusted driver: reads one operation per line from
-//! stdin, calls the corresponding student `Stack` API, and writes the
-//! result back on stdout. No assertions live here — a separate judge
-//! process (see `tests/judge.rs`) drives the op sequence and decides
-//! pass/fail. Protocol, one op per line:
+//! The trusted driver: reads operations one per line from stdin, calls the
+//! corresponding student `Stack` API, and writes one response per line to
+//! stdout. No assertions live here -- `tests/judge.rs` supplies the whole
+//! op sequence up front (via `autograder-test`) and checks the resulting
+//! sequence of responses once this process exits. Protocol, one op per
+//! line:
 //!
 //! ```text
 //! push <i64>   -> ok

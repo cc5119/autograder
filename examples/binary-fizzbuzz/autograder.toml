@@ -4,23 +4,16 @@ name = "FizzBuzz (binary example)"
 kind = "binary"
 deadline = "2099-01-01T00:00:00[UTC]"
 harness = "harness"
-cargo-lock-sha256 = "cbda08fab9d8c498e741ab881b0944579d888116297b2f5cd0932dcc5ce8c02d"
+cargo-lock-sha256 = "1e6febe6eebbde0137b4730bab0af7872e2bc5939fda564e0dbc756c2406cf9c"
 
 [sandbox]
 image = "autograder-base:1.86.0"
 
-[limits.build]
+[limits]
 wall-clock = "60s"
 cpus = 2
 memory = "1GiB"
 pids = 128
-
-[limits.run]
-cpu-time = "5s"
-wall-clock = "10s"
-cpus = 1
-memory = "256MiB"
-pids = 64
 max-output-bytes = "64KiB"
 
 [scoring]
