@@ -2,7 +2,22 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::{Command, Outcome, Ran, Status, resolve_target_binary, run_process};
+use crate::{Command, Outcome, Ran, Status, cargo_bin_exe, run_process};
+
+/// Resolves `target` to its built binary without ever shelling out to
+/// cargo -- this runs inside the sandboxed run stage
+/// (`AUTOGRADER_SANDBOX` set), where no compilation or cargo invocation of
+/// any kind is allowed. `CARGO_TARGET_DIR` is set explicitly by the
+/// evaluator for exactly this reason; unlike `local`'s resolution, there's
+/// no `cargo metadata` fallback if it's absent.
+fn resolve_target_binary(target: &str) -> PathBuf {
+    cargo_bin_exe(target).unwrap_or_else(|| {
+        let target_dir = std::env::var("CARGO_TARGET_DIR").expect(
+            "CARGO_TARGET_DIR must be set by the evaluator when running inside the sandbox",
+        );
+        PathBuf::from(target_dir).join("debug").join(target)
+    })
+}
 
 pub(crate) fn run(cmd: Command) -> Outcome {
     let bin = resolve_target_binary(&cmd.target);

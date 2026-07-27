@@ -93,11 +93,17 @@ impl<S: Sandbox> Nextest<S> {
         self.package_dir.join(VENDOR_DIR_NAME)
     }
 
-    fn offline_env(&self) -> BTreeMap<String, String> {
+    /// Env shared identically across all three cargo invocations, so they
+    /// agree on where `target/` is (see this module's doc comment).
+    fn cargo_env(&self, repo_root: &Path) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
         if self.vendor_dir().is_dir() {
             env.insert("CARGO_NET_OFFLINE".to_string(), "true".to_string());
         }
+        env.insert(
+            "CARGO_TARGET_DIR".to_string(),
+            repo_root.join("target").display().to_string(),
+        );
         env
     }
 
@@ -154,7 +160,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             )
             .to_path_buf();
         let config_args = self.config_args();
-        let env = self.offline_env();
+        let env = self.cargo_env(&repo_root);
 
         // Stage 1 (see this module's doc comment).
         let mut build_id_spec = SandboxSpec::new("cargo", Some(self.limits.clone()));
@@ -221,6 +227,9 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         run_spec.args.extend(config_args);
         run_spec.workdir = Some(repo_root.clone());
         run_spec.env = env;
+        run_spec
+            .env
+            .insert("AUTOGRADER_SANDBOX".to_string(), "1".to_string());
         run_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
         isolate_run_config(&mut run_spec);
 

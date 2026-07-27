@@ -128,7 +128,7 @@ impl Outcome {
 }
 
 fn grading() -> bool {
-    std::env::var("AUTOGRADER_SANDBOX").as_deref() == Ok("isolate")
+    std::env::var("AUTOGRADER_SANDBOX").is_ok()
 }
 
 /// Set by cargo for a same-package bin target (already built, exact path)
@@ -137,25 +137,6 @@ pub(crate) fn cargo_bin_exe(target: &str) -> Option<PathBuf> {
     std::env::var(format!("CARGO_BIN_EXE_{target}"))
         .ok()
         .map(PathBuf::from)
-}
-
-pub(crate) fn resolve_target_binary(target: &str) -> PathBuf {
-    cargo_bin_exe(target).unwrap_or_else(|| target_dir().join("debug").join(target))
-}
-
-/// One `cargo metadata` call per process -- the target dir is a single
-/// workspace-wide value, independent of which target is being resolved.
-fn target_dir() -> &'static PathBuf {
-    static TARGET_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    TARGET_DIR.get_or_init(|| {
-        let out = Proc::new("cargo")
-            .args(["metadata", "--format-version", "1", "--no-deps"])
-            .output()
-            .expect("cargo metadata");
-        let meta: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("parse cargo metadata");
-        PathBuf::from(meta["target_directory"].as_str().expect("target_directory"))
-    })
 }
 
 pub(crate) struct Ran {
