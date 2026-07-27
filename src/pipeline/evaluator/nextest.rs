@@ -37,8 +37,11 @@
 //!    `autograder.toml`.
 //!
 //! `repo_root` isn't a descendant of `workspace`, so Cargo can't discover
-//! `workspace`'s offline vendoring config there -- passed as `--config`
-//! flags instead of a `.cargo/config.toml`.
+//! `workspace`'s own offline vendoring config there -- `evaluate` writes an
+//! equivalent `repo_root/.cargo/config.toml` up front instead (copied
+//! verbatim from the vendor dir's own `config.toml`, see
+//! `vendor::VENDOR_CONFIG_FILE`), which every cargo invocation below then
+//! picks up automatically since `workdir` is always `repo_root` itself.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -55,7 +58,7 @@ use crate::spec::Spec;
 use super::{Evaluator, isolate_run_config, sandbox_limits, write_nextest_config};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
-/// writes to; mirrors `vendor::prefetch`'s output layout.
+/// writes to; mirrors `vendor::vendor`'s output layout.
 const VENDOR_DIR_NAME: &str = "vendor";
 
 pub struct Nextest<S> {
@@ -90,7 +93,7 @@ impl<S: Sandbox> Nextest<S> {
     }
 
     fn vendor_dir(&self) -> PathBuf {
-        self.package_dir.join(VENDOR_DIR_NAME)
+        vendor::absolutize(&self.package_dir.join(VENDOR_DIR_NAME))
     }
 
     /// Env shared identically across all three cargo invocations, so they
@@ -131,22 +134,23 @@ impl<S: Sandbox> Nextest<S> {
         )
     }
 
-    /// The offline vendored-source `--config` override, only when the
-    /// package has been prefetched (see this module's doc comment for why
-    /// `--config` rather than a `.cargo/config.toml` `Prepare` writes).
-    fn config_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
+    /// Writes `repo_root/.cargo/config.toml`, copied verbatim from the
+    /// vendor dir's own `config.toml` (see this module's doc comment) --
+    /// only when the package has been vendored. A no-op vendor dir (no
+    /// dependencies redirected, see `deps::vendor::vendor`'s doc comment)
+    /// still produces an empty file, which Cargo treats as no override at
+    /// all.
+    fn write_repo_root_config(&self, repo_root: &Path) -> Result<()> {
         let vendor_dir = self.vendor_dir();
-        if vendor_dir.is_dir() {
-            args.push("--config".to_string());
-            args.push("source.crates-io.replace-with=\"vendored-sources\"".to_string());
-            args.push("--config".to_string());
-            args.push(format!(
-                "source.vendored-sources.directory=\"{}\"",
-                vendor::absolutize(&vendor_dir).display()
-            ));
+        if !vendor_dir.is_dir() {
+            return Ok(());
         }
-        args
+        let vendor_config =
+            crate::exec::fs::read_to_string(&vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
+                .unwrap_or_default();
+        let cargo_dir = repo_root.join(".cargo");
+        crate::exec::fs::create_dir_all(&cargo_dir)?;
+        crate::exec::fs::write(&cargo_dir.join("config.toml"), &vendor_config)
     }
 }
 
@@ -159,7 +163,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
                 "workspace always has a parent (repo_root); see model.rs's JobContext doc comment",
             )
             .to_path_buf();
-        let config_args = self.config_args();
+        self.write_repo_root_config(&repo_root)?;
         let env = self.cargo_env(&repo_root);
 
         // Stage 1 (see this module's doc comment).
@@ -170,7 +174,6 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             "-p".into(),
             ctx.assignment_id.to_string(),
         ];
-        build_id_spec.args.extend(config_args.iter().cloned());
         build_id_spec.workdir = Some(repo_root.clone());
         build_id_spec.env = env.clone();
         build_id_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
@@ -195,7 +198,6 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             "-p".into(),
             self.harness_package.clone(),
         ];
-        build_harness_spec.args.extend(config_args.iter().cloned());
         build_harness_spec.workdir = Some(repo_root.clone());
         build_harness_spec.env = env.clone();
         build_harness_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
@@ -222,7 +224,6 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             "-p".into(),
             self.harness_package.clone(),
         ];
-        run_spec.args.extend(config_args);
         run_spec.workdir = Some(repo_root.clone());
         run_spec.env = env;
         run_spec
@@ -602,30 +603,40 @@ base = 0.0
     }
 
     #[test]
-    fn config_args_has_no_vendored_source_override_without_a_prefetched_vendor_dir() {
+    fn write_repo_root_config_is_a_no_op_without_a_vendored_vendor_dir() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
+        let repo_root = tempfile::tempdir().unwrap();
         let evaluator =
             Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
-        assert!(evaluator.config_args().is_empty());
+        evaluator.write_repo_root_config(repo_root.path()).unwrap();
+
+        assert!(!repo_root.path().join(".cargo/config.toml").exists());
     }
 
     #[test]
-    fn config_args_points_at_the_vendor_dir_once_prefetched() {
+    fn write_repo_root_config_copies_the_vendor_dirs_config_verbatim() {
         let package_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(package_dir.path());
         std::fs::create_dir_all(package_dir.path().join("vendor")).unwrap();
+        std::fs::write(
+            package_dir.path().join("vendor/config.toml"),
+            "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n\
+             [source.\"git+https://example.com/x\"]\ngit = \"https://example.com/x\"\n\
+             replace-with = \"vendored-sources\"\n\n\
+             [source.vendored-sources]\ndirectory = \"/pkg/vendor\"\n",
+        )
+        .unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
         let evaluator =
             Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
-        let args = evaluator.config_args();
+        evaluator.write_repo_root_config(repo_root.path()).unwrap();
 
-        assert!(
-            args.iter()
-                .any(|a| a.starts_with("source.vendored-sources.directory="))
-        );
-        assert!(!args.iter().any(|a| a.starts_with("patch.crates-io")));
+        let config = std::fs::read_to_string(repo_root.path().join(".cargo/config.toml")).unwrap();
+        assert!(config.contains("source.vendored-sources"));
+        assert!(config.contains("git+https://example.com/x"));
     }
 
     #[test]

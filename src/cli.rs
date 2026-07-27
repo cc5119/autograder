@@ -33,7 +33,7 @@ pub enum Command {
         assignment: PathBuf,
     },
     /// Build the offline vendor dir + base image for an assignment.
-    Prefetch {
+    Vendor {
         /// Path to the assignment repo.
         assignment: PathBuf,
     },

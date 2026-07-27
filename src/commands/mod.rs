@@ -4,8 +4,8 @@ pub mod fetch;
 pub mod grade;
 pub mod init;
 pub mod lock;
-pub mod prefetch;
 pub mod publish;
+pub mod vendor;
 
 use std::path::Path;
 
@@ -20,7 +20,7 @@ pub fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Init { dir, kind, id } => init::run(&dir, &id, kind.into()),
         Command::Lock { assignment } => lock::run(&assignment),
-        Command::Prefetch { assignment } => prefetch::run(&assignment),
+        Command::Vendor { assignment } => vendor::run(&assignment),
         Command::Fetch {
             assignment,
             roster,
@@ -225,6 +225,15 @@ base = 0.0
         write(
             &assignment_dir.path().join("harness/src/bin/driver.rs"),
             "fn main() {}\n",
+        );
+        // `evaluate_batch` hard-requires a vendored, up-to-date dependency
+        // set before it will run any submission -- this assignment has no
+        // real dependencies, so an empty vendor dir with a matching lock
+        // marker is enough (mirrors what `deps::vendor::vendor` itself
+        // would leave behind).
+        write(
+            &assignment_dir.path().join("vendor/.lock-sha256"),
+            &crate::deps::cargo_lock::sha256_hex(LOCK_TOML),
         );
 
         // Just a submission checkout -- evaluate never looks for a fetch

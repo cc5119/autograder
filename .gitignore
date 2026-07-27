@@ -1,7 +1,7 @@
 /target
 /.autograder-store
 
-# Generated in place by running the examples (see README.md): `prefetch`'s
+# Generated in place by running the examples (see README.md): `vendor`'s
 # vendor dir + offline cargo config, `ci`'s overlaid driver crate + build
 # output, and standalone `cargo test`/`cargo nextest run` runs against a
 # reference solution or harness.

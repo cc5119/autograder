@@ -9,7 +9,7 @@ use crate::spec::Spec;
 
 /// The offline cargo environment installed into the workspace so the build
 /// stage can only resolve vendored crates. `vendor_dir` is `None` when the
-/// assignment hasn't been prefetched yet (or has an empty allowlist).
+/// assignment hasn't been vendored yet (or has an empty allowlist).
 #[derive(Debug, Clone, Default)]
 pub struct OfflineEnv {
     pub vendor_dir: Option<std::path::PathBuf>,
@@ -27,7 +27,7 @@ pub struct PrepareOutcome {
     pub manifest_diagnostics: Vec<ManifestDiagnostic>,
 }
 
-/// Installs the offline cargo env (if prefetched) and diagnoses the
+/// Installs the offline cargo env (if vendored) and diagnoses the
 /// student's `Cargo.toml` against the allowlist. Has no involvement in
 /// wiring the judge/harness to `workspace` -- the caller has already
 /// positioned that correctly by the time this runs (see
@@ -58,13 +58,15 @@ pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<Prep
     })
 }
 
-/// Writes `workspace/.cargo/config.toml` to replace the crates.io source
-/// with the assignment's vendored crates, and returns the
+/// Writes `workspace/.cargo/config.toml` -- copied verbatim from
+/// `vendor_dir`'s own `config.toml` (see `vendor::VENDOR_CONFIG_FILE`),
+/// which already carries a source-replacement block per redirected
+/// dependency (crates-io and any git source alike) -- and returns the
 /// `CARGO_NET_OFFLINE` env var the sandbox spec must set. A no-op when the
-/// package hasn't been prefetched. The sandboxed evaluator's own builds
-/// don't discover this file -- they always run with `workdir` at the shared
+/// package hasn't been vendored. The sandboxed evaluator's own builds don't
+/// discover this file -- they always run with `workdir` at the shared
 /// `repo_root`, never a descendant of `workspace` (`nextest::Nextest`
-/// passes the equivalent `--config` override directly instead) -- but
+/// writes the same config at `repo_root` directly instead) -- but
 /// `diagnose_manifest` below still reads it, and it's what a student's own
 /// local `cargo test`/`ci` run (which does build directly in `workspace`)
 /// picks up.
@@ -74,13 +76,13 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
         return Ok(OfflineEnv::default());
     }
 
+    let vendor_config =
+        crate::exec::fs::read_to_string(&vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
+            .unwrap_or_default();
     let cargo_dir = workspace.join(".cargo");
     crate::exec::fs::create_dir_all(&cargo_dir)?;
     let config_path = cargo_dir.join("config.toml");
-    crate::exec::fs::write(
-        &config_path,
-        vendor::vendor_config_toml(&vendor::absolute_vendor_dir(package_dir)),
-    )?;
+    crate::exec::fs::write(&config_path, &vendor_config)?;
 
     let mut env = std::collections::BTreeMap::new();
     env.insert("CARGO_NET_OFFLINE".to_string(), "true".to_string());
@@ -178,7 +180,7 @@ base = 0.0
     }
 
     #[test]
-    fn prepare_installs_offline_env_when_the_package_has_been_prefetched() {
+    fn prepare_installs_offline_env_when_the_package_has_been_vendored() {
         let workspace = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
         write(&workspace.path().join("src/lib.rs"), "// student code");
@@ -189,6 +191,11 @@ base = 0.0
         write(
             &package.path().join("vendor/serde/Cargo.toml"),
             "[package]\nname = \"serde\"\nversion = \"1.4.0\"\n",
+        );
+        write(
+            &package.path().join("vendor/config.toml"),
+            "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n\
+             [source.vendored-sources]\ndirectory = \"/pkg/vendor\"\n",
         );
 
         let spec = spec_with_lock(package.path(), &[("serde", "1.4.0")]);
@@ -225,7 +232,7 @@ base = 0.0
     }
 
     #[test]
-    fn prepare_without_a_prefetched_vendor_dir_skips_offline_env() {
+    fn prepare_without_a_vendored_vendor_dir_skips_offline_env() {
         let workspace = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
         write(&workspace.path().join("src/lib.rs"), "// student code");

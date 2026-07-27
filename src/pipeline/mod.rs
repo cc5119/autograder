@@ -62,6 +62,7 @@ fn checkout_rules() -> Vec<Rule> {
 fn package_rules() -> Vec<Rule> {
     vec![
         Rule::File("Cargo.toml", None),
+        Rule::File("Cargo.lock", None),
         Rule::Glob("{harness}/**", None),
     ]
 }
@@ -189,12 +190,23 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 /// fetch`/`autograder grade`'s concern, not evaluate's. Each result is
 /// persisted at `submissions_dir/.eval/<submission_id>/<run_id>.eval.json`.
 /// No scoring happens here -- run `autograder grade` afterwards for that.
+///
+/// Refuses up front, before touching any submission, if `package_dir`
+/// hasn't been vendored or was vendored from a since-changed `Cargo.lock`
+/// (`crate::deps::vendor::verify`) -- every sandboxed build runs
+/// `--offline`, so an unvendored/stale dependency set would otherwise
+/// surface as an opaque per-submission `build_failed` for every single
+/// submission in the batch instead of one clear, actionable error.
 pub fn evaluate_batch(
     submissions_dir: &Path,
     evaluator: &dyn Evaluator,
     package_dir: &Path,
     spec: &Spec,
 ) -> Result<Vec<EvaluationResult>> {
+    if let Some(message) = crate::deps::vendor::verify(package_dir, spec) {
+        return Err(Error::InvalidSpec(message));
+    }
+
     let submission_ids = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
 

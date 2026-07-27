@@ -6,11 +6,11 @@ use crate::spec::Spec;
 
 pub fn run(assignment: &Path) -> Result<()> {
     let spec = Spec::load(assignment)?;
-    let outcome = vendor::prefetch(assignment, &spec)?;
+    let outcome = vendor::vendor(assignment, &spec)?;
     tracing::info!(
         vendor_dir = %outcome.vendor_dir.display(),
         cargo_config = %outcome.cargo_config_path.display(),
-        "prefetch complete"
+        "vendor complete"
     );
     Ok(())
 }

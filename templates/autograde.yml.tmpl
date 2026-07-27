@@ -12,6 +12,6 @@ jobs:
           echo "<pinned-sha256>  autograder" | sha256sum -c -   # verify before exec
           chmod +x autograder
       - run: command -v podman || (sudo apt-get update && sudo apt-get install -y podman)
-      - run: ./autograder prefetch .
+      - run: ./autograder vendor .
       - run: podman pull {base_image}
       - run: ./autograder ci

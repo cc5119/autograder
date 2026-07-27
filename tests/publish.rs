@@ -165,7 +165,7 @@ fn emitted_workflow_runs_ci_from_the_repo_root_inside_podman() {
     assert!(workflow.contains("on:\n  push:\n    branches: [main]"));
     assert!(workflow.contains("sha256sum -c -"));
     assert!(workflow.contains("command -v podman"));
-    assert!(workflow.contains("./autograder prefetch ."));
+    assert!(workflow.contains("./autograder vendor ."));
     assert!(workflow.contains("podman pull autograder-base:1.86.0"));
     assert!(workflow.contains("./autograder ci"));
     assert!(!workflow.contains("--harness"));

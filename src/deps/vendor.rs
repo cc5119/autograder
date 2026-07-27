@@ -10,18 +10,20 @@ pub struct VendorOutcome {
     pub cargo_config_path: PathBuf,
 }
 
-/// The `.cargo/config.toml` that replaces the crates.io source with the
-/// vendored directory. Callers must pass an absolute `vendor_dir`: Cargo
-/// resolves a relative `[source.X].directory` relative to the config
-/// file's own directory, not the process's cwd, so a relative
-/// `package_dir` would get prepended a second time, silently pointing at
-/// a directory that doesn't exist.
-pub fn vendor_config_toml(vendor_dir: &Path) -> String {
-    format!(
-        "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.vendored-sources]\ndirectory = \"{}\"\n",
-        vendor_dir.display()
-    )
-}
+/// `vendor_dir/<VENDOR_CONFIG_FILE>`: the exact `.cargo/config.toml`
+/// snippet `cargo vendor` printed on stdout for this workspace, persisted
+/// verbatim -- crates-io *and* any git-dependency `[source."git+..."]`
+/// block alike. `prepare` and `Nextest` both read this file rather than
+/// re-deriving a config of their own, so a git dependency's source
+/// override is never silently dropped (a hand-rolled crates-io-only config
+/// used to do exactly that).
+pub const VENDOR_CONFIG_FILE: &str = "config.toml";
+
+/// `vendor_dir/<LOCK_MARKER_FILE>`: the sha256 of the `Cargo.lock` this
+/// vendor dir was built from, so `verify` can tell "vendored, and still
+/// fresh" from "vendored against a lock that's since changed" without
+/// re-running `cargo vendor`.
+const LOCK_MARKER_FILE: &str = ".lock-sha256";
 
 pub fn absolute_vendor_dir(package_dir: &Path) -> PathBuf {
     absolutize(&package_dir.join("vendor"))
@@ -39,18 +41,20 @@ pub fn absolutize(path: &Path) -> PathBuf {
 /// Runs `cargo vendor --locked` directly against the workspace root at
 /// `package_dir` -- both `{id}` and `{harness}` at once, sourced straight
 /// from the checked-in `Cargo.lock` -- producing `<package_dir>/vendor/`
-/// plus `<package_dir>/.cargo/config.toml`. Trusted, online, one-time per
-/// assignment -- never runs on student code. Refuses up front if
-/// `Cargo.lock` doesn't match the blessed hash `autograder lock` recorded
-/// (`crate::deps::lock::verify`), so vendoring can never silently pull a
-/// different dependency graph than the one grading is meant to check
-/// submissions against.
-pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
+/// (with its own `config.toml` and `.lock-sha256` marker, see
+/// `VENDOR_CONFIG_FILE`/`LOCK_MARKER_FILE`) plus `<package_dir>/.cargo/config.toml`
+/// for a plain local `cargo test`/`cargo build` run from `package_dir`.
+/// Trusted, online, one-time per assignment -- never runs on student code.
+/// Refuses up front if `Cargo.lock` doesn't match the blessed hash
+/// `autograder lock` recorded (`crate::deps::lock::verify`), so vendoring
+/// can never silently pull a different dependency graph than the one
+/// grading is meant to check submissions against.
+pub fn vendor(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     if let Some(message) = crate::deps::lock::verify(package_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
 
-    let vendor_dir = package_dir.join("vendor");
+    let vendor_dir = absolute_vendor_dir(package_dir);
     let manifest_path = package_dir.join("Cargo.toml");
 
     let output = Command::new("cargo")
@@ -70,21 +74,76 @@ pub fn prefetch(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     }
     // A workspace with zero total dependencies is a legitimate spec, and
     // `cargo vendor` exits successfully for one -- it just never creates
-    // the directory, since there's nothing to put in it.
+    // the directory (or prints any config), since there's nothing to
+    // vendor or redirect.
     crate::exec::fs::create_dir_all(&vendor_dir)?;
+
+    // `cargo vendor`'s own stdout is the one place that already knows
+    // about every source it redirected -- crates-io *and* each git
+    // dependency's own repo -- since `vendor_dir` was passed as an
+    // absolute path above, the `directory = "..."` line it prints is
+    // already absolute too.
+    let vendor_config = String::from_utf8_lossy(&output.stdout).into_owned();
+    crate::exec::fs::write(&vendor_dir.join(VENDOR_CONFIG_FILE), &vendor_config)?;
+
+    let lock_contents = crate::exec::fs::read_to_string(&package_dir.join("Cargo.lock"))?;
+    crate::exec::fs::write(
+        &vendor_dir.join(LOCK_MARKER_FILE),
+        crate::deps::cargo_lock::sha256_hex(&lock_contents),
+    )?;
 
     let cargo_dir = package_dir.join(".cargo");
     crate::exec::fs::create_dir_all(&cargo_dir)?;
     let cargo_config_path = cargo_dir.join("config.toml");
-    crate::exec::fs::write(
-        &cargo_config_path,
-        vendor_config_toml(&absolute_vendor_dir(package_dir)),
-    )?;
+    crate::exec::fs::write(&cargo_config_path, &vendor_config)?;
 
     Ok(VendorOutcome {
         vendor_dir,
         cargo_config_path,
     })
+}
+
+/// Verifies `package_dir/vendor` is present and was built from the
+/// `Cargo.lock` currently checked in at `package_dir` (its sha256,
+/// recorded at `vendor` time in `LOCK_MARKER_FILE`) before `evaluate`
+/// trusts an `--offline` build against it. `None` means it's safe to
+/// proceed; `Some(message)` is a human-readable explanation meant for a
+/// hard, batch-wide failure raised before any submission is evaluated --
+/// unlike `crate::deps::lock::verify`, there's no per-submission
+/// diagnostic to fall back to here, since an unvendored/stale dependency
+/// set isn't something any individual submission did wrong.
+pub fn verify(package_dir: &Path, spec: &Spec) -> Option<String> {
+    let vendor_dir = package_dir.join("vendor");
+    if !vendor_dir.is_dir() {
+        return Some(format!(
+            "{} is missing -- this assignment has never been vendored; run `autograder vendor \
+             {}` before evaluating submissions",
+            vendor_dir.display(),
+            package_dir.display()
+        ));
+    }
+    let marker_path = vendor_dir.join(LOCK_MARKER_FILE);
+    let Ok(found) = crate::exec::fs::read_to_string(&marker_path) else {
+        return Some(format!(
+            "{} is missing -- {} predates vendor freshness tracking, or was assembled by hand \
+             rather than `autograder vendor`; re-run `autograder vendor {}`",
+            marker_path.display(),
+            vendor_dir.display(),
+            package_dir.display()
+        ));
+    };
+    if found.trim() == spec.assignment.cargo_lock_sha256 {
+        None
+    } else {
+        Some(format!(
+            "{} was vendored from a different Cargo.lock than the one currently checked in \
+             (expected sha256 {}, found {}) -- re-run `autograder vendor {}`",
+            vendor_dir.display(),
+            spec.assignment.cargo_lock_sha256,
+            found.trim(),
+            package_dir.display()
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -152,13 +211,6 @@ base = 0.0
         spec
     }
 
-    #[test]
-    fn vendor_config_points_at_the_vendor_dir() {
-        let config = vendor_config_toml(Path::new("/pkg/vendor"));
-        assert!(config.contains("replace-with = \"vendored-sources\""));
-        assert!(config.contains("directory = \"/pkg/vendor\""));
-    }
-
     /// Regression test: a relative `package_dir` must not produce a
     /// relative `vendor_dir` (see `absolutize`'s doc comment).
     #[test]
@@ -185,25 +237,60 @@ base = 0.0
     }
 
     #[test]
-    fn prefetch_with_no_workspace_dependencies_produces_an_empty_vendor_dir_and_config() {
+    fn vendor_with_no_workspace_dependencies_produces_an_empty_vendor_dir_and_config() {
         let package = tempfile::tempdir().unwrap();
         let spec = empty_workspace(package.path());
 
-        let outcome = prefetch(package.path(), &spec).unwrap();
+        let outcome = vendor(package.path(), &spec).unwrap();
 
+        // Nothing to redirect, so `cargo vendor` prints no config -- but
+        // the directory, the (empty) config file, and the lock marker are
+        // still all in place, and `verify` is satisfied by them.
         assert!(outcome.vendor_dir.is_dir());
         assert!(outcome.cargo_config_path.is_file());
-        let config = std::fs::read_to_string(&outcome.cargo_config_path).unwrap();
-        assert!(config.contains("vendored-sources"));
+        assert!(outcome.vendor_dir.join(VENDOR_CONFIG_FILE).is_file());
+        assert!(verify(package.path(), &spec).is_none());
     }
 
     #[test]
-    fn prefetch_refuses_to_run_against_a_mismatched_lockfile() {
+    fn vendor_refuses_to_run_against_a_mismatched_lockfile() {
         let package = tempfile::tempdir().unwrap();
         let mut spec = empty_workspace(package.path());
         spec.assignment.cargo_lock_sha256 = "not-the-real-hash".repeat(4);
 
-        let err = prefetch(package.path(), &spec).unwrap_err();
+        let err = vendor(package.path(), &spec).unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
+    }
+
+    #[test]
+    fn verify_reports_a_missing_vendor_dir() {
+        let package = tempfile::tempdir().unwrap();
+        let spec = empty_workspace(package.path());
+
+        let message = verify(package.path(), &spec).unwrap();
+        assert!(message.contains("never been vendored"));
+    }
+
+    #[test]
+    fn verify_reports_a_vendor_dir_built_from_a_different_lock() {
+        let package = tempfile::tempdir().unwrap();
+        let spec = empty_workspace(package.path());
+        vendor(package.path(), &spec).unwrap();
+
+        let mut stale_spec = spec;
+        stale_spec.assignment.cargo_lock_sha256 = "0".repeat(64);
+
+        let message = verify(package.path(), &stale_spec).unwrap();
+        assert!(message.contains("different Cargo.lock"));
+    }
+
+    #[test]
+    fn verify_reports_a_vendor_dir_missing_its_lock_marker() {
+        let package = tempfile::tempdir().unwrap();
+        let spec = empty_workspace(package.path());
+        std::fs::create_dir_all(package.path().join("vendor")).unwrap();
+
+        let message = verify(package.path(), &spec).unwrap();
+        assert!(message.contains("predates vendor freshness tracking"));
     }
 }
