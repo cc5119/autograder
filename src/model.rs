@@ -31,8 +31,11 @@ pub enum TestStatus {
 pub struct TestResult {
     pub name: String,
     pub status: TestStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
+    /// Parsed from the JUnit report's `time` attribute (seconds, converted
+    /// to ms); `0` if it was missing or unparseable -- never observed from
+    /// real `cargo nextest` output, which always emits a valid `time`.
+    #[serde(default)]
+    pub duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// Sum of every `autograder: score=<f64>` line this test
@@ -41,59 +44,52 @@ pub struct TestResult {
     pub reported_score: Option<f64>,
 }
 
-/// Terminal status of a pipeline stage (build/run). Fetch has its own,
-/// separate status type now (`submissions::FetchStatus`) -- evaluate
-/// never inspects a fetch outcome, so there's no `FetchFailed` variant
-/// here.
+/// Terminal status of the build stage: compiling the submission's own
+/// crate, then the harness against it (`pipeline::evaluator::nextest`'s
+/// stages 1-2), or a precondition checked before either ever runs (missing
+/// crate dir, disallowed dependency).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StageStatus {
+pub enum BuildStatus {
     Ok,
-    BuildFailed,
+    Failed,
     Timeout,
     Oom,
     DisallowedDependency,
+}
+
+impl BuildStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            BuildStatus::Ok => "ok",
+            BuildStatus::Failed => "build failed",
+            BuildStatus::Timeout => "timeout",
+            BuildStatus::Oom => "out of memory",
+            BuildStatus::DisallowedDependency => "disallowed dependency",
+        }
+    }
+}
+
+/// Terminal status of the run stage: only reachable once the build stage
+/// has already succeeded (see `StageReports`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Ok,
+    Timeout,
+    Oom,
     HarnessError,
 }
 
-impl StageStatus {
+impl RunStatus {
     pub fn label(self) -> &'static str {
         match self {
-            StageStatus::Ok => "ok",
-            StageStatus::BuildFailed => "build failed",
-            StageStatus::Timeout => "timeout",
-            StageStatus::Oom => "out of memory",
-            StageStatus::DisallowedDependency => "disallowed dependency",
-            StageStatus::HarnessError => "harness error",
+            RunStatus::Ok => "ok",
+            RunStatus::Timeout => "timeout",
+            RunStatus::Oom => "out of memory",
+            RunStatus::HarnessError => "harness error",
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StageReport {
-    pub status: StageStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warnings: Option<u32>,
-}
-
-impl StageReport {
-    pub fn ok() -> Self {
-        Self {
-            status: StageStatus::Ok,
-            duration_ms: None,
-            warnings: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ResourceUsage {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peak_memory_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -104,10 +100,17 @@ pub struct Diagnostics {
     pub stderr_excerpt: Option<String>,
 }
 
+/// The pipeline is strictly sequential -- the run stage only ever happens
+/// once the build stage has succeeded -- so this makes the two impossible
+/// states from earlier designs unrepresentable: there's no `run: Ok` sitting
+/// alongside a failed build (the `Ran` variant only exists once a build
+/// succeeded), and no cross-stage status values (`BuildStatus`/`RunStatus`
+/// each only contain what's reachable in their own stage).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StageReports {
-    pub build: StageReport,
-    pub run: StageReport,
+#[serde(rename_all = "snake_case")]
+pub enum EvalStatus {
+    BuildFailed(BuildStatus),
+    Ran(RunStatus),
 }
 
 /// The sole contract between untrusted execution and scoring.
@@ -119,16 +122,16 @@ pub struct EvaluationResult {
     pub assignment_id: AssignmentId,
     pub submission_id: SubmissionId,
     pub run_id: RunId,
+    /// The graded submission's own commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graded_commit: Option<String>,
+    /// The private assignment repo's commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructor_commit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_harness_commit: Option<String>,
-    pub stages: StageReports,
+    pub status: EvalStatus,
     pub tests: Vec<TestResult>,
-    #[serde(default)]
-    pub resource_usage: ResourceUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_ms: Option<u64>,
     #[serde(default)]
     pub diagnostics: Diagnostics,
 }
@@ -159,46 +162,31 @@ mod tests {
             run_id: RunId::new("2026-07-17T18-03-00Z-ab12"),
             graded_commit: Some("a1b2c3d".into()),
             instructor_commit: Some("f9e8d7".into()),
-            public_harness_commit: Some("c0ffee".into()),
-            stages: StageReports {
-                build: StageReport {
-                    status: StageStatus::Ok,
-                    duration_ms: Some(8123),
-                    warnings: Some(3),
-                },
-                run: StageReport {
-                    status: StageStatus::Ok,
-                    duration_ms: Some(420),
-                    warnings: None,
-                },
-            },
+            status: EvalStatus::Ran(RunStatus::Ok),
             tests: vec![
                 TestResult {
                     name: "insert_basic".into(),
                     status: TestStatus::Pass,
-                    duration_ms: Some(5),
+                    duration_ms: 5,
                     message: None,
                     reported_score: Some(0.83),
                 },
                 TestResult {
                     name: "balance_adv".into(),
                     status: TestStatus::Fail,
-                    duration_ms: Some(9),
+                    duration_ms: 9,
                     message: Some("assertion failed: height <= 2*log2(n)".into()),
                     reported_score: None,
                 },
                 TestResult {
                     name: "delete_edge".into(),
                     status: TestStatus::Timeout,
-                    duration_ms: None,
+                    duration_ms: 0,
                     message: None,
                     reported_score: None,
                 },
             ],
-            resource_usage: ResourceUsage {
-                peak_memory_bytes: Some(41231872),
-                cpu_ms: Some(380),
-            },
+            cpu_ms: Some(380),
             diagnostics: Diagnostics {
                 compiler_errors: None,
                 stderr_excerpt: Some("…".into()),

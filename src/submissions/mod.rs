@@ -100,8 +100,8 @@ impl SubmissionDate {
 }
 
 /// Terminal status of the Fetch stage alone -- distinct from
-/// `model::StageStatus`, which is Evaluate's own build/run vocabulary and
-/// has no notion of fetching at all.
+/// `model::BuildStatus`/`model::RunStatus`, which are Evaluate's own
+/// build/run vocabulary and have no notion of fetching at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FetchStatus {

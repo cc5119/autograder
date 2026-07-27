@@ -13,10 +13,7 @@ use crate::exec::fs;
 use crate::exec::json::write_json;
 use crate::exec::overlay::{self, Context, Rule};
 use crate::id::{RunId, SubmissionId};
-use crate::model::{
-    Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    StageStatus,
-};
+use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
 use crate::spec::Spec;
 
@@ -75,7 +72,7 @@ fn package_rules() -> Vec<Rule> {
 /// gradeable result instead of aborting the batch.
 fn terminal_eval(
     ctx: &JobContext,
-    status: StageStatus,
+    status: BuildStatus,
     message: Option<String>,
 ) -> EvaluationResult {
     EvaluationResult {
@@ -85,17 +82,9 @@ fn terminal_eval(
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
-        public_harness_commit: None,
-        stages: StageReports {
-            build: StageReport {
-                status,
-                duration_ms: None,
-                warnings: None,
-            },
-            run: StageReport::ok(),
-        },
+        status: EvalStatus::BuildFailed(status),
         tests: Vec::new(),
-        resource_usage: ResourceUsage::default(),
+        cpu_ms: None,
         diagnostics: Diagnostics {
             compiler_errors: None,
             stderr_excerpt: message,
@@ -129,7 +118,7 @@ fn evaluate_submission(
     if !submitted_crate.is_dir() {
         return Ok(terminal_eval(
             ctx,
-            StageStatus::BuildFailed,
+            BuildStatus::Failed,
             Some(format!(
                 "submission has no {:?} directory -- expected the student's own crate \
                  there, matching [assignment].id",
@@ -176,7 +165,7 @@ fn evaluate_submission(
             .join("; ");
         return Ok(terminal_eval(
             ctx,
-            StageStatus::DisallowedDependency,
+            BuildStatus::DisallowedDependency,
             Some(message),
         ));
     }

@@ -65,9 +65,7 @@ fn latest_evals(submissions_dir: &Path) -> Result<Vec<EvaluationResult>> {
 mod tests {
     use super::*;
     use crate::exec::json::write_json;
-    use crate::model::{
-        Diagnostics, ResourceUsage, StageReport, StageReports, TestResult, TestStatus,
-    };
+    use crate::model::{Diagnostics, EvalStatus, RunStatus, TestResult, TestStatus};
 
     fn write(path: &std::path::Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -109,28 +107,24 @@ max-output-bytes = "64KiB"
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,
-            public_harness_commit: None,
-            stages: StageReports {
-                build: StageReport::ok(),
-                run: StageReport::ok(),
-            },
+            status: EvalStatus::Ran(RunStatus::Ok),
             tests: vec![
                 TestResult {
                     name: "insert_basic".into(),
                     status: TestStatus::Pass,
-                    duration_ms: None,
+                    duration_ms: 0,
                     message: None,
                     reported_score: None,
                 },
                 TestResult {
                     name: "balance_adversarial".into(),
                     status: TestStatus::Fail,
-                    duration_ms: None,
+                    duration_ms: 0,
                     message: None,
                     reported_score: None,
                 },
             ],
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
             diagnostics: Diagnostics::default(),
         }
     }

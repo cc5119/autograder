@@ -1,5 +1,5 @@
 use crate::id::StudentId;
-use crate::model::{EvaluationResult, Grade, StageStatus, TestResult, TestStatus};
+use crate::model::{EvalStatus, EvaluationResult, Grade, RunStatus, TestResult, TestStatus};
 use crate::spec::{Scoring, ScoringFormula};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
@@ -15,8 +15,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     // of test results at all, even if a few tests happened to report
     // before the crash -- so it floors the score at each formula's own
     // floor value instead of scoring the partial results.
-    let stage_failed =
-        eval.stages.build.status != StageStatus::Ok || eval.stages.run.status != StageStatus::Ok;
+    let stage_failed = !matches!(eval.status, EvalStatus::Ran(RunStatus::Ok));
 
     let failing_tests: Vec<String> = eval
         .tests
@@ -52,7 +51,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     };
 
     let status = if stage_failed {
-        stage_status_label(eval)
+        stage_status_label(&eval.status)
     } else if failing_tests.is_empty() {
         "pass".to_string()
     } else {
@@ -78,21 +77,20 @@ fn contribution(test: &TestResult) -> f64 {
     }
 }
 
-fn stage_status_label(eval: &EvaluationResult) -> String {
-    for status in [eval.stages.build.status, eval.stages.run.status] {
-        if status != StageStatus::Ok {
-            return format!("{status:?}");
-        }
+fn stage_status_label(stages: &EvalStatus) -> String {
+    match stages {
+        EvalStatus::BuildFailed(status) => format!("{status:?}"),
+        EvalStatus::Ran(RunStatus::Ok) => "ok".to_string(),
+        EvalStatus::Ran(status) => format!("{status:?}"),
     }
-    "ok".to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ResourceUsage, StageReport, StageReports};
+    use crate::model::BuildStatus;
 
-    fn eval_with(stages: StageReports, tests: Vec<TestResult>) -> EvaluationResult {
+    fn eval_with(stages: EvalStatus, tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
             schema_version: 1,
             assignment_id: "hw3".into(),
@@ -100,26 +98,22 @@ mod tests {
             run_id: "run1".into(),
             graded_commit: None,
             instructor_commit: None,
-            public_harness_commit: None,
-            stages,
+            status: stages,
             tests,
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
             diagnostics: Default::default(),
         }
     }
 
-    fn ok_stages() -> StageReports {
-        StageReports {
-            build: StageReport::ok(),
-            run: StageReport::ok(),
-        }
+    fn ok_stages() -> EvalStatus {
+        EvalStatus::Ran(RunStatus::Ok)
     }
 
     fn test_result(name: &str, status: TestStatus) -> TestResult {
         TestResult {
             name: name.into(),
             status,
-            duration_ms: None,
+            duration_ms: 0,
             message: None,
             reported_score: None,
         }
@@ -213,14 +207,7 @@ mod tests {
             ],
         );
         let harness_error_eval = eval_with(
-            StageReports {
-                build: StageReport::ok(),
-                run: StageReport {
-                    status: StageStatus::HarnessError,
-                    duration_ms: None,
-                    warnings: None,
-                },
-            },
+            EvalStatus::Ran(RunStatus::HarnessError),
             vec![test_result("a", TestStatus::Pass)],
         );
         let policy = sum_policy(0.0);
@@ -236,37 +223,17 @@ mod tests {
 
     #[test]
     fn build_failed_floors_the_sum_formula_at_base() {
-        let eval = eval_with(
-            StageReports {
-                build: StageReport {
-                    status: StageStatus::BuildFailed,
-                    duration_ms: None,
-                    warnings: None,
-                },
-                run: StageReport::ok(),
-            },
-            vec![],
-        );
+        let eval = eval_with(EvalStatus::BuildFailed(BuildStatus::Failed), vec![]);
         let grade = grade(&eval, &sum_policy(1.0));
         assert_eq!(grade.score, 1.0);
-        assert_eq!(grade.status, "BuildFailed");
+        assert_eq!(grade.status, "Failed");
     }
 
     #[test]
     fn build_failed_floors_the_affine_formula_at_scale_min() {
-        let eval = eval_with(
-            StageReports {
-                build: StageReport {
-                    status: StageStatus::BuildFailed,
-                    duration_ms: None,
-                    warnings: None,
-                },
-                run: StageReport::ok(),
-            },
-            vec![],
-        );
+        let eval = eval_with(EvalStatus::BuildFailed(BuildStatus::Failed), vec![]);
         let grade = grade(&eval, &affine_policy(20.0, 1.0, 7.0));
         assert_eq!(grade.score, 1.0);
-        assert_eq!(grade.status, "BuildFailed");
+        assert_eq!(grade.status, "Failed");
     }
 }

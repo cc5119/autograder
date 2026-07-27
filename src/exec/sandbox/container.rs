@@ -5,7 +5,6 @@ use std::time::Duration;
 use subprocess::Exec;
 
 use crate::error::{Error, Result};
-use crate::model::ResourceUsage;
 
 use super::exec::exec_with_timeout;
 use super::{MountMode, Sandbox, SandboxOutcome, SandboxSpec};
@@ -212,10 +211,7 @@ impl Sandbox for ContainerSandbox {
             stderr: outcome.stderr,
             timed_out: outcome.timed_out,
             oom,
-            resource_usage: ResourceUsage {
-                peak_memory_bytes: None,
-                cpu_ms: Some(outcome.wall_clock.as_millis() as u64),
-            },
+            cpu_ms: Some(outcome.wall_clock.as_millis() as u64),
         })
     }
 }

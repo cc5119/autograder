@@ -14,8 +14,7 @@
 
 use autograder::exec::json::read_json;
 use autograder::model::{
-    EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, StageStatus,
-    TestResult, TestStatus,
+    BuildStatus, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult, TestStatus,
 };
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::{Evaluator, StubEvaluator};
@@ -62,7 +61,7 @@ fn passing_test(name: &str) -> TestResult {
     TestResult {
         name: name.into(),
         status: TestStatus::Pass,
-        duration_ms: Some(1),
+        duration_ms: 1,
         message: None,
         reported_score: None,
     }
@@ -157,7 +156,10 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
     .unwrap();
 
     assert_eq!(evals.len(), 1);
-    assert_eq!(evals[0].stages.build.status, StageStatus::BuildFailed);
+    assert!(matches!(
+        evals[0].status,
+        EvalStatus::BuildFailed(BuildStatus::Failed)
+    ));
 }
 
 /// Records the sorted file names in `harness/tests/` (a sibling of
@@ -184,13 +186,9 @@ impl Evaluator for CapturingEvaluator<'_> {
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
-            public_harness_commit: None,
-            stages: StageReports {
-                build: StageReport::ok(),
-                run: StageReport::ok(),
-            },
+            status: EvalStatus::Ran(RunStatus::Ok),
             tests: Vec::new(),
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
             diagnostics: Default::default(),
         })
     }

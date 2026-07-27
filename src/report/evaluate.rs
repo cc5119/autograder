@@ -11,7 +11,7 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{EvaluationResult, StageStatus, TestStatus};
+use crate::model::{EvaluationResult, RunStatus, EvalStatus, TestStatus};
 
 pub fn render_evaluate_summary(evals: &[EvaluationResult]) -> String {
     let mut out = String::new();
@@ -27,22 +27,27 @@ pub fn render_evaluate_summary(evals: &[EvaluationResult]) -> String {
 
     let mut ok = 0usize;
     for eval in evals {
-        let stage_status = worst_stage_status(eval);
-        if stage_status == StageStatus::Ok {
-            ok += 1;
-            let passed = eval
-                .tests
-                .iter()
-                .filter(|t| t.status == TestStatus::Pass)
-                .count();
-            let _ = writeln!(
-                out,
-                "{}: ok ({passed}/{} tests passed)",
-                eval.submission_id,
-                eval.tests.len()
-            );
-        } else {
-            let _ = writeln!(out, "{}: {}", eval.submission_id, stage_status.label());
+        match &eval.status {
+            EvalStatus::Ran(RunStatus::Ok) => {
+                ok += 1;
+                let passed = eval
+                    .tests
+                    .iter()
+                    .filter(|t| t.status == TestStatus::Pass)
+                    .count();
+                let _ = writeln!(
+                    out,
+                    "{}: ok ({passed}/{} tests passed)",
+                    eval.submission_id,
+                    eval.tests.len()
+                );
+            }
+            EvalStatus::BuildFailed(status) => {
+                let _ = writeln!(out, "{}: {}", eval.submission_id, status.label());
+            }
+            EvalStatus::Ran(status) => {
+                let _ = writeln!(out, "{}: {}", eval.submission_id, status.label());
+            }
         }
     }
 
@@ -53,14 +58,4 @@ pub fn render_evaluate_summary(evals: &[EvaluationResult]) -> String {
         evals.len() - ok
     );
     out
-}
-
-/// The first non-`Ok` stage in build -> run order, or `Ok` if both
-/// succeeded -- mirrors the order the pipeline itself short-circuits in
-/// (`pipeline::evaluate_submission`).
-fn worst_stage_status(eval: &EvaluationResult) -> StageStatus {
-    [eval.stages.build.status, eval.stages.run.status]
-        .into_iter()
-        .find(|status| *status != StageStatus::Ok)
-        .unwrap_or(StageStatus::Ok)
 }

@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{EvaluationResult, StageStatus, TestStatus};
+use crate::model::{EvalStatus, EvaluationResult, RunStatus, TestStatus};
 use crate::pipeline::manifest_check::ManifestDiagnostic;
 
 /// Renders and judges a CI run. `eval` is `None` when a disallowed
@@ -28,8 +28,7 @@ impl<'a> CiReport<'a> {
         let Some(eval) = self.eval else {
             return false;
         };
-        eval.stages.build.status == StageStatus::Ok
-            && eval.stages.run.status == StageStatus::Ok
+        matches!(eval.status, EvalStatus::Ran(RunStatus::Ok))
             && eval.tests.iter().all(|t| t.status == TestStatus::Pass)
     }
 
@@ -53,34 +52,28 @@ impl<'a> CiReport<'a> {
             return out;
         };
 
-        if eval.stages.build.status != StageStatus::Ok {
-            if let Some(errors) = &eval.diagnostics.compiler_errors {
-                out.push_str(errors);
-                if !errors.ends_with('\n') {
-                    out.push('\n');
+        match eval.status {
+            EvalStatus::BuildFailed(status) => {
+                if let Some(errors) = &eval.diagnostics.compiler_errors {
+                    out.push_str(errors);
+                    if !errors.ends_with('\n') {
+                        out.push('\n');
+                    }
                 }
+                let _ = writeln!(out, "autograde: build failed ({})", status.label());
+                return out;
             }
-            let _ = writeln!(
-                out,
-                "autograde: build failed ({})",
-                eval.stages.build.status.label()
-            );
-            return out;
-        }
-
-        if eval.stages.run.status != StageStatus::Ok {
-            if let Some(excerpt) = &eval.diagnostics.stderr_excerpt {
-                out.push_str(excerpt);
-                if !excerpt.ends_with('\n') {
-                    out.push('\n');
+            EvalStatus::Ran(status) if status != RunStatus::Ok => {
+                if let Some(excerpt) = &eval.diagnostics.stderr_excerpt {
+                    out.push_str(excerpt);
+                    if !excerpt.ends_with('\n') {
+                        out.push('\n');
+                    }
                 }
+                let _ = writeln!(out, "autograde: run failed ({})", status.label());
+                return out;
             }
-            let _ = writeln!(
-                out,
-                "autograde: run failed ({})",
-                eval.stages.run.status.label()
-            );
-            return out;
+            EvalStatus::Ran(_) => {}
         }
 
         let mut failing = 0usize;
@@ -122,8 +115,9 @@ fn test_status_label(status: TestStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::BuildStatus;
     use crate::model::Diagnostics;
-    use crate::model::{ResourceUsage, StageReport, StageReports, TestResult};
+    use crate::model::TestResult;
 
     fn eval_with_tests(tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
@@ -133,13 +127,9 @@ mod tests {
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,
-            public_harness_commit: None,
-            stages: StageReports {
-                build: StageReport::ok(),
-                run: StageReport::ok(),
-            },
+            status: EvalStatus::Ran(RunStatus::Ok),
             tests,
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
             diagnostics: Diagnostics::default(),
         }
     }
@@ -149,7 +139,7 @@ mod tests {
         let eval = eval_with_tests(vec![TestResult {
             name: "balance_small".into(),
             status: TestStatus::Pass,
-            duration_ms: Some(1),
+            duration_ms: 1,
             message: None,
             reported_score: None,
         }]);
@@ -167,7 +157,7 @@ mod tests {
         let eval = eval_with_tests(vec![TestResult {
             name: "insert_basic".into(),
             status: TestStatus::Fail,
-            duration_ms: Some(1),
+            duration_ms: 1,
             message: Some("assertion failed: expected Some(3), got None".into()),
             reported_score: None,
         }]);
@@ -202,11 +192,7 @@ mod tests {
     #[test]
     fn build_failure_reports_compiler_errors_without_test_list() {
         let mut eval = eval_with_tests(vec![]);
-        eval.stages.build = StageReport {
-            status: StageStatus::BuildFailed,
-            duration_ms: None,
-            warnings: None,
-        };
+        eval.status = EvalStatus::BuildFailed(BuildStatus::Failed);
         eval.diagnostics.compiler_errors = Some("error[E0433]: failed to resolve".into());
         let report = CiReport {
             eval: Some(&eval),

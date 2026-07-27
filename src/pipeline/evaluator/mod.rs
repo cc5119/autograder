@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::exec::sandbox::{Mount, MountMode, SandboxLimits, SandboxSpec};
-use crate::model::{
-    Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports, TestResult,
-};
+use crate::model::{Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult};
 use crate::spec::BuildLimits;
 
 /// Applied to the two build stages only -- the run stage gets no
@@ -176,13 +174,9 @@ impl Evaluator for StubEvaluator {
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
-            public_harness_commit: None,
-            stages: StageReports {
-                build: StageReport::ok(),
-                run: StageReport::ok(),
-            },
+            status: EvalStatus::Ran(RunStatus::Ok),
             tests,
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
             diagnostics: Diagnostics::default(),
         })
     }
@@ -200,7 +194,7 @@ mod tests {
             tests: vec![TestResult {
                 name: "insert_basic".into(),
                 status: TestStatus::Pass,
-                duration_ms: Some(1),
+                duration_ms: 1,
                 message: None,
                 reported_score: None,
             }],
@@ -215,6 +209,9 @@ mod tests {
         let eval = evaluator.evaluate(&ctx).unwrap();
         assert_eq!(eval.tests.len(), 1);
         assert_eq!(eval.tests[0].status, TestStatus::Pass);
-        assert_eq!(eval.stages.build.status, crate::model::StageStatus::Ok);
+        assert!(matches!(
+            eval.status,
+            crate::model::EvalStatus::Ran(crate::model::RunStatus::Ok)
+        ));
     }
 }

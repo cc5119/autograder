@@ -165,8 +165,10 @@ base = 0.0
         };
         let eval = evaluator.evaluate(&ctx).unwrap();
 
-        assert_eq!(eval.stages.build.status, model::StageStatus::Ok);
-        assert_eq!(eval.stages.run.status, model::StageStatus::HarnessError);
+        assert!(matches!(
+            eval.status,
+            model::EvalStatus::Ran(model::RunStatus::HarnessError)
+        ));
 
         let report = CiReport {
             eval: Some(&eval),

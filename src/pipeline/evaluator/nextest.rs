@@ -47,8 +47,8 @@ use crate::deps::vendor;
 use crate::error::{Error, Result};
 use crate::exec::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::model::{
-    Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
-    StageStatus, TestResult, TestStatus,
+    BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult,
+    TestStatus,
 };
 use crate::spec::Spec;
 
@@ -177,9 +177,8 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
 
         let build_id_outcome = self.sandbox.run(&build_id_spec)?;
         if !build_id_outcome.succeeded() {
-            return Ok(terminal_result(
+            return Ok(build_failed_result(
                 ctx,
-                Stage::Build,
                 build_stage_status(&build_id_outcome),
                 Diagnostics {
                     compiler_errors: Some(capped_utf8(&build_id_outcome.stderr)),
@@ -203,9 +202,8 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
 
         let build_harness_outcome = self.sandbox.run(&build_harness_spec)?;
         if !build_harness_outcome.succeeded() {
-            return Ok(terminal_result(
+            return Ok(build_failed_result(
                 ctx,
-                Stage::Build,
                 build_stage_status(&build_harness_outcome),
                 Diagnostics {
                     compiler_errors: Some(capped_utf8(&build_harness_outcome.stderr)),
@@ -235,18 +233,16 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
 
         let run_outcome = self.sandbox.run(&run_spec)?;
         if run_outcome.timed_out {
-            return Ok(terminal_result(
+            return Ok(run_failed_result(
                 ctx,
-                Stage::Run,
-                StageStatus::Timeout,
+                RunStatus::Timeout,
                 run_diagnostics(&run_outcome),
             ));
         }
         if run_outcome.oom {
-            return Ok(terminal_result(
+            return Ok(run_failed_result(
                 ctx,
-                Stage::Run,
-                StageStatus::Oom,
+                RunStatus::Oom,
                 run_diagnostics(&run_outcome),
             ));
         }
@@ -255,10 +251,9 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         let Ok(xml) = std::fs::read_to_string(&junit_path) else {
             // No report means the judge crashed before any session
             // completed -- never treat that as a pass.
-            return Ok(terminal_result(
+            return Ok(run_failed_result(
                 ctx,
-                Stage::Run,
-                StageStatus::HarnessError,
+                RunStatus::HarnessError,
                 run_diagnostics(&run_outcome),
             ));
         };
@@ -272,27 +267,17 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
-            public_harness_commit: None,
-            stages: StageReports {
-                build: StageReport::ok(),
-                run: StageReport::ok(),
-            },
+            status: EvalStatus::Ran(RunStatus::Ok),
             tests,
-            resource_usage: run_outcome.resource_usage,
+            cpu_ms: run_outcome.cpu_ms,
             diagnostics,
         })
     }
 }
 
-enum Stage {
-    Build,
-    Run,
-}
-
-fn terminal_result(
+fn build_failed_result(
     ctx: &JobContext,
-    stage: Stage,
-    status: StageStatus,
+    status: BuildStatus,
     diagnostics: Diagnostics,
 ) -> EvaluationResult {
     EvaluationResult {
@@ -302,38 +287,39 @@ fn terminal_result(
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
-        public_harness_commit: None,
-        stages: StageReports {
-            build: match stage {
-                Stage::Build => StageReport {
-                    status,
-                    duration_ms: None,
-                    warnings: None,
-                },
-                Stage::Run => StageReport::ok(),
-            },
-            run: match stage {
-                Stage::Run => StageReport {
-                    status,
-                    duration_ms: None,
-                    warnings: None,
-                },
-                Stage::Build => StageReport::ok(),
-            },
-        },
+        status: EvalStatus::BuildFailed(status),
         tests: Vec::new(),
-        resource_usage: ResourceUsage::default(),
+        cpu_ms: None,
         diagnostics,
     }
 }
 
-fn build_stage_status(outcome: &SandboxOutcome) -> StageStatus {
+fn run_failed_result(
+    ctx: &JobContext,
+    status: RunStatus,
+    diagnostics: Diagnostics,
+) -> EvaluationResult {
+    EvaluationResult {
+        schema_version: 1,
+        assignment_id: ctx.assignment_id,
+        submission_id: ctx.submission_id,
+        run_id: ctx.run_id,
+        graded_commit: None,
+        instructor_commit: None,
+        status: EvalStatus::Ran(status),
+        tests: Vec::new(),
+        cpu_ms: None,
+        diagnostics,
+    }
+}
+
+fn build_stage_status(outcome: &SandboxOutcome) -> BuildStatus {
     if outcome.timed_out {
-        StageStatus::Timeout
+        BuildStatus::Timeout
     } else if outcome.oom {
-        StageStatus::Oom
+        BuildStatus::Oom
     } else {
-        StageStatus::BuildFailed
+        BuildStatus::Failed
     }
 }
 
@@ -361,7 +347,8 @@ pub fn parse_junit_report(xml: &str) -> Result<Vec<TestResult>> {
         let duration_ms = node
             .attribute("time")
             .and_then(|t| t.parse::<f64>().ok())
-            .map(|secs| (secs * 1000.0) as u64);
+            .map(|secs| (secs * 1000.0) as u64)
+            .unwrap_or(0);
 
         let failure = node.children().find(|c| c.has_tag_name("failure"));
         let error = node.children().find(|c| c.has_tag_name("error"));
@@ -530,7 +517,7 @@ autograder: case=b score=0.25
             stderr: Vec::new(),
             timed_out: false,
             oom: false,
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
         }
     }
 
@@ -541,7 +528,7 @@ autograder: case=b score=0.25
             stderr: b"error[E0433]: failed to resolve".to_vec(),
             timed_out: false,
             oom: false,
-            resource_usage: ResourceUsage::default(),
+            cpu_ms: None,
         }
     }
 
@@ -653,7 +640,10 @@ base = 0.0
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
-        assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
+        assert!(matches!(
+            eval.status,
+            EvalStatus::BuildFailed(BuildStatus::Failed)
+        ));
         assert!(eval.diagnostics.compiler_errors.unwrap().contains("E0433"));
         assert!(eval.tests.is_empty());
         assert_eq!(specs.lock().unwrap().len(), 1);
@@ -671,7 +661,10 @@ base = 0.0
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
-        assert_eq!(eval.stages.build.status, StageStatus::BuildFailed);
+        assert!(matches!(
+            eval.status,
+            EvalStatus::BuildFailed(BuildStatus::Failed)
+        ));
         assert!(eval.tests.is_empty());
         assert_eq!(specs.lock().unwrap().len(), 2);
     }
@@ -690,7 +683,10 @@ base = 0.0
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
-        assert_eq!(eval.stages.run.status, StageStatus::HarnessError);
+        assert!(matches!(
+            eval.status,
+            EvalStatus::Ran(RunStatus::HarnessError)
+        ));
     }
 
     #[test]
@@ -710,8 +706,7 @@ base = 0.0
 
         let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
 
-        assert_eq!(eval.stages.build.status, StageStatus::Ok);
-        assert_eq!(eval.stages.run.status, StageStatus::Ok);
+        assert!(matches!(eval.status, EvalStatus::Ran(RunStatus::Ok)));
         assert_eq!(eval.tests.len(), 3);
     }
 

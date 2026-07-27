@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::Result;
-use crate::model::ResourceUsage;
 
 pub use container::ContainerSandbox;
 pub use local::LocalSandbox;
@@ -115,7 +114,7 @@ pub struct SandboxOutcome {
     pub stderr: Vec<u8>,
     pub timed_out: bool,
     pub oom: bool,
-    pub resource_usage: ResourceUsage,
+    pub cpu_ms: Option<u64>,
 }
 
 impl SandboxOutcome {
