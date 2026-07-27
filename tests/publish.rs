@@ -5,7 +5,7 @@
 //! schema/template shape.
 
 use autograder::error::Error;
-use autograder::package::publish::publish;
+use autograder::package::publish::{publish, PublishMode};
 use autograder::spec::SPEC_FILE;
 
 use crate::common::{binary_package, library_package, write};
@@ -64,7 +64,7 @@ fn publish_produces_the_documented_starter_tree() {
     library_package(package_dir.path(), "hw3");
 
     let out_dir = tempfile::tempdir().unwrap();
-    let outcome = publish(package_dir.path(), out_dir.path()).unwrap();
+    let outcome = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     assert!(outcome.out_dir.join(SPEC_FILE).is_file());
     assert!(outcome.out_dir.join("harness/tests/judge.rs").is_file());
@@ -85,7 +85,7 @@ fn publish_ships_the_spec_file_verbatim_under_the_same_name() {
     library_package(package_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let source = std::fs::read_to_string(package_dir.path().join(SPEC_FILE)).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join(SPEC_FILE)).unwrap();
@@ -98,7 +98,7 @@ fn publish_ships_the_workspace_root_cargo_lock_verbatim() {
     library_package(package_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let source = std::fs::read_to_string(package_dir.path().join("Cargo.lock")).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join("Cargo.lock")).unwrap();
@@ -118,7 +118,7 @@ fn publish_refuses_to_ship_a_stale_cargo_lock() {
     );
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
+    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
     assert!(!out_dir.path().join(SPEC_FILE).exists());
 }
@@ -130,7 +130,7 @@ fn publish_derives_a_public_harness_with_only_the_kept_test_and_a_path_dependenc
     write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
     assert!(judge.contains("fn insert_basic"));
@@ -148,7 +148,7 @@ fn publish_errors_clearly_when_the_solution_directory_is_missing() {
     std::fs::remove_dir_all(package_dir.path().join("hw3")).unwrap();
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
+    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
@@ -158,7 +158,7 @@ fn emitted_workflow_runs_ci_from_the_repo_root_inside_podman() {
     library_package(package_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let workflow =
         std::fs::read_to_string(out_dir.path().join(".github/workflows/autograde.yml")).unwrap();
@@ -177,7 +177,7 @@ fn emitted_workspace_manifest_matches_the_source_verbatim() {
     library_package(package_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let source = std::fs::read_to_string(package_dir.path().join("Cargo.toml")).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap();
@@ -192,7 +192,7 @@ fn emitted_student_manifest_matches_the_solutions_own_cargo_toml() {
     library_package(package_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let solution_manifest =
         std::fs::read_to_string(package_dir.path().join("hw3/Cargo.toml")).unwrap();
@@ -205,7 +205,7 @@ fn publish_rejects_a_package_dir_without_a_private_spec() {
     let package_dir = tempfile::tempdir().unwrap();
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
+    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
@@ -216,7 +216,7 @@ fn publish_rejects_a_package_dir_without_a_root_workspace_manifest() {
     std::fs::remove_file(package_dir.path().join("Cargo.toml")).unwrap();
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
+    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
@@ -231,7 +231,7 @@ fn publish_derives_a_building_stub_from_the_id_named_solution_dir() {
     );
 
     let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let src = std::fs::read_to_string(out_dir.path().join("hw3/src/lib.rs")).unwrap();
     assert!(src.contains("pub struct Stack"));
@@ -260,7 +260,7 @@ fn cargo_test_at_the_starter_root_runs_the_public_harness() {
     write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
 
     let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let test = std::process::Command::new("cargo")
         .arg("test")
@@ -278,6 +278,52 @@ fn cargo_test_at_the_starter_root_runs_the_public_harness() {
 }
 
 #[test]
+fn publish_solution_mode_keeps_the_real_implementation_and_reference_only_helpers() {
+    let package_dir = tempfile::tempdir().unwrap();
+    library_package(package_dir.path(), "hw3");
+    write(&package_dir.path().join("hw3/src/lib.rs"), SOLUTION_SRC);
+    write(
+        &package_dir.path().join("publish.toml"),
+        "allowed-warnings = [\"unused_variables\"]\n",
+    );
+
+    let out_dir = tempfile::tempdir().unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
+
+    let src = std::fs::read_to_string(out_dir.path().join("hw3/src/lib.rs")).unwrap();
+    assert!(src.contains("pub struct Stack"));
+    assert!(src.contains("self.items.push(value)"));
+    assert!(!src.contains("todo!"));
+    assert!(src.contains("dedup_hint"));
+    assert!(src.contains("HashSet"));
+
+    let build = std::process::Command::new("cargo")
+        .arg("build")
+        .current_dir(out_dir.path().join("hw3"))
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "published solution failed to build: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+}
+
+#[test]
+fn publish_solution_mode_still_strips_the_harnesss_adversarial_tests() {
+    let package_dir = tempfile::tempdir().unwrap();
+    library_package(package_dir.path(), "hw3");
+    write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    let out_dir = tempfile::tempdir().unwrap();
+
+    publish(package_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
+
+    let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
+    assert!(judge.contains("fn insert_basic"));
+    assert!(!judge.contains("balance_adversarial"));
+}
+
+#[test]
 fn publish_rejects_a_solution_dir_whose_package_name_does_not_match_the_id() {
     let package_dir = tempfile::tempdir().unwrap();
     library_package(package_dir.path(), "hw3");
@@ -287,7 +333,7 @@ fn publish_rejects_a_solution_dir_whose_package_name_does_not_match_the_id() {
     );
 
     let out_dir = tempfile::tempdir().unwrap();
-    let err = publish(package_dir.path(), out_dir.path()).unwrap_err();
+    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
@@ -301,7 +347,7 @@ fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
     );
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     assert!(!out_dir.path().join("hw3/vendor").exists());
 }
@@ -329,7 +375,7 @@ fn publish_derives_a_public_binary_judge_alongside_a_separate_harness_dir() {
     );
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
     assert!(judge.contains("fn counts_words"));
@@ -356,7 +402,7 @@ fn publish_never_stubs_the_binary_judges_test_bodies() {
     );
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
     assert!(judge.contains("assert!(true)"));
@@ -372,7 +418,7 @@ fn cargo_test_at_the_binary_starter_root_runs_the_public_judge() {
         BINARY_JUDGE_RS,
     );
     let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path()).unwrap();
+    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let test = std::process::Command::new("cargo")
         .arg("test")

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::id::AssignmentId;
+use crate::package::publish::PublishMode;
 use crate::spec::AssignmentKind;
 
 #[derive(Debug, Parser)]
@@ -98,13 +99,18 @@ pub enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Publish the starter/template repo for distribution to students.
+    /// Publish either the starter/template repo (for distribution to
+    /// students) or the solution repo (real implementations, kept out of
+    /// the harness) from the private instructor workspace.
     Publish {
         /// Path to the private instructor workspace.
         assignment: PathBuf,
-        /// Output directory for the starter template.
+        /// Output directory for the published tree.
         #[arg(long)]
         out: PathBuf,
+        /// Which view of the private workspace to publish.
+        #[arg(long, value_enum, default_value = "starter")]
+        mode: PublishModeArg,
     },
 }
 
@@ -127,6 +133,23 @@ impl From<AssignmentKindArg> for AssignmentKind {
         match kind {
             AssignmentKindArg::Library => AssignmentKind::Library,
             AssignmentKindArg::Binary => AssignmentKind::Binary,
+        }
+    }
+}
+
+/// Mirrors `package::publish::PublishMode`, kept separate so `package`
+/// stays free of a CLI-parsing dependency.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum PublishModeArg {
+    Starter,
+    Solution,
+}
+
+impl From<PublishModeArg> for PublishMode {
+    fn from(mode: PublishModeArg) -> Self {
+        match mode {
+            PublishModeArg::Starter => PublishMode::Starter,
+            PublishModeArg::Solution => PublishMode::Solution,
         }
     }
 }

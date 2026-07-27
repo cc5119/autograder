@@ -44,7 +44,11 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
             format,
             out,
         } => report::run(assignment_id, format, out, config),
-        Command::Publish { assignment, out } => publish::run(&assignment, &out),
+        Command::Publish {
+            assignment,
+            out,
+            mode,
+        } => publish::run(&assignment, &out, mode.into()),
     }
 }
 

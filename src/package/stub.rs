@@ -1,10 +1,19 @@
-//! Strips a private reference solution down to a "starter stub": items
-//! marked `#[cfg(not(feature = "student"))]` are dropped, `cfg_select!`
-//! calls are resolved to their winning arm, and anything unmarked ships
-//! as-is. `cfg`/`cfg_select!` alone only gate *compilation*, not text
-//! visibility -- an excluded branch is still sitting in the file as plain
-//! text -- so this module does the actual text-level deletion instead of
-//! just leaving the markers for `rustc` to skip.
+//! Resolves the `student`-feature markers in a private reference solution
+//! down to one concrete view, exactly as `rustc` would for the given
+//! `enabled` feature set: items marked `#[cfg(feature = "student")]` (or
+//! `not(..)`) are kept or dropped accordingly, and `cfg_select!` calls
+//! resolve to whichever arm's predicate matches (falling back to `_`).
+//! Callers pick a direction by choice of `enabled`: `{"student"}` produces
+//! the "starter stub" (adversarial/reference-only items and real
+//! implementations disappear, `todo!()`-style stubs remain), while `{}`
+//! produces the real "solution" view (the mirror image -- `cfg(not(student))`
+//! items are kept, any `cfg(feature = "student")`-only items are dropped,
+//! and `cfg_select!` resolves to its non-student arm instead). Anything
+//! unmarked ships as-is either way. `cfg`/`cfg_select!` alone only gate
+//! *compilation*, not text visibility -- an excluded branch is still
+//! sitting in the file as plain text -- so this module does the actual
+//! text-level deletion instead of just leaving the markers for `rustc` to
+//! skip.
 //!
 //! It repeatedly finds the outermost unresolved directive, applies it as
 //! a text edit, and reparses -- reparsing is what turns a freshly
@@ -24,10 +33,7 @@ use ra_ap_syntax::{ast, ast::AstNode, Edition, NodeOrToken, SourceFile, SyntaxNo
 
 use crate::error::{Error, Result};
 
-const STUDENT_FEATURE: &str = "student";
-
-pub fn strip_to_stub(source: &str) -> Result<String> {
-    let enabled: HashSet<&str> = [STUDENT_FEATURE].into_iter().collect();
+pub fn strip_to_stub(source: &str, enabled: &HashSet<&str>) -> Result<String> {
     let mut source = source.to_string();
     loop {
         let parse = SourceFile::parse(&source, Edition::CURRENT);
@@ -37,7 +43,7 @@ pub fn strip_to_stub(source: &str) -> Result<String> {
                 parse.errors()
             )));
         }
-        let Some(edit) = find_edit(parse.tree().syntax(), &enabled, &source)? else {
+        let Some(edit) = find_edit(parse.tree().syntax(), enabled, &source)? else {
             return Ok(source);
         };
         let (start, end, replacement) = edit;
@@ -221,6 +227,14 @@ fn find_edit(
 mod tests {
     use super::*;
 
+    fn student() -> HashSet<&'static str> {
+        HashSet::from(["student"])
+    }
+
+    fn solution() -> HashSet<&'static str> {
+        HashSet::new()
+    }
+
     #[test]
     fn unannotated_items_ship_exactly_as_written() {
         let source = r#"
@@ -233,7 +247,7 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(stub.contains("pub struct Stack"));
         assert!(stub.contains("fn helper"));
         assert!(stub.contains("42"));
@@ -252,7 +266,7 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(!stub.contains("reference_only_helper"));
         assert!(stub.contains("pub fn exposed"));
     }
@@ -269,10 +283,34 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(stub.contains("fn only_for_students"));
         assert!(!stub.contains("feature"));
         assert!(!stub.contains("cfg"));
+    }
+
+    #[test]
+    fn solution_view_keeps_reference_only_items_and_drops_student_only_ones() {
+        // The mirror of `cfg_student_marker_is_stripped_when_the_item_is_kept`:
+        // an empty `enabled` set is what `publish --mode solution` resolves
+        // against, so it should keep exactly what the student build hides.
+        let source = r#"
+            #[cfg(not(feature = "student"))]
+            fn reference_only_helper() -> i32 {
+                42
+            }
+
+            #[cfg(feature = "student")]
+            fn only_for_students() -> i32 {
+                0
+            }
+        "#;
+
+        let resolved = strip_to_stub(source, &solution()).unwrap();
+        assert!(resolved.contains("fn reference_only_helper"));
+        assert!(!resolved.contains("only_for_students"));
+        assert!(!resolved.contains("feature"));
+        assert!(!resolved.contains("cfg"));
     }
 
     #[test]
@@ -290,7 +328,7 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(stub.contains("pub fn push"));
         assert!(stub.contains("todo!()"));
         assert!(!stub.contains("items.push(value)"));
@@ -318,12 +356,39 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(!stub.contains("fold"));
         assert!(stub.contains("return 0"));
 
         let parsed = SourceFile::parse(&stub, Edition::CURRENT);
         assert!(parsed.errors().is_empty(), "stub must still be valid Rust");
+    }
+
+    #[test]
+    fn cfg_select_resolves_to_the_real_implementation_for_the_solution_view() {
+        let source = r#"
+            pub fn push(items: &mut Vec<i32>, value: i32) {
+                cfg_select! {
+                    feature = "student" => {
+                        todo!()
+                    }
+                    _ => {
+                        items.push(value);
+                    }
+                }
+            }
+        "#;
+
+        let resolved = strip_to_stub(source, &solution()).unwrap();
+        assert!(resolved.contains("pub fn push"));
+        assert!(resolved.contains("items.push(value)"));
+        assert!(!resolved.contains("todo!()"));
+
+        let parsed = SourceFile::parse(&resolved, Edition::CURRENT);
+        assert!(
+            parsed.errors().is_empty(),
+            "resolved source must still be valid Rust"
+        );
     }
 
     #[test]
@@ -338,7 +403,7 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(stub.contains("mod tests"));
         assert!(stub.contains("a_public_example_test"));
     }
@@ -360,7 +425,7 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(stub.contains("pub fn add"));
         assert!(!stub.contains("adversarial_case"));
     }
@@ -384,7 +449,7 @@ mod tests {
             }
         "#;
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(!stub.contains("extra_credit_hint"));
         assert!(stub.contains("base_value()"));
 
@@ -396,7 +461,7 @@ mod tests {
     fn comments_outside_touched_regions_are_preserved_verbatim() {
         let source = "// A stack.\npub struct Stack<T> {\n    items: Vec<T>,\n}\n";
 
-        let stub = strip_to_stub(source).unwrap();
+        let stub = strip_to_stub(source, &student()).unwrap();
         assert!(stub.contains("// A stack."));
     }
 
@@ -412,7 +477,7 @@ mod tests {
             }
         "#;
 
-        let err = strip_to_stub(source).unwrap_err();
+        let err = strip_to_stub(source, &student()).unwrap_err();
         assert!(err.to_string().contains("no arm matching"));
     }
 
@@ -431,7 +496,7 @@ mod tests {
             }
         "#;
 
-        let err = strip_to_stub(source).unwrap_err();
+        let err = strip_to_stub(source, &student()).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("empty expression"));
         assert!(message.contains("line 4"));

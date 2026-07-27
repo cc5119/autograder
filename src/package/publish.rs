@@ -1,25 +1,33 @@
-//! Publishes the starter/template repo for distribution to students from
-//! the **private instructor package** in one pass: copy everything real,
-//! then strip the sensitive parts in place. No hand-maintained `public/`
+//! Publishes either the starter/template repo or the reference solution
+//! for distribution, from the **private instructor package**, in one pass:
+//! copy everything real, then resolve the sensitive parts in place
+//! according to [`PublishMode`]. No hand-maintained `public/`/`solution/`
 //! sibling repo.
 //!
-//! [`strip_stub`] (already used for `src/**`) strips `harness/tests/**`
-//! too, via the same convention `crate::package::stub` applies to ordinary
-//! items: an unmarked `#[test]` fn ships by default, and only one stacked
-//! with `#[cfg(not(feature = "student"))]` (alongside its own `#[cfg(test)]`,
-//! since that alone isn't a directive -- see that module's doc comment) is
-//! dropped, which is how an adversarial test stays hidden. The judge
-//! always lives in `harness/`, a sibling package of `{id}`, for both
-//! `library` and `binary` (see `evaluator::library`'s and
+//! [`strip_stub`] resolves `{id}/src/**` and `harness/tests/**` to the
+//! student view (`PublishMode::Starter`'s only option for the harness, and
+//! `{id}/src/**` too when the mode is `Starter`), via the convention
+//! `crate::package::stub` applies to ordinary items: an unmarked `#[test]`
+//! fn ships by default, and only one stacked with `#[cfg(not(feature =
+//! "student"))]` (alongside its own `#[cfg(test)]`, since that alone isn't
+//! a directive -- see that module's doc comment) is dropped, which is how
+//! an adversarial test stays hidden. [`unstrip_stub`] is its mirror image,
+//! resolving `{id}/src/**` to the real solution view instead --
+//! `PublishMode::Solution` uses it for `{id}/src/**`, but `harness/tests/**`
+//! always resolves as the student view regardless of mode, since the
+//! adversarial judge tests are never meant to ship, even alongside a
+//! solution. The judge always lives in `harness/`, a sibling package of
+//! `{id}`, for both `library` and `binary` (see `evaluator::library`'s and
 //! `evaluator::binary`'s module doc comments).
 //!
 //! Before any of that, [`check_student_view_is_clean`] compiles the
 //! private repo's own `{id}` crate with `--features student` and refuses
 //! to publish on any warning -- checked against the solution source
 //! directly, rather than by running `cargo fix` over generated output the
-//! way this used to work.
+//! way this used to work. This runs regardless of `mode`: a solution
+//! publish shouldn't diverge from a broken/stale package either.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -34,21 +42,40 @@ pub struct PublishOutcome {
     pub out_dir: PathBuf,
 }
 
-fn rules() -> Vec<Rule> {
+/// Which view of the private instructor package `publish` produces.
+/// `{harness}/tests/**` is always resolved as the student view regardless
+/// of `mode` -- students (and anyone the solution is shared with) never see
+/// the adversarial judge tests -- only `{id}/src/**`'s resolution direction
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishMode {
+    /// The starter/template repo: `todo!()`-style stubs, reference-only
+    /// helpers and adversarial tests stripped out.
+    Starter,
+    /// The reference solution: real implementations, reference-only
+    /// helpers kept; only the harness's adversarial tests are stripped.
+    Solution,
+}
+
+fn rules(mode: PublishMode) -> Vec<Rule> {
+    let src_hook = match mode {
+        PublishMode::Starter => strip_stub,
+        PublishMode::Solution => unstrip_stub,
+    };
     vec![
         Rule::File("Cargo.toml", None),
         Rule::File("Cargo.lock", None),
         Rule::File(spec::SPEC_FILE, None),
         Rule::File(".gitignore", None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
-        Rule::Glob("{id}/src/**", Some(strip_stub)),
+        Rule::Glob("{id}/src/**", Some(src_hook)),
         Rule::File("{harness}/Cargo.toml", None),
         Rule::Glob("{harness}/src/**", None),
         Rule::Glob("{harness}/tests/**", Some(strip_stub)),
     ]
 }
 
-pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
+pub fn publish(package_dir: &Path, out_dir: &Path, mode: PublishMode) -> Result<PublishOutcome> {
     let private_spec_path = package_dir.join(spec::SPEC_FILE);
     if !private_spec_path.is_file() {
         return Err(Error::InvalidSpec(format!(
@@ -99,7 +126,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
         ]),
     };
 
-    overlay::apply(&ctx, out_dir, &rules())?;
+    overlay::apply(&ctx, out_dir, &rules(mode))?;
 
     let workflow_dir = out_dir.join(".github/workflows");
     fs::create_dir_all(&workflow_dir)?;
@@ -175,16 +202,32 @@ fn strip_stub(
     matches: Vec<MatchedFile>,
     _ctx: &Context,
 ) -> Result<Vec<MatchedFile>> {
+    resolve_rust_sources(matches, &HashSet::from(["student"]))
+}
+
+/// The mirror of [`strip_stub`]: resolves `{id}/src/**` to the real
+/// solution view (`enabled` empty) for `PublishMode::Solution`, instead of
+/// the student view.
+fn unstrip_stub(
+    _pattern: &str,
+    matches: Vec<MatchedFile>,
+    _ctx: &Context,
+) -> Result<Vec<MatchedFile>> {
+    resolve_rust_sources(matches, &HashSet::new())
+}
+
+fn resolve_rust_sources(
+    matches: Vec<MatchedFile>,
+    enabled: &HashSet<&str>,
+) -> Result<Vec<MatchedFile>> {
     matches
         .into_iter()
         .map(|file| {
             if file.rel_path.extension().is_some_and(|ext| ext == "rs") {
-                let stripped =
-                    crate::package::stub::strip_to_stub(&file.content).map_err(|e| {
-                        Error::Other(format!("{e} in {}", file.rel_path.display()))
-                    })?;
+                let resolved = crate::package::stub::strip_to_stub(&file.content, enabled)
+                    .map_err(|e| Error::Other(format!("{e} in {}", file.rel_path.display())))?;
                 Ok(MatchedFile {
-                    content: stripped,
+                    content: resolved,
                     ..file
                 })
             } else {
