@@ -38,39 +38,36 @@ pub enum Command {
         assignment: PathBuf,
     },
     /// Run the Fetch stage alone: lands each submission at
-    /// `<student_id>/checkout/` under the storage dir and records the
-    /// outcome, without running Prepare/Evaluate/Grade.
+    /// `<out>/<student_id>/` and records the outcome at
+    /// `<out>/.meta/<student_id>.json`, without running
+    /// Prepare/Evaluate/Grade.
     Fetch {
         /// Path to the (private) assignment repo.
         assignment: PathBuf,
-        /// Where submissions come from: a roster CSV file, or a directory
-        /// with one subdirectory per student. The kind is inferred from
-        /// whether the path is a file or a directory.
+        /// Roster CSV: `student_id,repo_url,ref,...`.
         #[arg(long)]
-        submissions: PathBuf,
+        roster: PathBuf,
+        /// Destination directory for fetched submissions (flat: one
+        /// `<student_id>/` subdirectory per student, plus a `.meta/`
+        /// directory of per-student fetch records).
+        #[arg(long)]
+        out: PathBuf,
         /// Override the deadline used for push-time commit selection
         /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long)]
         as_of: Option<jiff::Zoned>,
     },
-    /// Run Prepare -> Evaluate -> Grade -> Report. By default reuses
-    /// submissions pre-fetched with  `autograder fetch`.
-    Grade {
+    /// Run Prepare -> Evaluate and persist raw results, one directory
+    /// regardless of how its submissions were fetched. Never fetches itself
+    /// and never scores -- run `autograder grade` afterwards for that.
+    Evaluate {
         /// Path to the (private) assignment repo.
         assignment: PathBuf,
-        /// Where submissions come from: a roster CSV file, or a directory
-        /// with one subdirectory per student. The kind is inferred from
-        /// whether the path is a file or a directory.
+        /// Directory shaped like `autograder fetch --out`'s own output:
+        /// `<student_id>/<assignment.id>/...` per student, plus
+        /// `.meta/<student_id>.json` fetch records.
         #[arg(long)]
         submissions: PathBuf,
-        /// Run the Fetch stage first, before grading (equivalent to
-        /// `autograder fetch` followed by `autograder grade`).
-        #[arg(long)]
-        fetch: bool,
-        /// Override the deadline used for push-time commit selection
-        /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
-        #[arg(long, requires = "fetch")]
-        as_of: Option<jiff::Zoned>,
         /// Grade using the host-process "local sandbox" instead of podman
         #[arg(long)]
         local_sandbox: bool,
@@ -81,13 +78,20 @@ pub enum Command {
         #[arg(long)]
         local_sandbox: bool,
     },
-    /// Re-run only the Grade stage from persisted results.
-    Regrade {
-        /// Assignment id to regrade.
+    /// Compute scores from persisted `evaluate` results: applies the
+    /// current scoring policy and `overrides.toml` fresh every time.
+    Grade {
+        /// Assignment id to grade.
         assignment_id: AssignmentId,
         /// Path to the assignment repo (for the current scoring policy).
         #[arg(long)]
         assignment: PathBuf,
+        /// Directory previously produced by `autograder fetch --out`, to
+        /// read `.meta/<student_id>.json` fetch records from for each
+        /// student's submission date, for late-penalty scoring. Without it,
+        /// only `overrides.toml`'s `[late.*]` table applies.
+        #[arg(long)]
+        fetched: Option<PathBuf>,
     },
     /// Emit a report from persisted grades.
     Report {

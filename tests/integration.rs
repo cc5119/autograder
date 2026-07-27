@@ -5,7 +5,6 @@
 
 mod cli;
 mod common;
-mod fetch;
 mod init;
 mod pipeline;
 mod publish;

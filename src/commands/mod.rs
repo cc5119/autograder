@@ -1,11 +1,11 @@
 pub mod ci;
+pub mod evaluate;
 pub mod fetch;
 pub mod grade;
 pub mod init;
 pub mod lock;
 pub mod prefetch;
 pub mod publish;
-pub mod regrade;
 pub mod report;
 
 use std::path::Path;
@@ -25,28 +25,21 @@ pub fn dispatch(command: Command, config: &Config) -> Result<()> {
         Command::Prefetch { assignment } => prefetch::run(&assignment),
         Command::Fetch {
             assignment,
-            submissions,
+            roster,
+            out,
             as_of,
-        } => fetch::run(&assignment, &submissions, as_of, config),
-        Command::Grade {
+        } => fetch::run(&assignment, &roster, &out, as_of),
+        Command::Evaluate {
             assignment,
             submissions,
-            fetch,
-            as_of,
             local_sandbox,
-        } => grade::run(
-            &assignment,
-            &submissions,
-            fetch,
-            as_of,
-            local_sandbox,
-            config,
-        ),
+        } => evaluate::run(&assignment, &submissions, local_sandbox, config),
         Command::Ci { local_sandbox } => ci::run(local_sandbox),
-        Command::Regrade {
+        Command::Grade {
             assignment_id,
             assignment,
-        } => regrade::run(assignment_id, &assignment, config),
+            fetched,
+        } => grade::run(assignment_id, &assignment, fetched.as_deref(), config),
         Command::Report {
             assignment_id,
             format,
@@ -213,10 +206,13 @@ base = 0.0
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
-    /// `grade --local-sandbox` must never touch `ContainerSandbox` or
+    /// `evaluate --local-sandbox` must never touch `ContainerSandbox` or
     /// require Podman.
     #[test]
-    fn grade_with_local_sandbox_never_requires_podman() {
+    fn evaluate_with_local_sandbox_never_requires_podman() {
+        use crate::model::StageStatus;
+        use crate::submissions::{FetchRecord, fetch_record_path};
+
         let assignment_dir = tempfile::tempdir().unwrap();
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
@@ -238,6 +234,8 @@ base = 0.0
             "fn main() {}\n",
         );
 
+        // The flat layout `autograder fetch --out` produces: a checkout per
+        // student plus a `.meta/<student_id>.json` fetch record.
         let submissions_dir = tempfile::tempdir().unwrap();
         write(
             &submissions_dir.path().join("alice/hw3/Cargo.toml"),
@@ -247,20 +245,30 @@ base = 0.0
             &submissions_dir.path().join("alice/hw3/src/lib.rs"),
             "pub fn noop() {}\n",
         );
+        let record = FetchRecord {
+            status: StageStatus::Ok,
+            graded_commit: Some("abc123".into()),
+            message: None,
+            fetched_at: jiff::Timestamp::now(),
+            submission_date: None,
+        };
+        write(
+            &fetch_record_path(submissions_dir.path(), &"alice".into()),
+            &serde_json::to_string(&record).unwrap(),
+        );
 
         let config = Config {
             storage_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
         };
 
-        grade::run(
+        evaluate::run(
             assignment_dir.path(),
             submissions_dir.path(),
-            true,
-            None,
             true,
             &config,
         )
         .unwrap();
+        grade::run(AssignmentId::new("hw3"), assignment_dir.path(), None, &config).unwrap();
 
         let store = Store::new(&config.storage_dir);
         let grades = store.latest_grades(AssignmentId::new("hw3")).unwrap();

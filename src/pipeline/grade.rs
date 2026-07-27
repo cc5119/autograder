@@ -107,7 +107,6 @@ mod tests {
             tests,
             resource_usage: ResourceUsage::default(),
             diagnostics: Default::default(),
-            submission_date: None,
         }
     }
 

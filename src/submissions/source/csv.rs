@@ -5,16 +5,13 @@ use crate::error::{Error, Result};
 use crate::id::StudentId;
 use crate::submissions::{GitRepo, Submission};
 
-use super::SubmissionsSource;
-
 const KNOWN_COLUMNS: &[&str] = &["student_id", "repo_url", "ref"];
 
-/// A `SubmissionsSource<GitRepo>` backed by a CSV roster:
-/// `student_id,repo_url,ref,email,section,...`. Columns beyond
-/// `student_id`/`repo_url`/`ref` are carried into `Submission::metadata`.
-/// `repo_url`/`ref` become the `GitRepo` fetchable (see `crate::submissions`'s
-/// `Fetchable for GitRepo` impl: an unset `ref` is resolved at fetch time
-/// via push-time deadline selection, a pinned one is checked out exactly).
+/// A CSV roster: `student_id,repo_url,ref,email,section,...`. Columns
+/// beyond `student_id`/`repo_url`/`ref` are carried into
+/// `Submission::metadata`. `repo_url`/`ref` become the `GitRepo` to fetch
+/// (see `GitRepo::fetch`: an unset `ref` is resolved at fetch time via
+/// push-time deadline selection, a pinned one is checked out exactly).
 pub struct CsvRoster {
     path: PathBuf,
 }
@@ -23,15 +20,13 @@ impl CsvRoster {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
-}
 
-impl SubmissionsSource<GitRepo> for CsvRoster {
-    fn submissions(&self) -> Result<Vec<Submission<GitRepo>>> {
+    pub fn submissions(&self) -> Result<Vec<Submission>> {
         read_roster(&self.path)
     }
 }
 
-fn read_roster(path: &Path) -> Result<Vec<Submission<GitRepo>>> {
+fn read_roster(path: &Path) -> Result<Vec<Submission>> {
     let mut reader = csv::Reader::from_path(path).map_err(|source| Error::Csv {
         path: path.to_path_buf(),
         source: Box::new(source),
@@ -82,7 +77,7 @@ fn read_roster(path: &Path) -> Result<Vec<Submission<GitRepo>>> {
 
         submissions.push(Submission {
             student_id,
-            fetchable: GitRepo {
+            git: GitRepo {
                 url: repo_url,
                 r#ref,
             },
@@ -112,10 +107,10 @@ mod tests {
 
         assert_eq!(submissions[0].student_id, "alice");
         assert_eq!(
-            submissions[0].fetchable.url,
+            submissions[0].git.url,
             "https://github.com/alice/cse130-hw3.git"
         );
-        assert_eq!(submissions[0].fetchable.r#ref, None);
+        assert_eq!(submissions[0].git.r#ref, None);
         assert_eq!(
             submissions[0].metadata.get("email"),
             Some(&"alice@x.edu".to_string())
@@ -126,7 +121,7 @@ mod tests {
         );
 
         assert_eq!(submissions[1].student_id, "bob");
-        assert_eq!(submissions[1].fetchable.r#ref, Some("main".to_string()));
+        assert_eq!(submissions[1].git.r#ref, Some("main".to_string()));
     }
 
     fn tempfile_with_contents(contents: &str) -> tempfile::NamedTempFile {

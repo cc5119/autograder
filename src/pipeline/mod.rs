@@ -10,20 +10,48 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::Result;
+use crate::exec::fs;
 use crate::exec::overlay::{self, Context, Rule};
-use crate::id::RunId;
+use crate::id::{RunId, StudentId};
 use crate::model::{
     Diagnostics, EvaluationResult, JobContext, ResourceUsage, StageReport, StageReports,
     StageStatus,
 };
 use crate::pipeline::evaluator::Evaluator;
-use crate::pipeline::overrides::Overrides;
 use crate::spec::Spec;
 use crate::store::Store;
 use crate::submissions::read_fetch_record;
-use crate::submissions::source::SubmissionsSource;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// The `.meta` directory `fetch_batch` writes fetch records into, alongside
+/// (not inside) each student's own flat checkout dir.
+const META_DIR: &str = ".meta";
+
+/// Every student `fetch_batch` has a record for, sourced from
+/// `submissions_dir/.meta/<student_id>.json` rather than the checkout
+/// subdirectories themselves -- a failed fetch never creates
+/// `<student_id>/` at all, so the `.meta` record is the only reliable
+/// signal that a student was fetched (successfully or not). Sorted by name.
+fn list_student_ids(submissions_dir: &Path) -> Result<Vec<StudentId>> {
+    let meta_dir = submissions_dir.join(META_DIR);
+    if !meta_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for entry in fs::read_dir_entries(&meta_dir)? {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        ids.push(StudentId::new(stem));
+    }
+    ids.sort();
+    Ok(ids)
+}
 
 /// Everything copied from the student's own fetched checkout: the untrusted submission.
 fn checkout_rules() -> Vec<Rule> {
@@ -82,7 +110,6 @@ fn terminal_eval(
             compiler_errors: None,
             stderr_excerpt: message,
         },
-        submission_date: None,
     }
 }
 
@@ -102,7 +129,7 @@ pub(crate) fn generate_run_id() -> RunId {
 #[allow(clippy::too_many_arguments)]
 fn evaluate_submission(
     ctx: &JobContext,
-    job_root: &Path,
+    submissions_dir: &Path,
     checkout_dir: &Path,
     build_dir: &Path,
     package_dir: &Path,
@@ -110,13 +137,12 @@ fn evaluate_submission(
     spec: &Spec,
     evaluator: &dyn Evaluator,
 ) -> Result<EvaluationResult> {
-    let Some(fetch_record) = read_fetch_record(job_root)? else {
+    let Some(fetch_record) = read_fetch_record(submissions_dir, &ctx.student_id)? else {
         return Ok(terminal_eval(
             ctx,
             StageStatus::FetchFailed,
             Some(format!(
-                "no prior fetch found for {} -- run `autograder fetch` first, or pass \
-                 --fetch to grade",
+                "no prior fetch found for {} -- run `autograder fetch` first",
                 ctx.student_id
             )),
         ));
@@ -198,52 +224,50 @@ fn evaluate_submission(
         );
     }
 
-    outcome.map(|mut eval| {
-        eval.submission_date = fetch_record.submission_date.clone();
-        eval
-    })
+    // `fetch_record` is only used to gate on fetch status above; nothing
+    // about it (e.g. `submission_date`) is copied into the persisted eval --
+    // scoring/lateness is entirely `autograder grade`'s concern, which reads
+    // fetch records fresh from disk itself.
+    outcome
 }
 
-/// Stage orchestration for the authoritative-tier `grade` pipeline:
-/// Prepare -> Evaluate -> persist -> Grade -> apply overrides, one student
-/// at a time. Fetch is a separate stage (`crate::submissions::fetch_batch`, run
-/// via `autograder fetch` or `grade --fetch`); this function only *reads*
-/// what a prior fetch left behind (`job_root/checkout/` and its
-/// `FetchRecord`) -- a student with no record gets the same `FetchFailed`
-/// result as one whose fetch itself failed, and the batch never aborts for
-/// one student either way.
-#[allow(clippy::too_many_arguments)]
-pub fn grade_batch<F>(
-    source: &dyn SubmissionsSource<F>,
+/// Stage orchestration for `autograder evaluate`: Prepare -> Evaluate ->
+/// persist, one student at a time. Fetch is a separate stage
+/// (`crate::submissions::fetch_batch`, run via `autograder fetch`); this
+/// function only *reads* what a prior fetch left behind
+/// (`submissions_dir/<student_id>/` and its `FetchRecord`) -- a student with
+/// no record gets the same `FetchFailed` result as one whose fetch itself
+/// failed, and the batch never aborts for one student either way. No
+/// scoring happens here -- run `autograder grade` afterwards for that.
+pub fn evaluate_batch(
+    submissions_dir: &Path,
     evaluator: &dyn Evaluator,
     package_dir: &Path,
     spec: &Spec,
     work_dir: &Path,
     store: &Store,
-    overrides: &Overrides,
-) -> Result<Vec<crate::model::Grade>> {
-    let submissions = source.submissions()?;
-    let mut grades = Vec::new();
+) -> Result<Vec<EvaluationResult>> {
+    let student_ids = list_student_ids(submissions_dir)?;
+    let mut evals = Vec::new();
 
-    for submission in submissions {
+    for student_id in student_ids {
         let run_id = generate_run_id();
-        let job_root = work_dir.join(submission.student_id.as_str());
-        let checkout_dir = job_root.join("checkout");
+        let checkout_dir = submissions_dir.join(student_id.as_str());
         // `workspace` is named after `[assignment].id`, not e.g. "student":
         // the harness's checked-in Cargo.toml depends on that exact sibling
         // name (see `evaluator::library`'s module doc comment).
-        let build_dir = job_root.join("build");
+        let build_dir = work_dir.join(student_id.as_str()).join("build");
         let workspace = build_dir.join(spec.assignment.id.as_str());
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            student_id: submission.student_id,
+            student_id,
             run_id,
             workspace: workspace.clone(),
         };
 
         let eval = evaluate_submission(
             &ctx,
-            &job_root,
+            submissions_dir,
             &checkout_dir,
             &build_dir,
             package_dir,
@@ -253,19 +277,10 @@ pub fn grade_batch<F>(
         )?;
 
         store.save_eval(&eval)?;
-        let grade = crate::pipeline::grade::grade(&eval, &spec.scoring);
-        let grade = overrides::apply(
-            grade,
-            overrides,
-            &spec.assignment.deadline,
-            spec.scoring.late_penalty.as_ref(),
-            eval.submission_date.as_ref(),
-        );
-        store.save_grade(ctx.assignment_id, ctx.run_id, &grade)?;
-        grades.push(grade);
+        evals.push(eval);
     }
 
-    Ok(grades)
+    Ok(evals)
 }
 
 // This module's private helpers have no dedicated tests of their own --

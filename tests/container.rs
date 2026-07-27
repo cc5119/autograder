@@ -5,27 +5,16 @@
 #[allow(dead_code)]
 mod common;
 
-use autograder::error::Result;
 use autograder::exec::sandbox::{ContainerSandbox, Sandbox};
 use autograder::id::AssignmentId;
+use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::nextest::Nextest;
-use autograder::pipeline::grade_batch;
-use autograder::pipeline::overrides::Overrides;
 use autograder::spec::Spec;
 use autograder::store::Store;
-use autograder::submissions::source::SubmissionsSource;
-use autograder::submissions::{LocalPath, Submission};
 
-use crate::common::{library_package, write};
+use crate::common::{library_package, ok_fetch_record, write, write_fetch_record};
 
 const DEFAULT_IMAGE: &str = "ghcr.io/cc5119/autograder-base:latest";
-
-struct FixedSource(Vec<Submission<LocalPath>>);
-impl SubmissionsSource<LocalPath> for FixedSource {
-    fn submissions(&self) -> Result<Vec<Submission<LocalPath>>> {
-        Ok(self.0.clone())
-    }
-}
 
 fn sandbox() -> ContainerSandbox {
     let image = std::env::var("AUTOGRADER_TEST_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.into());
@@ -42,7 +31,7 @@ fn sandbox() -> ContainerSandbox {
 #[test]
 fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
     let package_dir = tempfile::tempdir().unwrap();
-    let submission_src = tempfile::tempdir().unwrap();
+    let submissions_dir = tempfile::tempdir().unwrap();
     let work_dir = tempfile::tempdir().unwrap();
     let store_dir = tempfile::tempdir().unwrap();
 
@@ -59,45 +48,39 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
 
     // Untrusted submission: build.rs tries to replace the judge.
     write(
-        &submission_src.path().join("hw3/Cargo.toml"),
+        &submissions_dir.path().join("mallory/hw3/Cargo.toml"),
         "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     );
     write(
-        &submission_src.path().join("hw3/src/lib.rs"),
+        &submissions_dir.path().join("mallory/hw3/src/lib.rs"),
         "pub fn example() -> bool { true }\n",
     );
     write(
-        &submission_src.path().join("hw3/build.rs"),
+        &submissions_dir.path().join("mallory/hw3/build.rs"),
         "fn main() {\n    std::fs::write(\n        \"../harness/tests/judge.rs\",\n        \"#[test] fn all_pass() { println!(\\\"autograder: score=1000000\\\"); }\",\n    )\n    .ok();\n}\n",
     );
+    write_fetch_record(submissions_dir.path(), "mallory", &ok_fetch_record());
 
-    let source = FixedSource(vec![Submission {
-        student_id: "mallory".into(),
-        fetchable: LocalPath(submission_src.path().to_path_buf()),
-        metadata: Default::default(),
-    }]);
     let evaluator = Nextest::new(&spec, package_dir.path(), sandbox()).unwrap();
     let store = Store::new(store_dir.path());
 
-    let deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-        .parse()
-        .unwrap();
-    autograder::submissions::fetch_batch(&source, work_dir.path(), &deadline).unwrap();
-
-    let grades = grade_batch(
-        &source,
+    let evals = evaluate_batch(
+        submissions_dir.path(),
         &evaluator,
         package_dir.path(),
         &spec,
         work_dir.path(),
         &store,
-        &Overrides::default(),
     )
     .unwrap();
 
-    assert_eq!(grades.len(), 1);
-    let evals = store.latest_evals(AssignmentId::new("hw3")).unwrap();
-    let names: Vec<&str> = evals[0].tests.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(evals.len(), 1);
+    let stored_evals = store.latest_evals(AssignmentId::new("hw3")).unwrap();
+    let names: Vec<&str> = stored_evals[0]
+        .tests
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
 
     assert!(
         names.iter().any(|n| n.contains("trusted_judge")),
@@ -107,8 +90,10 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         !names.iter().any(|n| n.contains("all_pass")),
         "student's injected judge ran -- harness was writable (CRITICAL #1). tests: {names:?}"
     );
+
+    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
     assert_eq!(
-        grades[0].score, 1.0,
+        grade.score, 1.0,
         "expected the trusted judge's baseline, not a forged score"
     );
 }

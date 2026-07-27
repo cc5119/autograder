@@ -1,9 +1,9 @@
 //! The Fetch stage: pulls each student's submission onto disk at
-//! `work_dir/<student_id>/checkout/`, independently of grading --
-//! `fetch_batch` is what `autograder fetch` runs directly, and what
-//! `autograder grade --fetch` runs before Prepare/Evaluate/Grade. Grading
-//! without `--fetch` never touches this module; it just reads the
-//! [`FetchRecord`] a prior `fetch_batch` run left behind.
+//! `out_dir/<student_id>/` (flat) and a `FetchRecord` at
+//! `out_dir/.meta/<student_id>.json`, independently of grading --
+//! `fetch_batch` is what `autograder fetch` runs. `autograder evaluate` never
+//! touches this module directly; it just reads the [`FetchRecord`] a prior
+//! `fetch_batch` run left behind via [`read_fetch_record`].
 //!
 //! `GitRepo::fetch` shells out to `git` on `PATH` -- a full, fresh clone
 //! into `dest` on every call, no shared bare-clone cache (a cache keyed by
@@ -25,29 +25,22 @@ use crate::exec::fs;
 use crate::id::StudentId;
 use crate::model::StageStatus;
 use crate::store::{read_json, write_json};
-use crate::submissions::source::SubmissionsSource;
+use crate::submissions::source::CsvRoster;
 
 const GIT_BIN: &str = "git";
 
-/// Generic over the fetchable type `F`, so it's a compile error to hand a
-/// `CsvRoster`'s (`GitRepo`-fetching) submissions to code that only knows
-/// how to fetch a `LocalPath`.
+/// One roster row: a student and the git remote to fetch their submission
+/// from.
 #[derive(Debug, Clone)]
-pub struct Submission<F> {
+pub struct Submission {
     pub student_id: StudentId,
-    pub fetchable: F,
+    pub git: GitRepo,
     pub metadata: BTreeMap<String, String>,
 }
 
-/// A `Fetchable` for a path on disk to copy wholesale into the job
-/// workspace. Produced by `DirectorySource`.
-#[derive(Debug, Clone)]
-pub struct LocalPath(pub PathBuf);
-
-/// A `Fetchable` for a git remote: a clone URL plus an optional pinned
-/// ref/branch override -- when unset, `Fetchable`'s impl for `GitRepo`
-/// below resolves it via push-time deadline selection instead. Produced by
-/// `CsvRoster`.
+/// A git remote to fetch a submission from: a clone URL plus an optional
+/// pinned ref/branch override -- when unset, `GitRepo::fetch` resolves it
+/// via push-time deadline selection instead. Produced by `CsvRoster`.
 #[derive(Debug, Clone)]
 pub struct GitRepo {
     pub url: String,
@@ -137,43 +130,10 @@ impl FetchOutcome {
     }
 }
 
-pub trait Fetchable {
-    fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome>;
-}
-
-impl Fetchable for LocalPath {
-    fn fetch(&self, dest: &Path, _deadline: &Zoned) -> Result<FetchOutcome> {
-        let src = &self.0;
-
-        if !src.exists() {
-            return Ok(FetchOutcome::failed(format!(
-                "source directory {} does not exist",
-                src.display()
-            )));
-        }
-        if !src.is_dir() {
-            return Ok(FetchOutcome::failed(format!(
-                "source {} is not a directory",
-                src.display()
-            )));
-        }
-        if fs::is_empty_dir(src)? {
-            return Ok(FetchOutcome::failed(format!(
-                "source directory {} is empty",
-                src.display()
-            )));
-        }
-
-        fs::copy_dir_all(src, dest)?;
-        let graded_commit = hash_tree(dest)?;
-        Ok(FetchOutcome::ok(dest.to_path_buf(), graded_commit))
-    }
-}
-
-impl Fetchable for GitRepo {
+impl GitRepo {
     /// Every failure degrades to `FetchOutcome::failed` rather than a hard `Err`,
     /// so one bad repo doesn't abort the batch.
-    fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
+    pub fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
         if dest.exists() {
             fs::remove_dir_all(dest)?;
         }
@@ -314,51 +274,17 @@ fn commit_date(dest: &Path, sha: &str) -> std::result::Result<Timestamp, String>
         .map_err(|e| format!("failed to parse commit date {raw:?} for {sha}: {e}"))
 }
 
-impl<F: Fetchable> Submission<F> {
+impl Submission {
     pub fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
-        self.fetchable.fetch(dest, deadline)
-    }
-}
-
-/// Treats each subdirectory of `root` as one student's submission
-/// (`student_id` = directory name).
-pub struct DirectorySource {
-    root: PathBuf,
-}
-
-impl DirectorySource {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-}
-
-impl SubmissionsSource<LocalPath> for DirectorySource {
-    fn submissions(&self) -> Result<Vec<Submission<LocalPath>>> {
-        let mut submissions = Vec::new();
-        for entry in fs::read_dir_entries(&self.root)? {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let student_id = StudentId::new(
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default(),
-            );
-            submissions.push(Submission {
-                student_id,
-                fetchable: LocalPath(path),
-                metadata: Default::default(),
-            });
-        }
-        submissions.sort_by_key(|a| a.student_id);
-        Ok(submissions)
+        self.git.fetch(dest, deadline)
     }
 }
 
 /// Durable record of the last fetch attempt for one student, written by
-/// `fetch_batch` alongside `job_root/checkout/` and read back by
-/// `crate::pipeline::grade_batch`.
+/// `fetch_batch` to `<out>/.meta/<student_id>.json` (kept out of
+/// `<out>/<student_id>/`, the submission's own flat checkout dir, so nothing
+/// downstream ever needs to filter it out) and read back by
+/// `crate::pipeline::evaluate_batch`/`crate::commands::grade`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRecord {
     pub status: StageStatus,
@@ -368,36 +294,36 @@ pub struct FetchRecord {
     pub submission_date: Option<SubmissionDate>,
 }
 
-fn fetch_record_path(job_root: &Path) -> PathBuf {
-    job_root.join("fetch.json")
+pub(crate) fn fetch_record_path(out_dir: &Path, student_id: &StudentId) -> PathBuf {
+    out_dir.join(".meta").join(format!("{student_id}.json"))
 }
 
-fn write_fetch_record(job_root: &Path, record: &FetchRecord) -> Result<()> {
-    write_json(&fetch_record_path(job_root), record)
+fn write_fetch_record(out_dir: &Path, student_id: &StudentId, record: &FetchRecord) -> Result<()> {
+    write_json(&fetch_record_path(out_dir, student_id), record)
 }
 
 /// `None` if `fetch_batch` has never run for this student.
-pub fn read_fetch_record(job_root: &Path) -> Result<Option<FetchRecord>> {
-    let path = fetch_record_path(job_root);
+pub fn read_fetch_record(out_dir: &Path, student_id: &StudentId) -> Result<Option<FetchRecord>> {
+    let path = fetch_record_path(out_dir, student_id);
     if !path.is_file() {
         return Ok(None);
     }
     read_json(&path)
 }
 
-/// Runs the Fetch stage alone: lands each submission at
-/// `work_dir/<student_id>/checkout/` and records the outcome. Safe to run
-/// again -- always overwrites both.
-pub fn fetch_batch<F: Fetchable>(
-    source: &dyn SubmissionsSource<F>,
-    work_dir: &Path,
+/// Runs the Fetch stage alone: lands each submission at `out_dir/<student_id>/`
+/// (flat -- no `checkout/` nesting) and records the outcome at
+/// `out_dir/.meta/<student_id>.json`. Safe to run again -- always overwrites
+/// both.
+pub fn fetch_batch(
+    source: &CsvRoster,
+    out_dir: &Path,
     deadline: &Zoned,
 ) -> Result<Vec<(StudentId, FetchRecord)>> {
     let submissions = source.submissions()?;
     let mut records = Vec::new();
     for submission in submissions {
-        let job_root = work_dir.join(submission.student_id.as_str());
-        let checkout_dir = job_root.join("checkout");
+        let checkout_dir = out_dir.join(submission.student_id.as_str());
         let outcome = submission.fetch(&checkout_dir, deadline)?;
         let record = FetchRecord {
             status: outcome.status,
@@ -406,28 +332,10 @@ pub fn fetch_batch<F: Fetchable>(
             fetched_at: Timestamp::now(),
             submission_date: outcome.submission_date,
         };
-        write_fetch_record(&job_root, &record)?;
+        write_fetch_record(out_dir, &submission.student_id, &record)?;
         records.push((submission.student_id, record));
     }
     Ok(records)
-}
-
-/// A synthetic content hash of a directory tree, standing in for a real
-/// commit SHA for `LocalPath` submissions (which have no commit at all).
-fn hash_tree(dir: &Path) -> Result<String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut paths = fs::walk_regular_files(dir)?;
-    paths.sort();
-
-    let mut hasher = DefaultHasher::new();
-    for rel_path in &paths {
-        rel_path.hash(&mut hasher);
-        let contents = fs::read(&dir.join(rel_path))?;
-        contents.hash(&mut hasher);
-    }
-    Ok(format!("{:016x}", hasher.finish()))
 }
 
 /// A full clone, not shallow: [`last_commit_before_argv`] needs the real
@@ -513,11 +421,10 @@ fn run_git(git_bin: &str, argv: &[String]) -> Result<String> {
 }
 
 /// Everything about the Fetch stage's public workflow
-/// (`LocalPath::fetch`/`DirectorySource`/`fetch_batch`/`read_fetch_record`)
-/// lives in `tests/fetch.rs` as an integration test instead (see that
-/// file's doc comment). These stay here because the `git`-argv builders
-/// and `run_git` are private -- there's no way to reach them from outside
-/// the crate.
+/// (`GitRepo::fetch`/`fetch_batch`/`read_fetch_record`) lives in
+/// `tests/fetch.rs` as an integration test instead (see that file's doc
+/// comment). These stay here because the `git`-argv builders and `run_git`
+/// are private -- there's no way to reach them from outside the crate.
 #[cfg(test)]
 mod tests {
     use super::*;
