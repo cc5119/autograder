@@ -22,6 +22,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::overlay::{self, Context, MatchedFile, Rule};
@@ -105,9 +107,35 @@ pub fn publish(package_dir: &Path, out_dir: &Path) -> Result<PublishOutcome> {
     let workflow_yaml = autograde_workflow_yaml(&spec.sandbox.image)?;
     fs::write(&workflow_path, workflow_yaml)?;
 
+    format_published_tree(out_dir)?;
+
     Ok(PublishOutcome {
         out_dir: out_dir.to_path_buf(),
     })
+}
+
+/// `strip_stub`'s text splicing leaves whitespace/indentation artifacts
+/// behind (e.g. a spliced-in `cfg_select!` arm keeping its original
+/// indentation at a different nesting depth) -- `cargo fmt` over the whole
+/// published tree in one pass cleans that up, rather than formatting each
+/// stripped file's string individually.
+fn format_published_tree(out_dir: &Path) -> Result<()> {
+    let output = std::process::Command::new("cargo")
+        .arg("fmt")
+        .current_dir(out_dir)
+        .output()
+        .map_err(|source| Error::Io {
+            path: out_dir.to_path_buf(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(Error::Other(format!(
+            "cargo fmt failed on the published tree at {}:\n{}",
+            out_dir.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(())
 }
 
 fn validate_manifest(path: &str, file: MatchedFile, ctx: &Context) -> Result<MatchedFile> {
@@ -151,7 +179,10 @@ fn strip_stub(
         .into_iter()
         .map(|file| {
             if file.rel_path.extension().is_some_and(|ext| ext == "rs") {
-                let stripped = crate::package::stub::strip_to_stub(&file.content)?;
+                let stripped =
+                    crate::package::stub::strip_to_stub(&file.content).map_err(|e| {
+                        Error::Other(format!("{e} in {}", file.rel_path.display()))
+                    })?;
                 Ok(MatchedFile {
                     content: stripped,
                     ..file
@@ -173,14 +204,32 @@ fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
     )
 }
 
-/// `unused_variables`/`dead_code` to allow stubbed body to contain `todo!()`
-const ALLOWED_WARNING_LINTS: [&str; 2] = ["unused_variables", "dead_code"];
+const PUBLISH_CONFIG_FILE: &str = "publish.toml";
 
-/// E.g. catches a `use` that's only reachable from a `cfg_select!` arm
-/// that doesn't survive into the student build. Requires the crate to
-/// declare `[features] student = []`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct PublishConfig {
+    #[serde(default)]
+    allowed_warnings: Vec<String>,
+    #[serde(default)]
+    allowed_errors: Vec<String>,
+}
+
+fn load_publish_config(package_dir: &Path) -> Result<PublishConfig> {
+    let path = package_dir.join(PUBLISH_CONFIG_FILE);
+    if !path.is_file() {
+        return Ok(PublishConfig::default());
+    }
+    let content = fs::read_to_string(&path)?;
+    toml::from_str(&content).map_err(|source| Error::Toml {
+        path,
+        source: Box::new(source),
+    })
+}
+
 fn check_student_view_is_clean(package_dir: &Path, id: &str) -> Result<()> {
     let solution_dir = package_dir.join(id);
+    let config = load_publish_config(package_dir)?;
     let output = std::process::Command::new("cargo")
         .args(["check", "--features", "student", "--message-format=json"])
         .current_dir(&solution_dir)
@@ -190,7 +239,29 @@ fn check_student_view_is_clean(package_dir: &Path, id: &str) -> Result<()> {
             source,
         })?;
 
-    if !output.status.success() {
+    let problems: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|msg| msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message"))
+        .filter_map(|msg| {
+            let message = msg.get("message")?;
+            let allowed = match message.get("level")?.as_str()? {
+                "warning" => &config.allowed_warnings,
+                "error" => &config.allowed_errors,
+                _ => return None,
+            };
+            let code = message
+                .get("code")
+                .and_then(|c| c.get("code"))
+                .and_then(|c| c.as_str());
+            if code.is_some_and(|code| allowed.iter().any(|a| a == code)) {
+                return None;
+            }
+            message.get("rendered")?.as_str().map(str::to_string)
+        })
+        .collect();
+
+    if !output.status.success() && problems.is_empty() {
         return Err(Error::Other(format!(
             "cargo check --features student failed at {}:\n{}",
             solution_dir.display(),
@@ -198,34 +269,14 @@ fn check_student_view_is_clean(package_dir: &Path, id: &str) -> Result<()> {
         )));
     }
 
-    let warnings: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|msg| msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message"))
-        .filter_map(|msg| {
-            let message = msg.get("message")?;
-            if message.get("level")?.as_str()? != "warning" {
-                return None;
-            }
-            let lint = message
-                .get("code")
-                .and_then(|c| c.get("code"))
-                .and_then(|c| c.as_str());
-            if lint.is_some_and(|lint| ALLOWED_WARNING_LINTS.contains(&lint)) {
-                return None;
-            }
-            message.get("rendered")?.as_str().map(str::to_string)
-        })
-        .collect();
-
-    if !warnings.is_empty() {
+    if !problems.is_empty() {
         return Err(Error::Other(format!(
-            "refusing to publish: `cargo check --features student` reported {} warning(s) in {} \
+            "refusing to publish: `cargo check --features student` reported {} problem(s) in {} \
              -- fix them before publishing, since they'd ship to students exactly as they \
              are:\n\n{}",
-            warnings.len(),
+            problems.len(),
             solution_dir.display(),
-            warnings.join("\n")
+            problems.join("\n")
         )));
     }
 

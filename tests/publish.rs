@@ -225,6 +225,10 @@ fn publish_derives_a_building_stub_from_the_id_named_solution_dir() {
     let package_dir = tempfile::tempdir().unwrap();
     library_package(package_dir.path(), "hw3");
     write(&package_dir.path().join("hw3/src/lib.rs"), SOLUTION_SRC);
+    write(
+        &package_dir.path().join("publish.toml"),
+        "allowed-warnings = [\"unused_variables\"]\n",
+    );
 
     let out_dir = tempfile::tempdir().unwrap();
     publish(package_dir.path(), out_dir.path()).unwrap();

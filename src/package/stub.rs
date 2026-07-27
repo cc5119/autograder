@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use ra_ap_syntax::{ast, ast::AstNode, Edition, NodeOrToken, SourceFile, SyntaxNode};
+use ra_ap_syntax::{ast, ast::AstNode, Edition, NodeOrToken, SourceFile, SyntaxNode, TextRange};
 
 use crate::error::{Error, Result};
 
@@ -37,7 +37,7 @@ pub fn strip_to_stub(source: &str) -> Result<String> {
                 parse.errors()
             )));
         }
-        let Some(edit) = find_edit(parse.tree().syntax(), &enabled)? else {
+        let Some(edit) = find_edit(parse.tree().syntax(), &enabled, &source)? else {
             return Ok(source);
         };
         let (start, end, replacement) = edit;
@@ -85,22 +85,71 @@ fn cfg_select_arms(tt: &ast::TokenTree) -> Vec<(String, SyntaxNode)> {
                 | ra_ap_syntax::SyntaxKind::WHITESPACE => {}
                 _ => pending.push(tok.text().to_string()),
             },
-            NodeOrToken::Node(body) => {
-                // Drop the `=>` (two separate tokens) preceding this body.
-                pending.pop(); // '>'
-                pending.pop(); // '='
-                arms.push((pending.join(" "), body));
-                pending.clear();
+            NodeOrToken::Node(node) => {
+                // A predicate like `not(feature = "student")` nests its own
+                // `(..)` token tree here as a child node too, indistinguishable
+                // from an arm's `{ .. }` body except by delimiter -- only a
+                // `{`-delimited node is a body; anything else is part of the
+                // predicate and folds back into `pending`'s text.
+                let is_body = ast::TokenTree::cast(node.clone())
+                    .and_then(|tt| tt.left_delimiter_token())
+                    .is_some_and(|tok| tok.kind() == ra_ap_syntax::SyntaxKind::L_CURLY);
+                if is_body {
+                    // Drop the `=>` (two separate tokens) preceding this body.
+                    pending.pop(); // '>'
+                    pending.pop(); // '='
+                    arms.push((pending.join(" "), node));
+                    pending.clear();
+                } else {
+                    pending.push(node.text().to_string());
+                }
             }
         }
     }
     arms
 }
 
+/// Text strictly between a `{ .. }`-delimited node's own braces, trimmed --
+/// `cfg_select!` always sits as the sole tail expression of its enclosing
+/// block in this codebase's usage, so splicing an arm's *whole* node text
+/// (braces included) in its place would nest a redundant, empty-scope block
+/// inside the block that already supplies one. Falls back to the full node
+/// text if it isn't `{`-delimited (defensive; `cfg_select_arms` only ever
+/// returns `{`-delimited bodies).
+fn inner_text<'a>(node: &SyntaxNode, source: &'a str) -> &'a str {
+    let range = ast::TokenTree::cast(node.clone())
+        .and_then(|tt| Some((tt.left_delimiter_token()?, tt.right_delimiter_token()?)))
+        .map(|(l, r)| TextRange::new(l.text_range().end(), r.text_range().start()))
+        .unwrap_or_else(|| node.text_range());
+    source[usize::from(range.start())..usize::from(range.end())].trim()
+}
+
+/// Appends a 1-indexed `line:column` to `err`'s message, computed from
+/// `offset` into `source` -- `cfg_expr`'s own errors (e.g. "empty
+/// expression") never say where in the file they came from.
+fn locate(err: Error, source: &str, offset: usize) -> Error {
+    let (line, col) = line_col(source, offset);
+    match err {
+        Error::Other(msg) => Error::Other(format!("{msg} (at line {line}, column {col})")),
+        other => other,
+    }
+}
+
+fn line_col(source: &str, offset: usize) -> (usize, usize) {
+    let prefix = &source[..offset.min(source.len())];
+    let line = prefix.matches('\n').count() + 1;
+    let col = offset - prefix.rfind('\n').map_or(0, |i| i + 1) + 1;
+    (line, col)
+}
+
 /// Finds the first (outermost, in source order) directive this tool
 /// understands and returns the `(start, end, replacement)` text edit that
 /// resolves it, or `None` once the tree has none left.
-fn find_edit(root: &SyntaxNode, enabled: &HashSet<&str>) -> Result<Option<(usize, usize, String)>> {
+fn find_edit(
+    root: &SyntaxNode,
+    enabled: &HashSet<&str>,
+    source: &str,
+) -> Result<Option<(usize, usize, String)>> {
     for event in root.preorder() {
         let ra_ap_syntax::WalkEvent::Enter(node) = event else {
             continue;
@@ -108,7 +157,9 @@ fn find_edit(root: &SyntaxNode, enabled: &HashSet<&str>) -> Result<Option<(usize
 
         if let Some(attr) = ast::Attr::cast(node.clone()) {
             if let Some(pred) = cfg_predicate_text(&attr) {
-                let Some(matches) = eval(&pred, enabled)? else {
+                let offset: usize = attr.syntax().text_range().start().into();
+                let Some(matches) = eval(&pred, enabled).map_err(|e| locate(e, source, offset))?
+                else {
                     continue; // not one of our directives -- leave it alone
                 };
                 let owner = attr
@@ -133,22 +184,32 @@ fn find_edit(root: &SyntaxNode, enabled: &HashSet<&str>) -> Result<Option<(usize
                     .ok_or_else(|| Error::Other("cfg_select! call has no token tree".to_string()))?;
                 let mut winner = None;
                 for (pred, body) in cfg_select_arms(&tt) {
-                    if eval(&pred, enabled)?.unwrap_or(false) {
+                    let offset: usize = body.text_range().start().into();
+                    if eval(&pred, enabled)
+                        .map_err(|e| locate(e, source, offset))?
+                        .unwrap_or(false)
+                    {
                         winner = Some(body);
                         break;
                     }
                 }
+                let call_offset: usize = call.syntax().text_range().start().into();
                 let winner = winner.ok_or_else(|| {
-                    Error::Other(
-                        "cfg_select! has no arm matching the student build and no `_` fallback"
-                            .to_string(),
+                    locate(
+                        Error::Other(
+                            "cfg_select! has no arm matching the student build and no `_` \
+                             fallback"
+                                .to_string(),
+                        ),
+                        source,
+                        call_offset,
                     )
                 })?;
                 let range = call.syntax().text_range();
                 return Ok(Some((
                     range.start().into(),
                     range.end().into(),
-                    winner.text().to_string(),
+                    inner_text(&winner, source).to_string(),
                 )));
             }
         }
@@ -353,5 +414,26 @@ mod tests {
 
         let err = strip_to_stub(source).unwrap_err();
         assert!(err.to_string().contains("no arm matching"));
+    }
+
+    #[test]
+    fn an_invalid_cfg_predicate_error_names_its_line_and_column() {
+        // A `cfg_select!` arm missing its predicate (e.g. a typo'd `_ =>`)
+        // leaves `cfg_select_arms` with no tokens before the body -- an
+        // empty predicate `cfg_expr` rejects outright.
+        let source = r#"
+            pub fn compute() -> i32 {
+                cfg_select! {
+                    {
+                        1
+                    }
+                }
+            }
+        "#;
+
+        let err = strip_to_stub(source).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("empty expression"));
+        assert!(message.contains("line 4"));
     }
 }
