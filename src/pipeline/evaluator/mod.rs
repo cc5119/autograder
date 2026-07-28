@@ -1,14 +1,14 @@
 pub mod nextest;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::Result;
-use crate::exec::sandbox::{Mount, MountMode, SandboxLimits, SandboxSpec};
+use crate::exec::sandbox::{Mount, MountMode, SandboxLimits};
 use crate::model::{Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult};
 use crate::spec::BuildLimits;
 
 /// Applied to the two build stages only -- the run stage gets no
-/// `SandboxLimits` at all (see `isolate_run_config`), so there's no second
+/// `SandboxLimits` at all (see `Profile::IsolateRun`), so there's no second
 /// tier to map here.
 pub(crate) fn sandbox_limits(limits: &BuildLimits) -> SandboxLimits {
     SandboxLimits {
@@ -18,29 +18,6 @@ pub(crate) fn sandbox_limits(limits: &BuildLimits) -> SandboxLimits {
         pids: limits.pids,
         max_output_bytes: limits.max_output_bytes.0,
     }
-}
-
-/// Enables nested `isolate` inside the run-stage container. Run stage only
-/// -- the build stages never spawn student code.
-///
-/// Flag values validated in `spike/isolate-podman/`: dropping `SYS_ADMIN`
-/// breaks isolate's namespace `clone()`, dropping the `/sys/fs/cgroup`
-/// unmask leaves the cgroup unwritable.
-///
-/// Deliberately doesn't touch `program`/`args` to prepend
-/// `isolate-setup.sh` -- that only exists inside the real container image.
-/// `ContainerSandbox::build_argv` prepends it instead, keyed off
-/// `cgroupns_private`; `LocalSandbox` ignores these fields and runs
-/// `program`/`args` as given, which is what local/CI dev needs.
-pub(crate) fn isolate_run_config(run_spec: &mut SandboxSpec) {
-    run_spec.cgroupns_private = true;
-    run_spec.cap_add = vec!["SYS_ADMIN".to_string()];
-    run_spec.unmask = vec!["/sys/fs/cgroup".to_string()];
-    run_spec.tmpfs = vec![
-        PathBuf::from("/usr/local/etc"),
-        PathBuf::from("/var/local/lib/isolate"),
-        PathBuf::from("/run/isolate"),
-    ];
 }
 
 /// Writes `dir/.config/nextest.toml` with `store-success-output = true`, so

@@ -7,7 +7,7 @@ use subprocess::Exec;
 use crate::error::{Error, Result};
 
 use super::exec::exec_with_timeout;
-use super::{MountMode, Sandbox, SandboxOutcome, SandboxSpec};
+use super::{MountMode, Profile, Sandbox, SandboxOutcome, SandboxSpec};
 
 /// How long to give `podman kill`/`podman rm -f` to finish once we've
 /// decided a run timed out. These are trusted, fixed-argument commands we
@@ -26,8 +26,7 @@ const OOM_LIKELY_EXIT_CODE: i32 = 137;
 const DEFAULT_SECCOMP_PROFILE: &str = "/etc/autograder/seccomp.json";
 
 /// Preps cgroups/config before `exec`ing the real command; baked into the
-/// image (`container/isolate-setup.sh`). Prepended whenever
-/// `cgroupns_private` signals an isolate-enabled run.
+/// image (`container/isolate-setup.sh`). Prepended for `Profile::IsolateRun`.
 const ISOLATE_SETUP_WRAPPER: &str = "isolate-setup.sh";
 
 /// Rootless-podman shell-out: builds a `podman run` argv from a
@@ -56,16 +55,11 @@ impl ContainerSandbox {
     }
 
     /// Builds the `podman run` argv, excluding the `podman` binary itself.
-    pub fn build_argv(&self, spec: &SandboxSpec, cidfile: &Path) -> Vec<String> {
+    fn build_argv(&self, spec: &SandboxSpec, cidfile: &Path) -> Vec<String> {
         let mut argv = vec!["run".to_string(), "--rm".to_string()];
 
         argv.push(format!("--cidfile={}", cidfile.display()));
-
-        argv.push(if spec.network {
-            "--network=bridge".to_string()
-        } else {
-            "--network=none".to_string()
-        });
+        argv.push("--network=none".to_string());
 
         if let Some(limits) = &spec.limits {
             let mem = limits.memory_bytes;
@@ -74,30 +68,37 @@ impl ContainerSandbox {
             argv.push(format!("--cpus={}", limits.cpus));
             argv.push(format!("--pids-limit={}", limits.pids));
         }
-        argv.push("--read-only".to_string());
-        argv.push("--cap-drop=ALL".to_string());
-        argv.push("--security-opt".to_string());
-        argv.push("no-new-privileges".to_string());
+
+        // Each profile's whole flag set lives in its own arm -- see
+        // `Profile`'s doc comment for why `IsolateRun` looks the way it
+        // does.
+        match spec.profile {
+            Profile::Build => {
+                argv.push("--read-only".to_string());
+                argv.push("--cap-drop=ALL".to_string());
+                argv.push("--security-opt".to_string());
+                argv.push("no-new-privileges".to_string());
+                argv.push("--user".to_string());
+                argv.push(self.user.clone());
+            }
+            Profile::IsolateRun => {
+                argv.push("--read-only".to_string());
+                argv.push("--cgroupns=private".to_string());
+                argv.push("--cap-add=SYS_ADMIN".to_string());
+                argv.push("--security-opt".to_string());
+                argv.push("unmask=/sys/fs/cgroup".to_string());
+                argv.push("--tmpfs".to_string());
+                argv.push("/usr/local/etc".to_string());
+                argv.push("--tmpfs".to_string());
+                argv.push("/var/local/lib/isolate".to_string());
+                argv.push("--tmpfs".to_string());
+                argv.push("/run/isolate".to_string());
+            }
+        }
+
         if let Some(profile) = &self.seccomp_profile {
             argv.push("--security-opt".to_string());
             argv.push(format!("seccomp={}", profile.display()));
-        }
-        argv.push("--user".to_string());
-        argv.push(self.user.clone());
-
-        if spec.cgroupns_private {
-            argv.push("--cgroupns=private".to_string());
-        }
-        for cap in &spec.cap_add {
-            argv.push(format!("--cap-add={cap}"));
-        }
-        for path in &spec.unmask {
-            argv.push("--security-opt".to_string());
-            argv.push(format!("unmask={path}"));
-        }
-        for path in &spec.tmpfs {
-            argv.push("--tmpfs".to_string());
-            argv.push(path.display().to_string());
         }
 
         for mount in &spec.mounts {
@@ -118,21 +119,17 @@ impl ContainerSandbox {
             argv.push(format!("{key}={value}"));
         }
 
-        if let Some(dir) = &spec.workdir {
-            argv.push("-w".to_string());
-            argv.push(dir.display().to_string());
-        }
+        argv.push("-w".to_string());
+        argv.push(spec.workdir.display().to_string());
 
         argv.push(self.base_image.clone());
-        // `cgroupns_private` doubles as the isolate-enabled signal (see
-        // `evaluator::isolate_run_config`); the wrapper lives only inside
-        // the container image, so it's applied here rather than spliced
-        // into `spec.program`/`args` (`LocalSandbox` would then try to
-        // exec it and fail).
-        if spec.cgroupns_private {
-            argv.push(ISOLATE_SETUP_WRAPPER.to_string());
+        // The wrapper lives only inside the container image, so it's
+        // applied here rather than spliced into `spec.program`/`args`
+        // (`LocalSandbox` would then try to exec it and fail).
+        if let Profile::IsolateRun = spec.profile {
+            argv.push(ISOLATE_SETUP_WRAPPER.to_string())
         }
-        argv.push(spec.program.clone());
+        argv.push(spec.command.clone());
         argv.extend(spec.args.iter().cloned());
 
         argv
@@ -264,29 +261,32 @@ mod tests {
     use std::time::Duration;
 
     fn spec() -> SandboxSpec {
-        let mut spec = SandboxSpec::new(
-            "/judge.sh",
-            Some(SandboxLimits {
+        SandboxSpec {
+            command: "/judge.sh".to_string(),
+            args: vec![],
+            limits: Some(SandboxLimits {
                 wall_clock: Duration::from_secs(10),
                 cpus: 2,
                 memory_bytes: 2 * 1024 * 1024 * 1024,
                 pids: 256,
                 max_output_bytes: 1024 * 1024,
             }),
-        );
-        spec.mounts = vec![
-            Mount {
-                host_path: PathBuf::from("/host/vendor"),
-                container_path: PathBuf::from("/vendor"),
-                mode: MountMode::ReadOnly,
-            },
-            Mount {
-                host_path: PathBuf::from("/host/work/target"),
-                container_path: PathBuf::from("/work/target"),
-                mode: MountMode::ReadWrite,
-            },
-        ];
-        spec
+            workdir: PathBuf::from("/repo"),
+            env: std::collections::BTreeMap::new(),
+            mounts: vec![
+                Mount {
+                    host_path: PathBuf::from("/host/vendor"),
+                    container_path: PathBuf::from("/vendor"),
+                    mode: MountMode::ReadOnly,
+                },
+                Mount {
+                    host_path: PathBuf::from("/host/work/target"),
+                    container_path: PathBuf::from("/work/target"),
+                    mode: MountMode::ReadWrite,
+                },
+            ],
+            profile: Profile::Build,
+        }
     }
 
     fn sandbox() -> ContainerSandbox {
@@ -330,15 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn network_true_uses_bridge_instead_of_none() {
-        let mut s = spec();
-        s.network = true;
-        let argv = sandbox().build_argv(&s, &cidfile());
-        assert!(argv.contains(&"--network=bridge".to_string()));
-        assert!(!argv.contains(&"--network=none".to_string()));
-    }
-
-    #[test]
     fn program_and_args_are_the_final_argv_entries() {
         let mut s = spec();
         s.args = vec!["--flag".into()];
@@ -349,7 +340,8 @@ mod tests {
 
     #[test]
     fn none_limits_omits_resource_flags_but_keeps_other_isolation_flags() {
-        let spec = SandboxSpec::new("/judge.sh", None);
+        let mut spec = spec();
+        spec.limits = None;
         let argv = sandbox().build_argv(&spec, &cidfile());
         let joined = argv.join(" ");
 
@@ -362,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn a_default_spec_emits_no_isolate_flags() {
+    fn a_build_profile_emits_no_isolate_flags() {
         let argv = sandbox().build_argv(&spec(), &cidfile());
         let joined = argv.join(" ");
 
@@ -370,38 +362,35 @@ mod tests {
         assert!(!joined.contains("--cap-add"));
         assert!(!joined.contains("unmask="));
         assert!(!joined.contains("--tmpfs"));
+        assert!(!argv.iter().any(|a| a == "isolate-setup.sh"));
         assert_eq!(argv[argv.len() - 1], "/judge.sh");
     }
 
     #[test]
-    fn isolate_fields_produce_the_expected_flags_and_prepend_the_setup_wrapper() {
+    fn an_isolate_run_profile_drops_hardening_and_adds_isolate_flags_and_the_setup_wrapper() {
         let mut s = spec();
-        s.cgroupns_private = true;
-        s.cap_add = vec!["SYS_ADMIN".into()];
-        s.unmask = vec!["/sys/fs/cgroup".into()];
-        s.tmpfs = vec![
-            PathBuf::from("/usr/local/etc"),
-            PathBuf::from("/run/isolate"),
-        ];
+        s.profile = Profile::IsolateRun;
         let argv = sandbox().build_argv(&s, &cidfile());
         let joined = argv.join(" ");
 
+        // The three build-stage hardening flags isolate can't tolerate
+        // (see `Profile::IsolateRun`'s doc comment) are gone.
+        assert!(!joined.contains("--cap-drop"));
+        assert!(!joined.contains("no-new-privileges"));
+        assert!(!joined.contains("--user"));
+
+        assert!(joined.contains("--read-only"));
         assert!(joined.contains("--cgroupns=private"));
         assert!(joined.contains("--cap-add=SYS_ADMIN"));
         assert!(joined.contains("--security-opt unmask=/sys/fs/cgroup"));
         assert!(joined.contains("--tmpfs /usr/local/etc"));
+        assert!(joined.contains("--tmpfs /var/local/lib/isolate"));
         assert!(joined.contains("--tmpfs /run/isolate"));
 
         // wrapper, then program, as the final two argv entries (spec()'s
         // args is empty).
         assert_eq!(argv[argv.len() - 2], "isolate-setup.sh");
         assert_eq!(argv[argv.len() - 1], "/judge.sh");
-    }
-
-    #[test]
-    fn no_wrapper_when_cgroupns_private_is_false() {
-        let argv = sandbox().build_argv(&spec(), &cidfile());
-        assert!(!argv.iter().any(|a| a == "isolate-setup.sh"));
     }
 
     fn sandbox_with_bin(podman_bin: &str) -> ContainerSandbox {

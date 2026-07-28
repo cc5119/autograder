@@ -7,20 +7,18 @@ use super::{Sandbox, SandboxOutcome, SandboxSpec};
 
 /// Runs the command as a host child process with a wall-clock timeout and
 /// output cap — best-effort limits, runner-isolated rather than
-/// kernel-isolated. Mounts and the network flag are no-ops here (the
-/// command already runs against the host filesystem/network); this is what
-/// makes `LocalSandbox` usable without podman, so it's what the CI tier
-/// uses and what M1/M2 can verify locally.
+/// kernel-isolated. `mounts`/`profile` are no-ops here (the command already
+/// runs against the host filesystem/network); this is what makes
+/// `LocalSandbox` usable without podman, so it's what the CI tier uses and
+/// what M1/M2 can verify locally.
 pub struct LocalSandbox;
 
 impl Sandbox for LocalSandbox {
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
-        let mut exec = Exec::cmd(&spec.program)
+        let exec = Exec::cmd(&spec.command)
             .args(&spec.args)
-            .env_extend(&spec.env);
-        if let Some(dir) = &spec.workdir {
-            exec = exec.cwd(dir);
-        }
+            .env_extend(&spec.env)
+            .cwd(&spec.workdir);
 
         let outcome = exec_with_timeout(
             exec,
@@ -44,7 +42,7 @@ impl Sandbox for LocalSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::sandbox::SandboxLimits;
+    use crate::exec::sandbox::{Profile, SandboxLimits};
     use std::time::Duration;
 
     fn limits(wall_clock: Duration) -> SandboxLimits {
@@ -57,9 +55,21 @@ mod tests {
         }
     }
 
+    fn spec(command: &str, args: Vec<String>, limits: Option<SandboxLimits>) -> SandboxSpec {
+        SandboxSpec {
+            command: command.to_string(),
+            args,
+            limits,
+            workdir: std::env::current_dir().unwrap(),
+            env: Default::default(),
+            mounts: Vec::new(),
+            profile: Profile::Build,
+        }
+    }
+
     #[test]
     fn runs_a_command_to_completion() {
-        let spec = SandboxSpec::new("true", Some(limits(Duration::from_secs(5))));
+        let spec = spec("true", Vec::new(), Some(limits(Duration::from_secs(5))));
         let outcome = LocalSandbox.run(&spec).unwrap();
 
         assert!(outcome.succeeded());
@@ -68,8 +78,11 @@ mod tests {
 
     #[test]
     fn kills_a_runaway_command_on_wall_clock_timeout() {
-        let mut spec = SandboxSpec::new("sleep", Some(limits(Duration::from_millis(150))));
-        spec.args = vec!["5".into()];
+        let spec = spec(
+            "sleep",
+            vec!["5".into()],
+            Some(limits(Duration::from_millis(150))),
+        );
 
         let outcome = LocalSandbox.run(&spec).unwrap();
 
@@ -79,9 +92,12 @@ mod tests {
 
     #[test]
     fn caps_captured_output() {
-        let mut spec = SandboxSpec::new("sh", Some(limits(Duration::from_secs(5))));
+        let mut spec = spec(
+            "sh",
+            vec!["-c".into(), "printf '0123456789'".into()],
+            Some(limits(Duration::from_secs(5))),
+        );
         spec.limits.as_mut().unwrap().max_output_bytes = 5;
-        spec.args = vec!["-c".into(), "printf '0123456789'".into()];
 
         let outcome = LocalSandbox.run(&spec).unwrap();
 
@@ -90,7 +106,7 @@ mod tests {
 
     #[test]
     fn none_limits_runs_with_no_timeout_or_output_cap() {
-        let spec = SandboxSpec::new("true", None);
+        let spec = spec("true", Vec::new(), None);
         let outcome = LocalSandbox.run(&spec).unwrap();
 
         assert!(outcome.succeeded());

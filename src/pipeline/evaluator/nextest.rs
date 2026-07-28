@@ -48,14 +48,14 @@ use std::path::{Path, PathBuf};
 
 use crate::deps::vendor;
 use crate::error::{Error, Result};
-use crate::exec::sandbox::{Mount, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
+use crate::exec::sandbox::{Mount, Profile, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
 use crate::model::{
     BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult,
     TestStatus,
 };
 use crate::spec::Spec;
 
-use super::{Evaluator, isolate_run_config, sandbox_limits, write_nextest_config};
+use super::{Evaluator, sandbox_limits, write_nextest_config};
 
 /// The relative path (from the assignment package dir) `cargo vendor`
 /// writes to; mirrors `vendor::vendor`'s output layout.
@@ -167,16 +167,20 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         let env = self.cargo_env(&repo_root);
 
         // Stage 1 (see this module's doc comment).
-        let mut build_id_spec = SandboxSpec::new("cargo", Some(self.limits.clone()));
-        build_id_spec.args = vec![
-            "build".into(),
-            "--offline".into(),
-            "-p".into(),
-            ctx.assignment_id.to_string(),
-        ];
-        build_id_spec.workdir = Some(repo_root.clone());
-        build_id_spec.env = env.clone();
-        build_id_spec.mounts = self.hidden_tests_mounts(&repo_root, &ctx.workspace)?;
+        let build_id_spec = SandboxSpec {
+            command: "cargo".to_string(),
+            args: vec![
+                "build".into(),
+                "--offline".into(),
+                "-p".into(),
+                ctx.assignment_id.to_string(),
+            ],
+            limits: Some(self.limits.clone()),
+            workdir: repo_root.clone(),
+            env: env.clone(),
+            mounts: self.hidden_tests_mounts(&repo_root, &ctx.workspace)?,
+            profile: Profile::Build,
+        };
 
         let build_id_outcome = self.sandbox.run(&build_id_spec)?;
         if !build_id_outcome.succeeded() {
@@ -191,16 +195,20 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         }
 
         // Stage 2 (see this module's doc comment).
-        let mut build_harness_spec = SandboxSpec::new("cargo", Some(self.limits.clone()));
-        build_harness_spec.args = vec![
-            "build".into(),
-            "--offline".into(),
-            "-p".into(),
-            self.harness_package.clone(),
-        ];
-        build_harness_spec.workdir = Some(repo_root.clone());
-        build_harness_spec.env = env.clone();
-        build_harness_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
+        let build_harness_spec = SandboxSpec {
+            command: "cargo".to_string(),
+            args: vec![
+                "build".into(),
+                "--offline".into(),
+                "-p".into(),
+                self.harness_package.clone(),
+            ],
+            limits: Some(self.limits.clone()),
+            workdir: repo_root.clone(),
+            env: env.clone(),
+            mounts: self.full_mounts(&repo_root, &ctx.workspace),
+            profile: Profile::Build,
+        };
 
         let build_harness_outcome = self.sandbox.run(&build_harness_spec)?;
         if !build_harness_outcome.succeeded() {
@@ -217,20 +225,24 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         write_nextest_config(&repo_root)?;
 
         // Stage 3 (see this module's doc comment).
-        let mut run_spec = SandboxSpec::new("cargo", None);
-        run_spec.args = vec![
-            "nextest".into(),
-            "run".into(),
-            "-p".into(),
-            self.harness_package.clone(),
-        ];
-        run_spec.workdir = Some(repo_root.clone());
-        run_spec.env = env;
-        run_spec
-            .env
-            .insert("AUTOGRADER_SANDBOX".to_string(), "1".to_string());
-        run_spec.mounts = self.full_mounts(&repo_root, &ctx.workspace);
-        isolate_run_config(&mut run_spec);
+        let run_spec = SandboxSpec {
+            command: "cargo".to_string(),
+            args: vec![
+                "nextest".into(),
+                "run".into(),
+                "-p".into(),
+                self.harness_package.clone(),
+            ],
+            limits: None,
+            workdir: repo_root.clone(),
+            env: {
+                let mut env = env.clone();
+                env.insert("AUTOGRADER_SANDBOX".to_string(), "1".to_string());
+                env
+            },
+            mounts: self.full_mounts(&repo_root, &ctx.workspace),
+            profile: Profile::IsolateRun,
+        };
 
         let run_outcome = self.sandbox.run(&run_spec)?;
         if run_outcome.timed_out {
@@ -734,7 +746,7 @@ base = 0.0
 
         let specs = specs.lock().unwrap();
         let build_spec = &specs[0];
-        assert_eq!(build_spec.workdir.as_deref(), Some(repo_root.path()));
+        assert_eq!(build_spec.workdir, repo_root.path());
         assert_eq!(build_spec.args[..4], ["build", "--offline", "-p", "hw3"]);
         assert!(!build_spec.args.contains(&"harness".to_string()));
         assert!(!build_spec.args.contains(&"--test".to_string()));
@@ -797,7 +809,7 @@ base = 0.0
 
         let specs = specs.lock().unwrap();
         let run_spec = &specs[2];
-        assert_eq!(run_spec.program, "cargo");
+        assert_eq!(run_spec.command, "cargo");
         assert!(!run_spec.args.contains(&"--archive-file".to_string()));
         assert_eq!(run_spec.args[..4], ["nextest", "run", "-p", "harness"]);
         assert!(run_spec.limits.is_none());
@@ -811,8 +823,7 @@ base = 0.0
                 .all(|m| m.container_path != harness_dir.join("tests"))
         );
 
-        assert!(run_spec.cgroupns_private);
-        assert!(run_spec.cap_add.contains(&"SYS_ADMIN".to_string()));
+        assert_eq!(run_spec.profile, crate::exec::sandbox::Profile::IsolateRun);
     }
 
     #[test]

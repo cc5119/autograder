@@ -53,56 +53,45 @@ pub struct SandboxLimits {
     pub max_output_bytes: u64,
 }
 
-/// What to run and under what isolation/limits. `LocalSandbox` runs
-/// `program`/`args` directly on the host (mounts/network/the fields below
-/// are all no-ops there, since there's no container to configure);
-/// `ContainerSandbox` maps every field onto `podman run` flags.
-#[derive(Debug, Clone)]
-pub struct SandboxSpec {
-    pub program: String,
-    pub args: Vec<String>,
-    pub env: BTreeMap<String, String>,
-    pub workdir: Option<PathBuf>,
-    pub mounts: Vec<Mount>,
-    /// If false, network access is denied (`--network=none`).
-    pub network: bool,
-    /// `None` means genuinely unbounded -- no `--memory`/`--cpus`/
-    /// `--pids-limit`, no wall-clock timeout, no output cap. Only the run
-    /// stage uses this: the student process it spawns is bounded by
-    /// `isolate` instead.
-    pub limits: Option<SandboxLimits>,
-    /// `--cgroupns=private`, needed by a run-stage container that nests
-    /// `isolate` (isolate manages its own cgroup subtree per box).
-    pub cgroupns_private: bool,
-    /// `--cap-add=<X>` per entry -- e.g. `SYS_ADMIN`, which isolate's own
-    /// namespace `clone()` needs even namespaced inside the container.
-    pub cap_add: Vec<String>,
-    /// `--security-opt unmask=<X>` per entry -- e.g. `/sys/fs/cgroup`, so
-    /// nested isolate can write cgroup controllers `--read-only` would
-    /// otherwise mask.
-    pub unmask: Vec<String>,
-    /// `--tmpfs <path>` per entry -- writable scratch space under an
-    /// otherwise `--read-only` rootfs, for paths isolate itself must write
-    /// to (its config file, box root, lock root).
-    pub tmpfs: Vec<PathBuf>,
+/// A named, fixed bundle of `podman run` isolation flags -- read one
+/// variant top to bottom in `ContainerSandbox::build_argv` and you see
+/// everything a given kind of run gets, rather than reconstructing it from
+/// several independently-toggled fields. `LocalSandbox` ignores this
+/// entirely (there's no container to configure).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// Build stages (`cargo build -p <id|harness>`): never runs student
+    /// code directly, only trusted `cargo`. Fully hardened.
+    Build,
+    /// The run stage (`cargo nextest run`), which nests `isolate` --
+    /// `isolate` itself is what boxes the untrusted student process, and it
+    /// needs to run as root and `chown`/`setuid` into its own per-box uid
+    /// range to do that, which `Build`'s hardening forbids. Validated
+    /// empirically in `spike/isolate-podman/` (`run.txt`, profile
+    /// `prod-no-nnp-root-user-no-capdrop`): dropping `--cap-drop`,
+    /// `no-new-privileges`, or `--user` alone each still fails
+    /// (`Must be started as root` / `Cannot switch to root group` /
+    /// `Cannot chown busy`); only dropping all three together, while
+    /// keeping `--read-only` and adding `SYS_ADMIN` + the cgroup unmask +
+    /// isolate's own writable scratch dirs, passes end to end.
+    IsolateRun,
 }
 
-impl SandboxSpec {
-    pub fn new(program: impl Into<String>, limits: Option<SandboxLimits>) -> Self {
-        Self {
-            program: program.into(),
-            args: Vec::new(),
-            env: BTreeMap::new(),
-            workdir: None,
-            mounts: Vec::new(),
-            network: false,
-            limits,
-            cgroupns_private: false,
-            cap_add: Vec::new(),
-            unmask: Vec::new(),
-            tmpfs: Vec::new(),
-        }
-    }
+/// What to run and under what isolation/limits. `LocalSandbox` runs
+/// `program`/`args` directly on the host (`mounts`/`profile` are no-ops
+/// there, since there's no container to configure); `ContainerSandbox` maps
+/// every field onto `podman run` flags.
+#[derive(Debug, Clone)]
+pub struct SandboxSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub workdir: PathBuf,
+    pub mounts: Vec<Mount>,
+    /// `None` means genuinely unbounded -- no `--memory`/`--cpus`/
+    /// `--pids-limit`, no wall-clock timeout, no output cap.
+    pub limits: Option<SandboxLimits>,
+    pub profile: Profile,
 }
 
 #[derive(Debug, Clone)]
