@@ -136,6 +136,31 @@ pub struct EvaluationResult {
     pub diagnostics: Diagnostics,
 }
 
+impl EvaluationResult {
+    /// One line describing this result, e.g. `"alice: ok (3/3 tests
+    /// passed)"` or `"alice: build failed"` -- no trailing newline, so
+    /// callers (a plain `println!`, or an `indicatif` progress line) control
+    /// that themselves.
+    pub fn describe(&self) -> String {
+        match &self.status {
+            EvalStatus::Ran(RunStatus::Ok) => {
+                let passed = self
+                    .tests
+                    .iter()
+                    .filter(|t| t.status == TestStatus::Pass)
+                    .count();
+                format!(
+                    "{}: ok ({passed}/{} tests passed)",
+                    self.submission_id,
+                    self.tests.len()
+                )
+            }
+            EvalStatus::BuildFailed(status) => format!("{}: {}", self.submission_id, status.label()),
+            EvalStatus::Ran(status) => format!("{}: {}", self.submission_id, status.label()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grade {
     pub student_id: StudentId,

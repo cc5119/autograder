@@ -8,6 +8,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use indicatif::{ProgressBar, ProgressStyle};
+
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::write_json;
@@ -210,7 +212,19 @@ pub fn evaluate_batch(
     let submission_ids = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
 
+    // A single reused spinner, not one `ProgressBar` per submission: each
+    // iteration just changes its message/finishes it, so the terminal shows
+    // one live "evaluating <id>..." line that's overwritten in place by the
+    // result, rather than a scrolling log of everything printed so far.
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::with_template("{spinner} {msg}").expect("static template is valid"),
+    );
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+
     for submission_id in submission_ids {
+        progress.set_message(format!("evaluating {submission_id}..."));
+
         let run_id = generate_run_id();
         let checkout_dir = submissions_dir.join(submission_id.as_str());
         // A fresh OS temp dir per submission -- dropped (and cleaned up)
@@ -241,8 +255,10 @@ pub fn evaluate_batch(
         )?;
 
         save_eval(submissions_dir, &eval)?;
+        progress.suspend(|| println!("{}", eval.describe()));
         evals.push(eval);
     }
+    progress.finish_and_clear();
 
     Ok(evals)
 }
