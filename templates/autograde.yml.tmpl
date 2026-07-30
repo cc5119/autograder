@@ -1,7 +1,9 @@
 name: autograde
 on:
-  push:
-    branches: [main]        # default branch only
+  workflow_dispatch: {}     # run manually from the Actions tab
+  # Uncomment to auto-run on every push to main
+  # push:
+  #   branches: [main]
 jobs:
   public-tests:
     runs-on: ubuntu-latest
