@@ -80,6 +80,7 @@ dependencies = [
  "anyhow",
  "cfg-expr",
  "clap",
+ "console",
  "csv",
  "ignore",
  "include_dir",

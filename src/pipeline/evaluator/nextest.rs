@@ -363,15 +363,9 @@ pub fn parse_junit_report(xml: &str) -> Result<Vec<TestResult>> {
         let failure = node.children().find(|c| c.has_tag_name("failure"));
         let error = node.children().find(|c| c.has_tag_name("error"));
         let (status, message) = if let Some(node) = error {
-            (
-                TestStatus::Error,
-                node.attribute("message").map(String::from),
-            )
+            (TestStatus::Error, failure_message(node))
         } else if let Some(node) = failure {
-            (
-                TestStatus::Fail,
-                node.attribute("message").map(String::from),
-            )
+            (TestStatus::Fail, failure_message(node))
         } else {
             (TestStatus::Pass, None)
         };
@@ -388,6 +382,20 @@ pub fn parse_junit_report(xml: &str) -> Result<Vec<TestResult>> {
     }
 
     Ok(results)
+}
+
+/// The full text of a `<failure>`/`<error>` node -- nextest puts the panic
+/// location (e.g. `thread 'main' panicked at src/main.rs:25:9`) in the
+/// `message` attribute, but the actual reason (the assertion text, or
+/// whatever the panic argument was) only in the element's body. Prefers
+/// the body; falls back to the attribute for a self-closing element with
+/// no body (as in a hand-written/synthetic JUnit report).
+fn failure_message(node: roxmltree::Node) -> Option<String> {
+    node.text()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| node.attribute("message").map(String::from))
 }
 
 /// Sums every `autograder: ... score=<f64>` line found in the testcase's

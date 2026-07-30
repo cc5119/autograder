@@ -6,6 +6,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use console::style;
+
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::read_json;
@@ -34,7 +36,7 @@ pub fn run(submission: &Path, verbose: bool) -> Result<()> {
     match latest_eval(submissions_dir, &id)? {
         Some((eval, run_count)) => render_eval(&mut out, &eval, run_count, verbose),
         None => {
-            let _ = writeln!(out, "\nEvaluate\n  not yet evaluated");
+            let _ = writeln!(out, "\n{}\n  not yet evaluated", style("Evaluate").bold());
         }
     }
 
@@ -51,11 +53,11 @@ fn student_id(submission: &Path) -> Result<StudentId> {
 }
 
 fn render_fetch(out: &mut String, record: &FetchRecord) {
-    let _ = writeln!(out, "\nFetch");
+    let _ = writeln!(out, "\n{}", style("Fetch").bold());
     let _ = writeln!(out, "  fetched at     {}", record.fetched_at);
     match record.status {
         FetchStatus::Failed => {
-            let _ = writeln!(out, "  status         failed");
+            let _ = writeln!(out, "  status         {}", style("failed").red());
             if let Some(message) = &record.message {
                 let _ = writeln!(out, "  message        {message}");
             }
@@ -113,11 +115,20 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
     } else {
         String::new()
     };
-    let _ = writeln!(out, "\nEvaluate  (run {}{runs_note})", eval.run_id);
+    let _ = writeln!(
+        out,
+        "\n{}  (run {}{runs_note})",
+        style("Evaluate").bold(),
+        eval.run_id
+    );
 
     match &eval.status {
         EvalStatus::BuildFailed(status) => {
-            let _ = writeln!(out, "  status         build failed ({})", status.label());
+            let _ = writeln!(
+                out,
+                "  status         {}",
+                style(format!("build failed ({})", status.label())).red()
+            );
             if verbose
                 && let Some(errors) = &eval.diagnostics.compiler_errors
             {
@@ -126,7 +137,11 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
             return;
         }
         EvalStatus::Ran(status) if *status != RunStatus::Ok => {
-            let _ = writeln!(out, "  status         run failed ({})", status.label());
+            let _ = writeln!(
+                out,
+                "  status         {}",
+                style(format!("run failed ({})", status.label())).red()
+            );
             if verbose
                 && let Some(excerpt) = &eval.diagnostics.stderr_excerpt
             {
@@ -135,7 +150,7 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
             return;
         }
         EvalStatus::Ran(RunStatus::Ok) => {
-            let _ = writeln!(out, "  status         ok");
+            let _ = writeln!(out, "  status         {}", style("ok").green());
         }
         EvalStatus::Ran(_) => unreachable!("handled by the RunStatus::Ok arm above"),
     }
@@ -146,31 +161,50 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
     let _ = writeln!(out);
 
     let name_width = eval.tests.iter().map(|t| t.name.len()).max().unwrap_or(0);
+    let mut sorted_tests: Vec<_> = eval.tests.iter().collect();
+    sorted_tests.sort_by(|a, b| a.name.cmp(&b.name));
+
     let mut passed = 0;
-    for test in &eval.tests {
+    for test in sorted_tests {
         let mark = if test.status == TestStatus::Pass {
             passed += 1;
-            '\u{2713}'
+            style("\u{2713}").green().to_string()
         } else {
-            '\u{2717}'
+            style("\u{2717}").red().to_string()
         };
-        let annotation = match (test.status, test.reported_score) {
+        // Padded to a fixed *visible* width by hand, not `{:<10}` -- that
+        // format spec counts the ANSI escape bytes `style()` wraps a
+        // failing annotation in, so it would under-pad once colored.
+        let plain_annotation = match (test.status, test.reported_score) {
             (TestStatus::Pass, Some(score)) => format!("score={score}"),
             (TestStatus::Pass, None) => String::new(),
             (status, _) => test_status_label(status).to_string(),
         };
+        let annotation_padding = " ".repeat(10usize.saturating_sub(plain_annotation.chars().count()));
+        let annotation = if test.status == TestStatus::Pass {
+            plain_annotation
+        } else {
+            style(plain_annotation).red().to_string()
+        };
         let _ = writeln!(
             out,
-            "  {mark} {:<name_width$}  {:<10}{:>6}ms",
-            test.name, annotation, test.duration_ms
+            "  {mark} {:<name_width$}  {annotation}{annotation_padding}{:>6}ms",
+            test.name, test.duration_ms
         );
         if verbose
             && let Some(message) = &test.message
         {
-            let _ = writeln!(out, "      {message}");
+            for line in message.lines() {
+                let _ = writeln!(out, "      \u{2502} {}", style(line).dim());
+            }
+            let _ = writeln!(out);
         }
     }
-    let _ = writeln!(out, "\n  {passed}/{} tests passed", eval.tests.len());
+    let _ = writeln!(
+        out,
+        "\n  {}",
+        style(format!("{passed}/{} tests passed", eval.tests.len())).bold()
+    );
 }
 
 fn test_status_label(status: TestStatus) -> &'static str {
