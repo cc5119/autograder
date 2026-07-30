@@ -1,8 +1,12 @@
+use std::io;
 use std::path::PathBuf;
 use std::process::Command as Proc;
 use std::sync::RwLock;
+use std::time::{Duration, Instant};
 
-use crate::{Command, Outcome, Status, cargo_bin_exe, run_process};
+use subprocess::{Exec, Redirection};
+
+use crate::{Command, Outcome, Status, cargo_bin_exe};
 
 fn resolve_target_binary(target: &str) -> PathBuf {
     cargo_bin_exe(target).unwrap_or_else(|| target_dir().join("debug").join(target))
@@ -25,30 +29,67 @@ fn target_dir() -> &'static PathBuf {
     })
 }
 
+/// Runs the target as a host child process, enforcing `cmd.wall_time` with
+/// the same spawn/communicate/kill-on-timeout/reap pattern the main
+/// autograder crate uses for its own local sandbox (`src/exec/sandbox/exec.rs`)
+/// -- unlike `isolate`, nothing else here bounds how long the child can run.
 pub(crate) fn run(cmd: Command) -> Outcome {
     ensure_built(&cmd.target);
     let bin = resolve_target_binary(&cmd.target);
-    let mut proc = Proc::new(&bin);
-    proc.args(&cmd.args);
+
+    let mut exec = Exec::cmd(&bin).args(&cmd.args).env_extend(&cmd.env);
     if let Some(c) = &cmd.cwd {
-        proc.current_dir(c);
+        exec = exec.cwd(c);
     }
-    for (k, v) in &cmd.env {
-        proc.env(k, v);
+    exec = match cmd.stdin {
+        Some(data) => exec.stdin(data),
+        None => exec.stdin(Redirection::Null),
+    };
+
+    let start = Instant::now();
+    let mut job = exec
+        .stdout(Redirection::Pipe)
+        .stderr(Redirection::Pipe)
+        .start()
+        .expect("spawn");
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let read_result = job
+        .communicate()
+        .expect("attach to output")
+        .limit_time(cmd.wall_time)
+        .read_to(&mut stdout, &mut stderr);
+
+    let timed_out = match read_result {
+        Ok(()) => false,
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => true,
+        Err(e) => panic!("failed reading output: {e}"),
+    };
+
+    if timed_out {
+        let _ = job.kill(); // SIGKILL; no-op if already reaped
     }
 
-    let r = run_process(proc, cmd.stdin);
-    let status = if r.exit_code == Some(0) {
-        Status::Ok
+    let exit_status = job
+        .wait_timeout(Duration::from_secs(2))
+        .expect("failed to reap");
+    let wall_time = start.elapsed();
+
+    let status = if timed_out {
+        Status::TimedOut
     } else {
-        Status::Failed
+        match exit_status.and_then(|s| s.code()) {
+            Some(code) => Status::Exited(code as i32),
+            None => Status::Signaled(exit_status.and_then(|s| s.signal()).unwrap_or(0)),
+        }
     };
+
     Outcome {
         status,
-        exit_code: r.exit_code,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        wall_time: r.wall,
+        stdout,
+        stderr,
+        wall_time,
         cpu_time: None,
         peak_memory_bytes: None,
     }

@@ -155,7 +155,9 @@ impl EvaluationResult {
                     self.tests.len()
                 )
             }
-            EvalStatus::BuildFailed(status) => format!("{}: {}", self.submission_id, status.label()),
+            EvalStatus::BuildFailed(status) => {
+                format!("{}: {}", self.submission_id, status.label())
+            }
             EvalStatus::Ran(status) => format!("{}: {}", self.submission_id, status.label()),
         }
     }

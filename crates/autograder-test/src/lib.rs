@@ -2,22 +2,15 @@ mod isolate;
 mod local;
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command as Proc, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub fn bin(name: impl Into<String>) -> Command {
-    Command {
-        target: name.into(),
-        args: Vec::new(),
-        stdin: None,
-        env: BTreeMap::new(),
-        cwd: None,
-        memory_bytes: None,
-        cpu_time: None,
-        wall_time: Duration::from_secs(10),
-    }
+#[macro_export]
+macro_rules! score {
+    ($score:expr) => {
+        let score: u32 = $score;
+        println!("autograder: score={score}");
+    };
 }
 
 pub struct Command {
@@ -32,6 +25,19 @@ pub struct Command {
 }
 
 impl Command {
+    pub fn new(target: impl ToString) -> Self {
+        Command {
+            target: target.to_string(),
+            args: Vec::new(),
+            stdin: None,
+            env: BTreeMap::new(),
+            cwd: None,
+            memory_bytes: Some(256 * 1024 * 1024),
+            cpu_time: None,
+            wall_time: Duration::from_secs(3),
+        }
+    }
+
     pub fn arg(mut self, a: impl Into<String>) -> Self {
         self.args.push(a.into());
         self
@@ -88,16 +94,38 @@ impl Command {
 }
 
 pub enum Status {
-    Ok,
-    TimedOut,
-    MemoryExceeded,
+    /// Program ran to completion with this exit code -- covers both a
+    /// clean exit and isolate's "RE" (nonzero exit), since either way the
+    /// code is real.
+    Exited(i32),
+    /// Killed by a signal (isolate "SG" without an OOM kill).
     Signaled(i32),
-    Failed,
+    /// Wall/cpu time limit hit before the program finished (isolate "TO").
+    TimedOut,
+    /// Killed by the cgroup for exceeding the memory limit (isolate "SG"
+    /// with `cg-oom-killed:1`).
+    MemoryExceeded,
+    /// The sandbox itself failed to run the job -- not something the
+    /// student's binary did, and there is no exit code because it may
+    /// never have started (isolate "XX"; the string is isolate's own
+    /// `message` explaining the failure). Only produced when grading.
+    SandboxError(String),
+}
+
+impl Status {
+    fn describe(&self) -> String {
+        match self {
+            Status::Exited(code) => format!("exited ({code})"),
+            Status::Signaled(sig) => format!("signaled ({sig})"),
+            Status::TimedOut => "timed out".to_string(),
+            Status::MemoryExceeded => "memory exceeded".to_string(),
+            Status::SandboxError(msg) => format!("sandbox error: {msg}"),
+        }
+    }
 }
 
 pub struct Outcome {
     pub status: Status,
-    pub exit_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub wall_time: Duration,
@@ -114,8 +142,16 @@ impl Outcome {
         String::from_utf8_lossy(&self.stderr).into_owned()
     }
 
+    /// Some(code) only when the program actually ran to completion.
+    pub fn exit_code(&self) -> Option<i32> {
+        match self.status {
+            Status::Exited(code) => Some(code),
+            _ => None,
+        }
+    }
+
     pub fn success(&self) -> bool {
-        matches!(self.status, Status::Ok) && self.exit_code == Some(0)
+        matches!(self.status, Status::Exited(0))
     }
 
     pub fn timed_out(&self) -> bool {
@@ -124,6 +160,18 @@ impl Outcome {
 
     pub fn oom(&self) -> bool {
         matches!(self.status, Status::MemoryExceeded)
+    }
+
+    /// Asserts the command succeeded, panicking with the status and stderr
+    /// if not. Returns `self` so the outcome can still be used.
+    pub fn assert_success(self) -> Self {
+        assert!(
+            self.success(),
+            "command did not succeed: {}\nstderr:\n{}",
+            self.status.describe(),
+            self.stderr_str(),
+        );
+        self
     }
 }
 
@@ -137,40 +185,4 @@ pub(crate) fn cargo_bin_exe(target: &str) -> Option<PathBuf> {
     std::env::var(format!("CARGO_BIN_EXE_{target}"))
         .ok()
         .map(PathBuf::from)
-}
-
-pub(crate) struct Ran {
-    pub exit_code: Option<i32>,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    pub wall: Duration,
-}
-
-pub(crate) fn run_process(mut cmd: Proc, stdin: Option<Vec<u8>>) -> Ran {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-
-    let start = Instant::now();
-    let mut child = cmd.spawn().expect("spawn");
-    let writer = stdin.map(|data| {
-        let mut sink = child.stdin.take().expect("stdin pipe");
-        std::thread::spawn(move || {
-            let _ = sink.write_all(&data);
-        })
-    });
-    let out = child.wait_with_output().expect("wait");
-    if let Some(w) = writer {
-        let _ = w.join();
-    }
-
-    Ran {
-        exit_code: out.status.code(),
-        stdout: out.stdout,
-        stderr: out.stderr,
-        wall: start.elapsed(),
-    }
 }

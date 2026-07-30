@@ -1,8 +1,48 @@
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::{Command, Outcome, Ran, Status, cargo_bin_exe, run_process};
+use crate::{Command, Outcome, Status, cargo_bin_exe};
+
+/// Spawns `cmd` (here, always the `isolate` invocation) and waits for it to
+/// exit -- no timeout wrapper needed, since `isolate --wall-time` already
+/// bounds how long the sandboxed job (and thus this process) can run.
+struct Ran {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    wall: Duration,
+}
+
+fn run_process(mut cmd: std::process::Command, stdin: Option<Vec<u8>>) -> Ran {
+    use std::process::Stdio;
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+
+    let start = Instant::now();
+    let mut child = cmd.spawn().expect("spawn");
+    let writer = stdin.map(|data| {
+        let mut sink = child.stdin.take().expect("stdin pipe");
+        std::thread::spawn(move || {
+            let _ = sink.write_all(&data);
+        })
+    });
+    let out = child.wait_with_output().expect("wait");
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
+
+    Ran {
+        stdout: out.stdout,
+        stderr: out.stderr,
+        wall: start.elapsed(),
+    }
+}
 
 /// Resolves `target` to its built binary without ever shelling out to
 /// cargo -- this runs inside the sandboxed run stage
@@ -107,10 +147,6 @@ fn build_outcome(r: Ran, meta: BTreeMap<String, String>) -> Outcome {
         .get("time")
         .and_then(|v| v.parse::<f64>().ok())
         .map(Duration::from_secs_f64);
-    let exit_code = meta
-        .get("exitcode")
-        .and_then(|v| v.parse::<i32>().ok())
-        .or(r.exit_code);
 
     let oom = meta.get("cg-oom-killed").map(|v| v == "1").unwrap_or(false);
     let status = match meta.get("status").map(String::as_str) {
@@ -121,14 +157,22 @@ fn build_outcome(r: Ran, meta: BTreeMap<String, String>) -> Outcome {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
         ),
-        Some("RE") | Some("XX") => Status::Failed,
-        _ if exit_code == Some(0) => Status::Ok,
-        _ => Status::Failed,
+        Some("XX") => Status::SandboxError(
+            meta.get("message")
+                .cloned()
+                .unwrap_or_else(|| "isolate reported an internal error".to_string()),
+        ),
+        // "RE" (nonzero exit) and no status line (clean exit) both have a
+        // real exit code from the sandboxed process in `exitcode`.
+        _ => Status::Exited(
+            meta.get("exitcode")
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(-1),
+        ),
     };
 
     Outcome {
         status,
-        exit_code,
         stdout: r.stdout,
         stderr: r.stderr,
         wall_time: r.wall,
