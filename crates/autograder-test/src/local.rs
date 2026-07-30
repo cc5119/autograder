@@ -34,7 +34,7 @@ fn target_dir() -> &'static PathBuf {
 /// autograder crate uses for its own local sandbox (`src/exec/sandbox/exec.rs`)
 /// -- unlike `isolate`, nothing else here bounds how long the child can run.
 pub(crate) fn run(cmd: Command) -> Outcome {
-    ensure_built(&cmd.target);
+    ensure_built(&cmd.target, &cmd.features);
     let bin = resolve_target_binary(&cmd.target);
 
     let mut exec = Exec::cmd(&bin).args(&cmd.args).env_extend(&cmd.env);
@@ -100,43 +100,60 @@ struct BuildResult {
     stderr: Vec<u8>,
 }
 
-/// Builds `target` at most once per test binary, even across concurrently
+/// Builds `target` (with `features`, if any) at most once per distinct
+/// `(target, features)` pair per test binary, even across concurrently
 /// running tests -- `cargo test` runs tests in threads, so without this
 /// every test spawning the same target would race its own `cargo build`.
 /// No-op if `cargo_bin_exe` already found it (cargo built it as a
-/// prerequisite of this test binary, so it's already current). Panics on
-/// build failure, once per caller, rather than silently proceeding to spawn
-/// a stale or missing binary.
-fn ensure_built(target: &str) {
+/// prerequisite of this test binary, so it's already current -- with
+/// whatever features workspace unification gave it, `features` is only
+/// consulted for the separate-package `cargo build -p` fallback below).
+/// Panics on build failure, once per caller, rather than silently
+/// proceeding to spawn a stale or missing binary.
+fn ensure_built(target: &str, features: &[String]) {
     if cargo_bin_exe(target).is_some() {
         return;
     }
 
-    // A handful of distinct targets tops (one harness realistically spawns
-    // `driver` and/or one student binary) -- a linear scan is cheaper than
-    // a HashMap here and needs no lazy/random-seeded initializer, so this
-    // can be a plain const `static`.
+    // Distinguishes builds of the same target under different feature
+    // sets, so switching features between tests doesn't reuse a stale
+    // cached result for what's really a different build.
+    let key = if features.is_empty() {
+        target.to_string()
+    } else {
+        format!("{target}+{}", features.join(","))
+    };
+
+    // A handful of distinct (target, features) pairs tops (one harness
+    // realistically spawns `driver` and/or one student binary) -- a linear
+    // scan is cheaper than a HashMap here and needs no lazy/random-seeded
+    // initializer, so this can be a plain const `static`.
     static BUILDS: RwLock<Vec<(String, BuildResult)>> = RwLock::new(Vec::new());
 
     // Fast path: a shared read lock, cheap and contention-free among
-    // readers -- what every call hits once `target` has been built.
+    // readers -- what every call hits once `key` has been built.
     let cached = BUILDS
         .read()
         .unwrap()
         .iter()
-        .find(|(t, _)| t == target)
+        .find(|(k, _)| *k == key)
         .map(|(_, r)| (r.ok, r.stderr.clone()));
 
-    // Slow path: only the first caller for a given target takes the
+    // Slow path: only the first caller for a given key takes the
     // exclusive write lock and actually builds; re-check first in case
     // another thread already raced past the read-lock miss and built it.
     let (ok, stderr) = cached.unwrap_or_else(|| {
         let mut builds = BUILDS.write().unwrap();
-        if let Some((_, r)) = builds.iter().find(|(t, _)| t == target) {
+        if let Some((_, r)) = builds.iter().find(|(k, _)| *k == key) {
             return (r.ok, r.stderr.clone());
         }
+        let mut args = vec!["build".to_string(), "-p".to_string(), target.to_string()];
+        if !features.is_empty() {
+            args.push("--features".to_string());
+            args.push(features.join(","));
+        }
         let out = Proc::new("cargo")
-            .args(["build", "-p", target])
+            .args(&args)
             .output()
             .expect("spawn cargo build");
         let result = BuildResult {
@@ -144,13 +161,18 @@ fn ensure_built(target: &str) {
             stderr: out.stderr,
         };
         let pair = (result.ok, result.stderr.clone());
-        builds.push((target.to_string(), result));
+        builds.push((key.clone(), result));
         pair
     }); // guard dropped here -- never panic while holding the lock.
 
+    let features_suffix = if features.is_empty() {
+        String::new()
+    } else {
+        format!(" --features {}", features.join(","))
+    };
     assert!(
         ok,
-        "cargo build -p {target} failed:\n{}",
+        "cargo build -p {target}{features_suffix} failed:\n{}",
         String::from_utf8_lossy(&stderr)
     );
 }

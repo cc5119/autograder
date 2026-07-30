@@ -13,6 +13,27 @@ macro_rules! score {
     };
 }
 
+/// Builds a [`Command`] for `target`, optionally forwarding a subset of
+/// *this* crate's own Cargo features to `target`'s build (only meaningful
+/// locally -- see [`Command::features`]) so a harness/target pair sharing a
+/// feature name (e.g. `student`) stays in sync without the caller having to
+/// spell out `cfg!(feature = "...")` themselves:
+///
+/// ```ignore
+/// autograder_test::cmd!("fizzbuzz", features = ["student"]).arg(n).run()
+/// ```
+#[macro_export]
+macro_rules! cmd {
+    ($target:expr, features = [$($name:literal),* $(,)?]) => {{
+        let mut enabled: Vec<&'static str> = Vec::new();
+        $( if cfg!(feature = $name) { enabled.push($name); } )*
+        $crate::Command::new($target).features(enabled)
+    }};
+    ($target:expr) => {
+        $crate::Command::new($target)
+    };
+}
+
 pub struct Command {
     target: String,
     args: Vec<String>,
@@ -22,6 +43,7 @@ pub struct Command {
     memory_bytes: Option<u64>,
     cpu_time: Option<Duration>,
     wall_time: Duration,
+    features: Vec<String>,
 }
 
 impl Command {
@@ -35,7 +57,20 @@ impl Command {
             memory_bytes: Some(256 * 1024 * 1024),
             cpu_time: None,
             wall_time: Duration::from_secs(3),
+            features: Vec::new(),
         }
+    }
+
+    /// Cargo features to pass when building `target` locally (`cargo build
+    /// -p <target> --features ...`) -- a no-op when grading, since the run
+    /// stage never builds anything, only spawns the already-built binary.
+    pub fn features<I, S>(mut self, it: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.features = it.into_iter().map(Into::into).collect();
+        self
     }
 
     pub fn arg(mut self, a: impl Into<String>) -> Self {
