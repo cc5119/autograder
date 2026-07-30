@@ -1,13 +1,14 @@
 name: release
 
-# Cross-compiles the pinned `autograder` binary students' CI download step
-# fetches. Triggered by pushing a `v*` tag; the tag name becomes both the
-# release name and the version string a starter template's `.github/workflows/autograde.yml`
-# pins to (see `scaffold::RELEASE_VERSION`).
+# Cross-compiles the `autograder` binary that a published starter repo's
+# `.github/workflows/autograde.yml` downloads (see `templates/autograde.yml.tmpl`).
+# Runs on every push to main and republishes the single `latest` release in
+# place, so there's no version number to pick or bump -- the template always
+# points at the newest build.
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -41,13 +42,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes \
+          gh release create latest \
+            --title "latest" \
+            --notes "Continuously updated with the latest main." \
             --repo "${{ github.repository }}" \
             dist/${{ matrix.asset_name }} \
             dist/${{ matrix.asset_name }}.sha256 \
-            || gh release upload "${{ github.ref_name }}" \
+            || gh release upload latest \
                  dist/${{ matrix.asset_name }} \
                  dist/${{ matrix.asset_name }}.sha256 \
                  --repo "${{ github.repository }}" \

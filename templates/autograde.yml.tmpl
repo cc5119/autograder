@@ -8,10 +8,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          curl -fsSL https://github.com/your-org/autograder/releases/download/v0.1.0/autograder-x86_64-linux -o autograder
-          echo "<pinned-sha256>  autograder" | sha256sum -c -   # verify before exec
+          curl -fsSL https://github.com/cc5119/autograder/releases/latest/download/autograder-x86_64-linux -o autograder-x86_64-linux
+          curl -fsSL https://github.com/cc5119/autograder/releases/latest/download/autograder-x86_64-linux.sha256 -o autograder-x86_64-linux.sha256
+          sha256sum -c autograder-x86_64-linux.sha256   # verify before exec
+          mv autograder-x86_64-linux autograder
           chmod +x autograder
       - run: command -v podman || (sudo apt-get update && sudo apt-get install -y podman)
-      - run: ./autograder vendor .
-      - run: podman pull {base_image}
+      - name: Read base image from autograder.toml
+        id: base_image
+        run: |
+          image=$(python3 -c 'import tomllib; print(tomllib.load(open("autograder.toml", "rb"))["sandbox"]["image"])')
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - run: podman pull "${{ steps.base_image.outputs.image }}"
       - run: ./autograder ci

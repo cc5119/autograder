@@ -128,10 +128,9 @@ mod tests {
     }
 
     #[test]
-    fn render_file_substitutes_the_named_template() {
-        let placeholders = str_map! {"base_image" => "autograder-base:1.86.0"};
-        let rendered = render_file("autograde.yml", &placeholders).unwrap();
-        assert!(rendered.contains("podman pull autograder-base:1.86.0"));
+    fn render_file_renders_the_named_template() {
+        let rendered = render_file("autograde.yml", &HashMap::new()).unwrap();
+        assert!(rendered.contains("autograder.toml"));
     }
 
     #[test]

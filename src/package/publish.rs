@@ -129,7 +129,7 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
     let workflow_dir = out_dir.join(".github/workflows");
     fs::create_dir_all(&workflow_dir)?;
     let workflow_path = workflow_dir.join("autograde.yml");
-    let workflow_yaml = autograde_workflow_yaml(&spec.sandbox.image)?;
+    let workflow_yaml = autograde_workflow_yaml()?;
     fs::write(&workflow_path, workflow_yaml)?;
 
     format_published_tree(out_dir)?;
@@ -235,11 +235,8 @@ fn resolve_rust_sources(
         .collect()
 }
 
-/// The template's release coordinates (repo, version, sha256) are
-/// themselves placeholders an instructor edits after publishing, once they
-/// stand up their own fork/release -- only `{base_image}` is filled in here.
-fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
-    crate::package::template::render_file("autograde.yml", &str_map! {"base_image" => base_image})
+fn autograde_workflow_yaml() -> Result<String> {
+    crate::package::template::render_file("autograde.yml", &str_map! {})
 }
 
 const PUBLISH_CONFIG_FILE: &str = "publish.toml";

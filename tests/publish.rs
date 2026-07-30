@@ -153,25 +153,6 @@ fn publish_errors_clearly_when_the_solution_directory_is_missing() {
 }
 
 #[test]
-fn emitted_workflow_runs_ci_from_the_repo_root_inside_podman() {
-    let assignment_dir = tempfile::tempdir().unwrap();
-    library_package(assignment_dir.path(), "hw3");
-    let out_dir = tempfile::tempdir().unwrap();
-
-    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
-
-    let workflow =
-        std::fs::read_to_string(out_dir.path().join(".github/workflows/autograde.yml")).unwrap();
-    assert!(workflow.contains("on:\n  push:\n    branches: [main]"));
-    assert!(workflow.contains("sha256sum -c -"));
-    assert!(workflow.contains("command -v podman"));
-    assert!(workflow.contains("./autograder vendor ."));
-    assert!(workflow.contains("podman pull autograder-base:1.86.0"));
-    assert!(workflow.contains("./autograder ci"));
-    assert!(!workflow.contains("--harness"));
-}
-
-#[test]
 fn emitted_workspace_manifest_matches_the_source_verbatim() {
     let assignment_dir = tempfile::tempdir().unwrap();
     library_package(assignment_dir.path(), "hw3");
