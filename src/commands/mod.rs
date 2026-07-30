@@ -5,6 +5,7 @@ pub mod grade;
 pub mod init;
 pub mod lock;
 pub mod publish;
+pub mod push;
 pub mod show;
 pub mod vendor;
 
@@ -44,6 +45,7 @@ pub fn dispatch(command: Command) -> Result<()> {
             out,
             mode,
         } => publish::run(&assignment, &out, mode.into()),
+        Command::Push { dir } => push::run(&dir),
     }
 }
 

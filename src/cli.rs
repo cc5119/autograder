@@ -113,6 +113,13 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "starter")]
         mode: PublishModeArg,
     },
+    /// Create a private GitHub repo for a published starter tree and push
+    /// it there.
+    Push {
+        /// Path to an already-published starter tree (`autograder
+        /// publish`'s `--out`).
+        dir: PathBuf,
+    },
 }
 
 /// Mirrors `package::publish::PublishMode`, kept separate so `package`

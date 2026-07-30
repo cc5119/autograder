@@ -59,6 +59,7 @@ fn rules(mode: PublishMode) -> Vec<Rule> {
     vec![
         Rule::File("Cargo.toml", None),
         Rule::File("Cargo.lock", None),
+        Rule::File("README.md", None),
         Rule::File(spec::SPEC_FILE, None),
         Rule::File(".gitignore", None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
