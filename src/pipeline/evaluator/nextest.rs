@@ -395,9 +395,10 @@ pub fn parse_junit_report(xml: &str) -> Result<Vec<TestResult>> {
 
 /// Sums every `autograder: ... score=<f64>` line found in the testcase's
 /// captured stdout (`<system-out>`, only present for a pass when the
-/// harness's nextest profile sets `store-success-output = true`) or its
-/// failure/error text -- `None` if none were reported, so `crate::pipeline::grade`
-/// falls back to the 1.0/0.0 pass/fail default.
+/// harness's nextest profile sets `[profile.default.junit]
+/// store-success-output = true`) or its failure/error text -- `None` if
+/// none were reported, so `crate::pipeline::grade` falls back to the
+/// 1.0/0.0 pass/fail default.
 fn reported_score(node: roxmltree::Node) -> Option<f64> {
     let mut text = String::new();
     for out in node.children() {

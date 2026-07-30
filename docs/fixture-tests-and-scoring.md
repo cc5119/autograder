@@ -113,9 +113,9 @@ autograder: case=<id> score=<f64>
   looping over several internal checks); all of them are summed.
 
 This requires `cargo nextest`'s JUnit output to capture stdout for
-*passing* tests, not just failing ones (`store-success-output = true` in
-the harness's `.config/nextest.toml`), since a test can pass while only
-earning partial credit.
+*passing* tests, not just failing ones (`[profile.default.junit]
+store-success-output = true` in the harness's `.config/nextest.toml`),
+since a test can pass while only earning partial credit.
 
 ## Scoring formulas
 

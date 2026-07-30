@@ -20,11 +20,14 @@ pub(crate) fn sandbox_limits(limits: &BuildLimits) -> SandboxLimits {
     }
 }
 
-/// Writes `dir/.config/nextest.toml` with `store-success-output = true`, so
-/// a *passing* test's stdout still reaches the JUnit report's
-/// `<system-out>` -- required to see `autograder: score=` lines from tests
-/// that pass with partial credit, not just failing ones. Also enables the
-/// JUnit report itself (`[profile.default.junit]`) -- nextest never writes
+/// Writes `dir/.config/nextest.toml` with `[profile.default.junit]
+/// store-success-output = true`, so a *passing* test's stdout still reaches
+/// the JUnit report's `<system-out>` -- required to see `autograder:
+/// score=` lines from tests that pass with partial credit, not just failing
+/// ones. This is a JUnit-specific setting, distinct from the top-level
+/// `success-output` key (which only controls console display and doesn't
+/// affect the XML). Also enables the JUnit report itself
+/// (`[profile.default.junit] path`) -- nextest never writes
 /// `target/nextest/<profile>/junit.xml` unless a config says to, and every
 /// evaluator reads that exact path. Written by the trusted evaluator itself
 /// (like `prepare`'s `.cargo/config.toml`), never checked into the
@@ -35,8 +38,7 @@ pub(crate) fn write_nextest_config(dir: &Path) -> Result<()> {
     crate::exec::fs::create_dir_all(&config_dir)?;
     crate::exec::fs::write(
         &config_dir.join("nextest.toml"),
-        "[profile.default]\nstore-success-output = true\n\n\
-         [profile.default.junit]\npath = \"junit.xml\"\n",
+        "[profile.default.junit]\npath = \"junit.xml\"\nstore-success-output = true\n",
     )
 }
 
