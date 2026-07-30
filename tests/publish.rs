@@ -1,14 +1,14 @@
 //! Integration tests for `autograder::package::publish::publish`. Packages are
-//! scaffolded via `common::library_package`/`binary_package` (the real
-//! `init`), then individual tests overwrite just the file(s) relevant to
-//! what they're checking -- never a second, hand-written copy of the
-//! schema/template shape.
+//! scaffolded via `common::library_package` (the real `init`), then
+//! individual tests overwrite just the file(s) relevant to what they're
+//! checking -- never a second, hand-written copy of the schema/template
+//! shape.
 
 use autograder::error::Error;
 use autograder::package::publish::{PublishMode, publish};
 use autograder::spec::SPEC_FILE;
 
-use crate::common::{binary_package, library_package, write};
+use crate::common::{library_package, write};
 
 const JUDGE_RS: &str = r#"
     #[test]
@@ -352,85 +352,3 @@ fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
     assert!(!out_dir.path().join("hw3/vendor").exists());
 }
 
-const BINARY_JUDGE_RS: &str = r#"
-    #[test]
-    fn counts_words() {
-        assert!(true);
-    }
-
-    #[cfg(not(feature = "student"))]
-    #[test]
-    fn counts_zero_for_empty_input() {
-        assert!(true);
-    }
-"#;
-
-#[test]
-fn publish_derives_a_public_binary_judge_alongside_a_separate_harness_dir() {
-    let package_dir = tempfile::tempdir().unwrap();
-    binary_package(package_dir.path(), "wc");
-    write(
-        &package_dir.path().join("harness/tests/judge.rs"),
-        BINARY_JUDGE_RS,
-    );
-    let out_dir = tempfile::tempdir().unwrap();
-
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
-
-    let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
-    assert!(judge.contains("fn counts_words"));
-    assert!(!judge.contains("counts_zero_for_empty_input"));
-
-    let harness_manifest_source =
-        std::fs::read_to_string(package_dir.path().join("harness/Cargo.toml")).unwrap();
-    let harness_manifest_shipped =
-        std::fs::read_to_string(out_dir.path().join("harness/Cargo.toml")).unwrap();
-    assert_eq!(harness_manifest_shipped, harness_manifest_source);
-
-    let workspace_source = std::fs::read_to_string(package_dir.path().join("Cargo.toml")).unwrap();
-    let workspace_shipped = std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap();
-    assert_eq!(workspace_shipped, workspace_source);
-}
-
-#[test]
-fn publish_never_stubs_the_binary_judges_test_bodies() {
-    let package_dir = tempfile::tempdir().unwrap();
-    binary_package(package_dir.path(), "wc");
-    write(
-        &package_dir.path().join("harness/tests/judge.rs"),
-        BINARY_JUDGE_RS,
-    );
-    let out_dir = tempfile::tempdir().unwrap();
-
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
-
-    let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
-    assert!(judge.contains("assert!(true)"));
-    assert!(!judge.contains("todo!"));
-}
-
-#[test]
-fn cargo_test_at_the_binary_starter_root_runs_the_public_judge() {
-    let package_dir = tempfile::tempdir().unwrap();
-    binary_package(package_dir.path(), "wc");
-    write(
-        &package_dir.path().join("harness/tests/judge.rs"),
-        BINARY_JUDGE_RS,
-    );
-    let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
-
-    let test = std::process::Command::new("cargo")
-        .arg("test")
-        .current_dir(out_dir.path())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&test.stdout);
-    assert!(
-        test.status.success(),
-        "cargo test at the binary starter root failed: {}{}",
-        stdout,
-        String::from_utf8_lossy(&test.stderr)
-    );
-    assert!(stdout.contains("counts_words"));
-}

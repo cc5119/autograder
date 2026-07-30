@@ -11,20 +11,13 @@ use crate::id::AssignmentId;
 /// verbatim (see `publish::rules`), so the two are always byte-identical.
 pub const SPEC_FILE: &str = "autograder.toml";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AssignmentKind {
-    Library,
-    Binary,
-}
-
-/// `id` doubles as the student-facing crate name: the dependency name for
-/// `library`, the expected binary target name for `binary`. `harness`
-/// likewise names both the sibling harness package's directory (relative to
-/// the assignment package dir) and that package's own `[package].name` in
-/// `<harness>/Cargo.toml` -- the two must agree, since this one value drives
-/// both the on-disk path autograder reads and the `-p` argument it passes to
-/// cargo. No default: every assignment must set it explicitly.
+/// `id` doubles as the student-facing crate name and dependency name.
+/// `harness` likewise names both the sibling harness package's directory
+/// (relative to the assignment package dir) and that package's own
+/// `[package].name` in `<harness>/Cargo.toml` -- the two must agree, since
+/// this one value drives both the on-disk path autograder reads and the
+/// `-p` argument it passes to cargo. No default: every assignment must set
+/// it explicitly.
 ///
 /// `cargo-lock-sha256` is the SHA-256 (lowercase hex) of the workspace-root
 /// `Cargo.lock` `autograder lock` last generated -- the "blessed" lock every
@@ -36,7 +29,6 @@ pub enum AssignmentKind {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
     pub id: AssignmentId,
-    pub kind: AssignmentKind,
     pub deadline: Zoned,
     pub harness: String,
     #[serde(rename = "cargo-lock-sha256")]
@@ -227,7 +219,6 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -252,7 +243,6 @@ base = 1.0
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -279,7 +269,6 @@ scale-max = 7.0
     fn parses_a_sum_formula_spec() {
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
-        assert_eq!(spec.assignment.kind, AssignmentKind::Library);
         assert_eq!(spec.build_limits.memory, ByteSize(2 * 1024 * 1024 * 1024));
         assert_eq!(
             spec.build_limits.wall_clock,

@@ -2,7 +2,7 @@
 //! `publish`'s inverse, which derives the public starter tree from an
 //! existing private package.
 //!
-//! The layout to generate *is* a real directory tree, `templates/<kind>/`
+//! The layout to generate *is* a real directory tree, `templates/library/`
 //! (rendered via [`crate::package::template`]), not a Rust table describing one.
 //! Adding or restructuring a generated file is an edit to that tree, never
 //! a change to this module's code.
@@ -19,7 +19,6 @@ use jiff::{ToSpan, Unit, Zoned, ZonedRound};
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::package::template;
-use crate::spec::AssignmentKind;
 
 #[derive(Debug, Clone)]
 pub struct InitOutcome {
@@ -28,7 +27,7 @@ pub struct InitOutcome {
 
 /// Writes a fresh private instructor package at `dir`, which must not
 /// already exist or must be empty.
-pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
+pub fn init(dir: &Path, id: &str) -> Result<InitOutcome> {
     if !is_valid_id(id) {
         return Err(Error::InvalidSpec(format!(
             "{id:?} is not a valid [assignment].id -- use only letters, digits, `_`, and `-`, \
@@ -42,11 +41,6 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         )));
     }
 
-    let kind_name = match kind {
-        AssignmentKind::Library => "library",
-        AssignmentKind::Binary => "binary",
-    };
-
     // Truncated to whole seconds so it reads as an editable value, not
     // generated cruft. Uses the host's own time zone (via `Zoned::now`), so
     // the placeholder is meaningful as-is rather than needing a manual
@@ -57,7 +51,7 @@ pub fn init(dir: &Path, id: &str, kind: AssignmentKind) -> Result<InitOutcome> {
         .to_string();
     let placeholders = HashMap::from([("id", id), ("deadline", deadline.as_str())]);
 
-    for (rel_path, content) in template::render_tree(kind_name, &placeholders)? {
+    for (rel_path, content) in template::render_tree("library", &placeholders)? {
         let dst = dir.join(&rel_path);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;

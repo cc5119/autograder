@@ -18,7 +18,7 @@ use crate::spec::Spec;
 
 pub fn dispatch(command: Command) -> Result<()> {
     match command {
-        Command::Init { dir, kind, id } => init::run(&dir, &id, kind.into()),
+        Command::Init { dir, id } => init::run(&dir, &id),
         Command::Lock { assignment } => lock::run(&assignment),
         Command::Vendor { assignment } => vendor::run(&assignment),
         Command::Fetch {

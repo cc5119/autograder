@@ -134,7 +134,6 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{cargo_lock_sha256}"
@@ -267,7 +266,7 @@ base = 0.0
     }
 
     #[test]
-    fn prepare_never_touches_the_harness_for_either_kind() {
+    fn prepare_never_touches_the_harness() {
         let workspace = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
         write(&workspace.path().join("src/lib.rs"), "// student code");
@@ -279,12 +278,9 @@ base = 0.0
         write(&package.path().join("hw3/tests/judge.rs"), "// judge");
 
         let spec = spec_with_lock(package.path(), &[]);
-        for kind in ["library", "binary"] {
-            let toml = spec_toml(&spec.assignment.cargo_lock_sha256)
-                .replace("kind = \"library\"", &format!("kind = \"{kind}\""));
-            let spec: Spec = toml::from_str(&toml).unwrap();
-            prepare(workspace.path(), package.path(), &spec).unwrap();
-        }
+        let toml = spec_toml(&spec.assignment.cargo_lock_sha256);
+        let spec: Spec = toml::from_str(&toml).unwrap();
+        prepare(workspace.path(), package.path(), &spec).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(package.path().join("harness/Cargo.toml")).unwrap(),

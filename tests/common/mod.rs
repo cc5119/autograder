@@ -8,26 +8,20 @@
 use std::path::Path;
 use std::process::Command;
 
-use autograder::spec::{AssignmentKind, Spec};
+use autograder::spec::Spec;
 
 pub fn write(path: &Path, contents: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, contents).unwrap();
 }
 
-/// Scaffolds a real `library`-kind instructor package at `dir` (via
-/// `init`, which also locks it) and returns the loaded spec. Callers
-/// overwrite/add files under `dir` afterward for test-specific content
-/// (e.g. `harness/tests/judge.rs`) -- editing content, not dependencies,
-/// never invalidates the lock `init` already produced.
+/// Scaffolds a real instructor package at `dir` (via `init`, which also
+/// locks it) and returns the loaded spec. Callers overwrite/add files
+/// under `dir` afterward for test-specific content (e.g.
+/// `harness/tests/judge.rs`) -- editing content, not dependencies, never
+/// invalidates the lock `init` already produced.
 pub fn library_package(dir: &Path, id: &str) -> Spec {
-    autograder::package::init::init(dir, id, AssignmentKind::Library).unwrap();
-    Spec::load(dir).unwrap()
-}
-
-/// Same as [`library_package`], for `binary`-kind.
-pub fn binary_package(dir: &Path, id: &str) -> Spec {
-    autograder::package::init::init(dir, id, AssignmentKind::Binary).unwrap();
+    autograder::package::init::init(dir, id).unwrap();
     Spec::load(dir).unwrap()
 }
 
