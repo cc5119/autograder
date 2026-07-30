@@ -103,7 +103,7 @@ pub struct SandboxOutcome {
     pub stderr: Vec<u8>,
     pub timed_out: bool,
     pub oom: bool,
-    pub cpu_ms: Option<u64>,
+    pub wall_clock_ms: Option<u64>,
 }
 
 impl SandboxOutcome {

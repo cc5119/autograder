@@ -140,8 +140,8 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
         EvalStatus::Ran(_) => unreachable!("handled by the RunStatus::Ok arm above"),
     }
 
-    if let Some(cpu_ms) = eval.cpu_ms {
-        let _ = writeln!(out, "  cpu time       {cpu_ms}ms");
+    if let Some(wall_clock_ms) = eval.wall_clock_ms {
+        let _ = writeln!(out, "  wall clock     {wall_clock_ms}ms");
     }
     let _ = writeln!(out);
 

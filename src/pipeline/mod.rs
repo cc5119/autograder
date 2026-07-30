@@ -86,7 +86,7 @@ fn terminal_eval(
         instructor_commit: None,
         status: EvalStatus::BuildFailed(status),
         tests: Vec::new(),
-        cpu_ms: None,
+        wall_clock_ms: None,
         diagnostics: Diagnostics {
             compiler_errors: None,
             stderr_excerpt: message,

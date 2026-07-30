@@ -94,7 +94,7 @@ mod tests {
             instructor_commit: None,
             status: stages,
             tests,
-            cpu_ms: None,
+            wall_clock_ms: None,
             diagnostics: Default::default(),
         }
     }

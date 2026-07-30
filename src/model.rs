@@ -130,7 +130,7 @@ pub struct EvaluationResult {
     pub status: EvalStatus,
     pub tests: Vec<TestResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_ms: Option<u64>,
+    pub wall_clock_ms: Option<u64>,
     #[serde(default)]
     pub diagnostics: Diagnostics,
 }
@@ -211,7 +211,7 @@ mod tests {
                     reported_score: None,
                 },
             ],
-            cpu_ms: Some(380),
+            wall_clock_ms: Some(380),
             diagnostics: Diagnostics {
                 compiler_errors: None,
                 stderr_excerpt: Some("…".into()),

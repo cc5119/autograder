@@ -199,7 +199,7 @@ impl Evaluator for CapturingEvaluator<'_> {
             instructor_commit: None,
             status: EvalStatus::Ran(RunStatus::Ok),
             tests: Vec::new(),
-            cpu_ms: None,
+            wall_clock_ms: None,
             diagnostics: Default::default(),
         })
     }

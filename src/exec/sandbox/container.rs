@@ -208,7 +208,7 @@ impl Sandbox for ContainerSandbox {
             stderr: outcome.stderr,
             timed_out: outcome.timed_out,
             oom,
-            cpu_ms: Some(outcome.wall_clock.as_millis() as u64),
+            wall_clock_ms: Some(outcome.wall_clock.as_millis() as u64),
         })
     }
 }

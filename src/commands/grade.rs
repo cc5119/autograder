@@ -123,7 +123,7 @@ max-output-bytes = "64KiB"
                     reported_score: None,
                 },
             ],
-            cpu_ms: None,
+            wall_clock_ms: None,
             diagnostics: Diagnostics::default(),
         }
     }

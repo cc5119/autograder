@@ -154,7 +154,7 @@ impl Evaluator for StubEvaluator {
             instructor_commit: None,
             status: EvalStatus::Ran(RunStatus::Ok),
             tests,
-            cpu_ms: None,
+            wall_clock_ms: None,
             diagnostics: Diagnostics::default(),
         })
     }

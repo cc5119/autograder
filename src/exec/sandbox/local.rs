@@ -34,7 +34,7 @@ impl Sandbox for LocalSandbox {
             // No cgroup accounting without a container runtime: OOM is
             // never detected locally, and only wall-clock is reported.
             oom: false,
-            cpu_ms: Some(outcome.wall_clock.as_millis() as u64),
+            wall_clock_ms: Some(outcome.wall_clock.as_millis() as u64),
         })
     }
 }

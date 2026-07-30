@@ -281,7 +281,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             instructor_commit: None,
             status: EvalStatus::Ran(RunStatus::Ok),
             tests,
-            cpu_ms: run_outcome.cpu_ms,
+            wall_clock_ms: run_outcome.wall_clock_ms,
             diagnostics,
         })
     }
@@ -300,7 +300,7 @@ fn build_failed_result(
         instructor_commit: None,
         status: EvalStatus::BuildFailed(status),
         tests: Vec::new(),
-        cpu_ms: None,
+        wall_clock_ms: None,
         diagnostics,
     }
 }
@@ -318,7 +318,7 @@ fn run_failed_result(
         instructor_commit: None,
         status: EvalStatus::Ran(status),
         tests: Vec::new(),
-        cpu_ms: None,
+        wall_clock_ms: None,
         diagnostics,
     }
 }
@@ -528,7 +528,7 @@ autograder: case=b score=0.25
             stderr: Vec::new(),
             timed_out: false,
             oom: false,
-            cpu_ms: None,
+            wall_clock_ms: None,
         }
     }
 
@@ -539,7 +539,7 @@ autograder: case=b score=0.25
             stderr: b"error[E0433]: failed to resolve".to_vec(),
             timed_out: false,
             oom: false,
-            cpu_ms: None,
+            wall_clock_ms: None,
         }
     }
 
