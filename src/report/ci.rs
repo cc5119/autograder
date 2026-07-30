@@ -121,9 +121,8 @@ mod tests {
 
     fn eval_with_tests(tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
-            schema_version: 1,
             assignment_id: "hw3".into(),
-            submission_id: "local".into(),
+            student_id: "local".into(),
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,

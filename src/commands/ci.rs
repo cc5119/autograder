@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::exec::fs;
-use crate::id::SubmissionId;
+use crate::id::StudentId;
 use crate::model::JobContext;
 use crate::pipeline::{self, prepare};
 use crate::report::ci::CiReport;
@@ -15,7 +15,7 @@ pub fn run(local_sandbox: bool) -> Result<()> {
     let run_id = pipeline::generate_run_id();
     let ctx = JobContext {
         assignment_id: spec.assignment.id,
-        submission_id: SubmissionId::new("local"),
+        student_id: StudentId::new("local"),
         run_id,
         workspace: workspace.clone(),
     };

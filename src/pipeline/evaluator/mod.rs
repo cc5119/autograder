@@ -147,9 +147,8 @@ impl Evaluator for StubEvaluator {
         let tests = self.tests.clone();
 
         Ok(EvaluationResult {
-            schema_version: 1,
             assignment_id: ctx.assignment_id,
-            submission_id: ctx.submission_id,
+            student_id: ctx.student_id,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
@@ -180,7 +179,7 @@ mod tests {
         };
         let ctx = JobContext {
             assignment_id: "hw3".into(),
-            submission_id: "alice".into(),
+            student_id: "alice".into(),
             run_id: "run-1".into(),
             workspace: PathBuf::from("/tmp/does-not-matter"),
         };

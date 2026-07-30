@@ -111,16 +111,16 @@ impl<'de, Tag> Deserialize<'de> for Id<Tag> {
 pub enum StudentTag {}
 pub enum AssignmentTag {}
 pub enum RunTag {}
-pub enum SubmissionTag {}
 
+/// A student's roster id, and also what identifies one submission
+/// directory under a submissions dir: `fetch` names each checkout after
+/// the student it fetched, and evaluate/grade reuse that exact directory
+/// name (see `pipeline::evaluate_batch`'s module doc comment). There's no
+/// separate submission identity -- a submission's id *is* the student id
+/// it was checked out under.
 pub type StudentId = Id<StudentTag>;
 pub type AssignmentId = Id<AssignmentTag>;
 pub type RunId = Id<RunTag>;
-/// Identifies one submission directory under a submissions dir. `fetch`
-/// happens to name it after the student it fetched, but evaluate/grade
-/// only ever see an opaque submission -- never a student (see
-/// `pipeline::evaluate_batch`'s module doc comment).
-pub type SubmissionId = Id<SubmissionTag>;
 
 #[cfg(test)]
 mod tests {

@@ -1,15 +1,10 @@
-use crate::id::StudentId;
 use crate::model::{EvalStatus, EvaluationResult, Grade, RunStatus, TestResult, TestStatus};
 use crate::spec::{Scoring, ScoringFormula};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
 /// untrusted code runs here, and no pre-declared test-name table is
 /// consulted -- every test `eval` reports feeds the sum, whatever its
-/// runtime name. `eval.submission_id` names a submission, not a student --
-/// `autograder fetch` always chooses that name to be the student's own id
-/// (see `submissions` module doc comment), so it's reused verbatim as the
-/// `Grade`'s `student_id` here, the one place submission identity turns
-/// back into student identity.
+/// runtime name.
 pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     // A stage-level failure means the run never produced a trustworthy set
     // of test results at all, even if a few tests happened to report
@@ -59,7 +54,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     };
 
     Grade {
-        student_id: StudentId::new(eval.submission_id.as_str()),
+        student_id: eval.student_id,
         score,
         max,
         status,
@@ -92,9 +87,8 @@ mod tests {
 
     fn eval_with(stages: EvalStatus, tests: Vec<TestResult>) -> EvaluationResult {
         EvaluationResult {
-            schema_version: 1,
             assignment_id: "hw3".into(),
-            submission_id: "alice".into(),
+            student_id: "alice".into(),
             run_id: "run1".into(),
             graded_commit: None,
             instructor_commit: None,

@@ -5,6 +5,7 @@ pub mod grade;
 pub mod init;
 pub mod lock;
 pub mod publish;
+pub mod show;
 pub mod vendor;
 
 use std::path::Path;
@@ -37,6 +38,7 @@ pub fn dispatch(command: Command) -> Result<()> {
             assignment,
             submissions,
         } => grade::run(&assignment, &submissions),
+        Command::Show { submission, verbose } => show::run(&submission, verbose),
         Command::Publish {
             assignment,
             out,
@@ -159,7 +161,7 @@ base = 0.0
         let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            submission_id: "local".into(),
+            student_id: "local".into(),
             run_id: "run-1".into(),
             workspace,
         };

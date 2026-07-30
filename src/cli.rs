@@ -86,6 +86,20 @@ pub enum Command {
         #[arg(long)]
         submissions: PathBuf,
     },
+    /// Print one submission's persisted fetch record (if any) and latest
+    /// evaluate run (if any). Read-only -- never re-runs Fetch or
+    /// Evaluate.
+    Show {
+        /// Path to a submission checkout dir, e.g. `<submissions>/alice`
+        /// (the same layout `autograder fetch --out`/`evaluate
+        /// --submissions` use) -- `.fetch/`/`.eval/` records are looked up
+        /// as its siblings.
+        submission: PathBuf,
+        /// Print full diagnostics (compiler errors/stderr) and per-test
+        /// failure messages, instead of just a one-line status/label.
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Publish either the starter/template repo (for distribution to
     /// students) or the solution repo (real implementations, kept out of
     /// the harness) from the private instructor workspace.

@@ -2,16 +2,16 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{AssignmentId, RunId, StudentId, SubmissionId};
+use crate::id::{AssignmentId, RunId, StudentId};
 
-/// Per-job context threaded through the pipeline stages. `submission_id`
-/// identifies a submission directory, not a student -- evaluate never
-/// knows or cares which student it came from (see
-/// `pipeline::evaluate_batch`'s module doc comment).
+/// Per-job context threaded through the pipeline stages. `student_id`
+/// identifies a submission directory (see `StudentId`'s doc comment) --
+/// evaluate itself never consults roster data by it, even though the id
+/// is a `StudentId`.
 #[derive(Debug, Clone)]
 pub struct JobContext {
     pub assignment_id: AssignmentId,
-    pub submission_id: SubmissionId,
+    pub student_id: StudentId,
     pub run_id: RunId,
     pub workspace: PathBuf,
 }
@@ -114,13 +114,12 @@ pub enum EvalStatus {
 }
 
 /// The sole contract between untrusted execution and scoring.
-/// `submission_id` identifies the submission this ran, not a student --
-/// see `JobContext`'s doc comment.
+/// `student_id` identifies the submission this ran -- see `JobContext`'s
+/// doc comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
-    pub schema_version: u32,
     pub assignment_id: AssignmentId,
-    pub submission_id: SubmissionId,
+    pub student_id: StudentId,
     pub run_id: RunId,
     /// The graded submission's own commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,14 +150,14 @@ impl EvaluationResult {
                     .count();
                 format!(
                     "{}: ok ({passed}/{} tests passed)",
-                    self.submission_id,
+                    self.student_id,
                     self.tests.len()
                 )
             }
             EvalStatus::BuildFailed(status) => {
-                format!("{}: {}", self.submission_id, status.label())
+                format!("{}: {}", self.student_id, status.label())
             }
-            EvalStatus::Ran(status) => format!("{}: {}", self.submission_id, status.label()),
+            EvalStatus::Ran(status) => format!("{}: {}", self.student_id, status.label()),
         }
     }
 }
@@ -183,9 +182,8 @@ mod tests {
 
     fn sample() -> EvaluationResult {
         EvaluationResult {
-            schema_version: 1,
             assignment_id: AssignmentId::new("hw3"),
-            submission_id: SubmissionId::new("alice"),
+            student_id: StudentId::new("alice"),
             run_id: RunId::new("2026-07-17T18-03-00Z-ab12"),
             graded_commit: Some("a1b2c3d".into()),
             instructor_commit: Some("f9e8d7".into()),

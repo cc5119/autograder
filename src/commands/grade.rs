@@ -101,9 +101,8 @@ max-output-bytes = "64KiB"
 
     fn persisted_eval() -> EvaluationResult {
         EvaluationResult {
-            schema_version: 1,
             assignment_id: "hw3".into(),
-            submission_id: "alice".into(),
+            student_id: "alice".into(),
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,

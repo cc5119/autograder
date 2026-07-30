@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::write_json;
 use crate::exec::overlay::{self, Context, Rule};
-use crate::id::{RunId, SubmissionId};
+use crate::id::{RunId, StudentId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
 use crate::spec::Spec;
@@ -33,7 +33,7 @@ const EVAL_DIR: &str = ".eval";
 /// checkout got there -- no fetch record required or consulted -- so a
 /// directory dropped in by hand works exactly like one `autograder fetch`
 /// produced. Sorted by name.
-fn list_submissions(submissions_dir: &Path) -> Result<Vec<SubmissionId>> {
+fn list_submissions(submissions_dir: &Path) -> Result<Vec<StudentId>> {
     if !submissions_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -49,7 +49,7 @@ fn list_submissions(submissions_dir: &Path) -> Result<Vec<SubmissionId>> {
         if name.starts_with('.') {
             continue;
         }
-        ids.push(SubmissionId::new(name));
+        ids.push(StudentId::new(name));
     }
     ids.sort();
     Ok(ids)
@@ -79,9 +79,8 @@ fn terminal_eval(
     message: Option<String>,
 ) -> EvaluationResult {
     EvaluationResult {
-        schema_version: 1,
         assignment_id: ctx.assignment_id,
-        submission_id: ctx.submission_id,
+        student_id: ctx.student_id,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
@@ -178,7 +177,7 @@ fn evaluate_submission(
 fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
     let path = submissions_dir
         .join(EVAL_DIR)
-        .join(eval.submission_id.as_str())
+        .join(eval.student_id.as_str())
         .join(format!("{}.eval.json", eval.run_id));
     write_json(&path, eval)
 }
@@ -190,7 +189,7 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 /// `list_submissions`) -- so a submission never aborts the batch, and
 /// which student (if any) a submission maps to is entirely `autograder
 /// fetch`/`autograder grade`'s concern, not evaluate's. Each result is
-/// persisted at `submissions_dir/.eval/<submission_id>/<run_id>.eval.json`.
+/// persisted at `submissions_dir/.eval/<student_id>/<run_id>.eval.json`.
 /// No scoring happens here -- run `autograder grade` afterwards for that.
 ///
 /// Refuses up front, before touching any submission, if `package_dir`
@@ -209,7 +208,7 @@ pub fn evaluate_batch(
         return Err(Error::InvalidSpec(message));
     }
 
-    let submission_ids = list_submissions(submissions_dir)?;
+    let student_ids = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
 
     // A single reused spinner, not one `ProgressBar` per submission: each
@@ -222,11 +221,11 @@ pub fn evaluate_batch(
     );
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    for submission_id in submission_ids {
-        progress.set_message(format!("evaluating {submission_id}..."));
+    for student_id in student_ids {
+        progress.set_message(format!("evaluating {student_id}..."));
 
         let run_id = generate_run_id();
-        let checkout_dir = submissions_dir.join(submission_id.as_str());
+        let checkout_dir = submissions_dir.join(student_id.as_str());
         // A fresh OS temp dir per submission -- dropped (and cleaned up)
         // automatically at the end of this iteration, no manual cleanup.
         let build_scratch = tempfile::tempdir().map_err(|source| {
@@ -239,7 +238,7 @@ pub fn evaluate_batch(
         let workspace = build_dir.join(spec.assignment.id.as_str());
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            submission_id,
+            student_id,
             run_id,
             workspace: workspace.clone(),
         };

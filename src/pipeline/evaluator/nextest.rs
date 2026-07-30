@@ -274,9 +274,8 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         let diagnostics = run_diagnostics(&run_outcome);
 
         Ok(EvaluationResult {
-            schema_version: 1,
             assignment_id: ctx.assignment_id,
-            submission_id: ctx.submission_id,
+            student_id: ctx.student_id,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
@@ -294,9 +293,8 @@ fn build_failed_result(
     diagnostics: Diagnostics,
 ) -> EvaluationResult {
     EvaluationResult {
-        schema_version: 1,
         assignment_id: ctx.assignment_id,
-        submission_id: ctx.submission_id,
+        student_id: ctx.student_id,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
@@ -313,9 +311,8 @@ fn run_failed_result(
     diagnostics: Diagnostics,
 ) -> EvaluationResult {
     EvaluationResult {
-        schema_version: 1,
         assignment_id: ctx.assignment_id,
-        submission_id: ctx.submission_id,
+        student_id: ctx.student_id,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
@@ -589,7 +586,7 @@ base = 0.0
     fn ctx(workspace: PathBuf) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
-            submission_id: "alice".into(),
+            student_id: "alice".into(),
             run_id: "run-1".into(),
             workspace,
         }
