@@ -25,8 +25,8 @@ pub const VENDOR_CONFIG_FILE: &str = "config.toml";
 /// re-running `cargo vendor`.
 const LOCK_MARKER_FILE: &str = ".lock-sha256";
 
-pub fn absolute_vendor_dir(package_dir: &Path) -> PathBuf {
-    absolutize(&package_dir.join("vendor"))
+pub fn absolute_vendor_dir(assignment_dir: &Path) -> PathBuf {
+    absolutize(&assignment_dir.join("vendor"))
 }
 
 /// Any path handed to Cargo through `--config`/a config file's
@@ -39,23 +39,23 @@ pub fn absolutize(path: &Path) -> PathBuf {
 }
 
 /// Runs `cargo vendor --locked` directly against the workspace root at
-/// `package_dir` -- both `{id}` and `{harness}` at once, sourced straight
-/// from the checked-in `Cargo.lock` -- producing `<package_dir>/vendor/`
+/// `assignment_dir` -- both `{id}` and `{harness}` at once, sourced straight
+/// from the checked-in `Cargo.lock` -- producing `<assignment_dir>/vendor/`
 /// (with its own `config.toml` and `.lock-sha256` marker, see
-/// `VENDOR_CONFIG_FILE`/`LOCK_MARKER_FILE`) plus `<package_dir>/.cargo/config.toml`
-/// for a plain local `cargo test`/`cargo build` run from `package_dir`.
+/// `VENDOR_CONFIG_FILE`/`LOCK_MARKER_FILE`) plus `<assignment_dir>/.cargo/config.toml`
+/// for a plain local `cargo test`/`cargo build` run from `assignment_dir`.
 /// Trusted, online, one-time per assignment -- never runs on student code.
 /// Refuses up front if `Cargo.lock` doesn't match the blessed hash
 /// `autograder lock` recorded (`crate::deps::lock::verify`), so vendoring
 /// can never silently pull a different dependency graph than the one
 /// grading is meant to check submissions against.
-pub fn vendor(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
-    if let Some(message) = crate::deps::lock::verify(package_dir, spec) {
+pub fn vendor(assignment_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
+    if let Some(message) = crate::deps::lock::verify(assignment_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
 
-    let vendor_dir = absolute_vendor_dir(package_dir);
-    let manifest_path = package_dir.join("Cargo.toml");
+    let vendor_dir = absolute_vendor_dir(assignment_dir);
+    let manifest_path = assignment_dir.join("Cargo.toml");
 
     let output = Command::new("cargo")
         .arg("vendor")
@@ -86,13 +86,13 @@ pub fn vendor(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     let vendor_config = String::from_utf8_lossy(&output.stdout).into_owned();
     crate::exec::fs::write(&vendor_dir.join(VENDOR_CONFIG_FILE), &vendor_config)?;
 
-    let lock_contents = crate::exec::fs::read_to_string(&package_dir.join("Cargo.lock"))?;
+    let lock_contents = crate::exec::fs::read_to_string(&assignment_dir.join("Cargo.lock"))?;
     crate::exec::fs::write(
         &vendor_dir.join(LOCK_MARKER_FILE),
         crate::deps::cargo_lock::sha256_hex(&lock_contents),
     )?;
 
-    let cargo_dir = package_dir.join(".cargo");
+    let cargo_dir = assignment_dir.join(".cargo");
     crate::exec::fs::create_dir_all(&cargo_dir)?;
     let cargo_config_path = cargo_dir.join("config.toml");
     crate::exec::fs::write(&cargo_config_path, &vendor_config)?;
@@ -103,8 +103,8 @@ pub fn vendor(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     })
 }
 
-/// Verifies `package_dir/vendor` is present and was built from the
-/// `Cargo.lock` currently checked in at `package_dir` (its sha256,
+/// Verifies `assignment_dir/vendor` is present and was built from the
+/// `Cargo.lock` currently checked in at `assignment_dir` (its sha256,
 /// recorded at `vendor` time in `LOCK_MARKER_FILE`) before `evaluate`
 /// trusts an `--offline` build against it. `None` means it's safe to
 /// proceed; `Some(message)` is a human-readable explanation meant for a
@@ -112,14 +112,14 @@ pub fn vendor(package_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
 /// unlike `crate::deps::lock::verify`, there's no per-submission
 /// diagnostic to fall back to here, since an unvendored/stale dependency
 /// set isn't something any individual submission did wrong.
-pub fn verify(package_dir: &Path, spec: &Spec) -> Option<String> {
-    let vendor_dir = package_dir.join("vendor");
+pub fn verify(assignment_dir: &Path, spec: &Spec) -> Option<String> {
+    let vendor_dir = assignment_dir.join("vendor");
     if !vendor_dir.is_dir() {
         return Some(format!(
             "{} is missing -- this assignment has never been vendored; run `autograder vendor \
              {}` before evaluating submissions",
             vendor_dir.display(),
-            package_dir.display()
+            assignment_dir.display()
         ));
     }
     let marker_path = vendor_dir.join(LOCK_MARKER_FILE);
@@ -129,7 +129,7 @@ pub fn verify(package_dir: &Path, spec: &Spec) -> Option<String> {
              rather than `autograder vendor`; re-run `autograder vendor {}`",
             marker_path.display(),
             vendor_dir.display(),
-            package_dir.display()
+            assignment_dir.display()
         ));
     };
     if found.trim() == spec.assignment.cargo_lock_sha256 {
@@ -141,7 +141,7 @@ pub fn verify(package_dir: &Path, spec: &Spec) -> Option<String> {
             vendor_dir.display(),
             spec.assignment.cargo_lock_sha256,
             found.trim(),
-            package_dir.display()
+            assignment_dir.display()
         ))
     }
 }
@@ -160,21 +160,21 @@ mod tests {
     /// into the returned `Spec` -- exactly what `lock::lock` would leave
     /// behind, built without a network round-trip since there's nothing to
     /// resolve.
-    fn empty_workspace(package_dir: &Path) -> Spec {
+    fn empty_workspace(assignment_dir: &Path) -> Spec {
         write(
-            &package_dir.join("Cargo.toml"),
+            &assignment_dir.join("Cargo.toml"),
             "[workspace]\nresolver = \"3\"\nmembers = [\"harness\", \"hw3\"]\n",
         );
         write(
-            &package_dir.join("hw3/Cargo.toml"),
+            &assignment_dir.join("hw3/Cargo.toml"),
             "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         );
-        write(&package_dir.join("hw3/src/lib.rs"), "");
+        write(&assignment_dir.join("hw3/src/lib.rs"), "");
         write(
-            &package_dir.join("harness/Cargo.toml"),
+            &assignment_dir.join("harness/Cargo.toml"),
             "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
-        write(&package_dir.join("harness/src/main.rs"), "fn main() {}\n");
+        write(&assignment_dir.join("harness/src/main.rs"), "fn main() {}\n");
 
         let toml = format!(
             r#"
@@ -202,19 +202,19 @@ base = 0.0
 "#,
             "0".repeat(64),
         );
-        write(&package_dir.join("autograder.toml"), &toml);
+        write(&assignment_dir.join("autograder.toml"), &toml);
 
-        let outcome = crate::deps::lock::lock(package_dir).unwrap();
-        let spec_toml = std::fs::read_to_string(package_dir.join("autograder.toml")).unwrap();
+        let outcome = crate::deps::lock::lock(assignment_dir).unwrap();
+        let spec_toml = std::fs::read_to_string(assignment_dir.join("autograder.toml")).unwrap();
         let spec: Spec = toml::from_str(&spec_toml).unwrap();
         assert_eq!(spec.assignment.cargo_lock_sha256, outcome.sha256);
         spec
     }
 
-    /// Regression test: a relative `package_dir` must not produce a
+    /// Regression test: a relative `assignment_dir` must not produce a
     /// relative `vendor_dir` (see `absolutize`'s doc comment).
     #[test]
-    fn absolute_vendor_dir_absolutizes_a_relative_package_dir() {
+    fn absolute_vendor_dir_absolutizes_a_relative_assignment_dir() {
         let relative = Path::new("examples/hw3/instructor");
         let absolutized = absolute_vendor_dir(relative);
 
@@ -229,7 +229,7 @@ base = 0.0
     }
 
     #[test]
-    fn absolute_vendor_dir_leaves_an_already_absolute_package_dir_alone() {
+    fn absolute_vendor_dir_leaves_an_already_absolute_assignment_dir_alone() {
         assert_eq!(
             absolute_vendor_dir(Path::new("/pkg")),
             PathBuf::from("/pkg/vendor")

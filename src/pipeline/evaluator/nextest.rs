@@ -2,7 +2,8 @@
 //! assignments, kind-agnostic.
 //!
 //! The harness is overlaid fresh per job into `repo_root/<harness>`
-//! (`repo_root` = `ctx.workspace`'s parent), never built in place -- sharing
+//! (`repo_root` = `ctx.workspace`, the scratch root -- see `JobContext`'s
+//! doc comment), never built in place -- sharing
 //! one harness dir across jobs would race different students' builds
 //! against the same `Cargo.lock`/`target/`, since Cargo rewrites the lock
 //! whenever a path dependency's contents change.
@@ -36,12 +37,12 @@
 //!    `autograder-test` calls in the harness's own test code, not from
 //!    `autograder.toml`.
 //!
-//! `repo_root` isn't a descendant of `workspace`, so Cargo can't discover
-//! `workspace`'s own offline vendoring config there -- `evaluate` writes an
-//! equivalent `repo_root/.cargo/config.toml` up front instead (copied
-//! verbatim from the vendor dir's own `config.toml`, see
-//! `vendor::VENDOR_CONFIG_FILE`), which every cargo invocation below then
-//! picks up automatically since `workdir` is always `repo_root` itself.
+//! `repo_root` isn't a descendant of `submission_package_dir()` (see
+//! `JobContext`'s doc comment for the layout), so Cargo can't discover that
+//! package's own offline vendoring config there -- `evaluate` writes an
+//! equivalent `repo_root/.cargo/config.toml` up front instead, copied
+//! verbatim from the vendor dir's own `config.toml`
+//! (`vendor::VENDOR_CONFIG_FILE`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -63,7 +64,7 @@ const VENDOR_DIR_NAME: &str = "vendor";
 
 pub struct Nextest<S> {
     sandbox: S,
-    package_dir: PathBuf,
+    assignment_dir: PathBuf,
     limits: SandboxLimits,
     /// `[assignment].harness` -- names both the harness's sibling directory
     /// and its own `[package].name`, which must agree. Cloned once at
@@ -72,9 +73,9 @@ pub struct Nextest<S> {
 }
 
 impl<S: Sandbox> Nextest<S> {
-    pub fn new(spec: &Spec, package_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
-        let package_dir = package_dir.into();
-        let harness_manifest = package_dir
+    pub fn new(spec: &Spec, assignment_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
+        let assignment_dir = assignment_dir.into();
+        let harness_manifest = assignment_dir
             .join(&spec.assignment.harness)
             .join("Cargo.toml");
         if !harness_manifest.is_file() {
@@ -86,14 +87,14 @@ impl<S: Sandbox> Nextest<S> {
         }
         Ok(Self {
             sandbox,
-            package_dir,
+            assignment_dir,
             limits: sandbox_limits(&spec.build_limits),
             harness_package: spec.assignment.harness.clone(),
         })
     }
 
     fn vendor_dir(&self) -> PathBuf {
-        vendor::absolutize(&self.package_dir.join(VENDOR_DIR_NAME))
+        vendor::absolutize(&self.assignment_dir.join(VENDOR_DIR_NAME))
     }
 
     /// Env shared identically across all three cargo invocations, so they
@@ -115,20 +116,20 @@ impl<S: Sandbox> Nextest<S> {
     }
 
     /// For the run stage (see this module's doc comment).
-    fn full_mounts(&self, repo_root: &Path, workspace: &Path) -> Vec<Mount> {
+    fn full_mounts(&self, repo_root: &Path, submission_dir: &Path) -> Vec<Mount> {
         super::repo_root_mounts(
             repo_root,
-            workspace,
+            submission_dir,
             &self.harness_dir(repo_root),
             &self.vendor_dir(),
         )
     }
 
     /// For the two build stages (see this module's doc comment).
-    fn hidden_tests_mounts(&self, repo_root: &Path, workspace: &Path) -> Result<Vec<Mount>> {
+    fn hidden_tests_mounts(&self, repo_root: &Path, submission_dir: &Path) -> Result<Vec<Mount>> {
         super::hidden_tests_mounts(
             repo_root,
-            workspace,
+            submission_dir,
             &self.harness_dir(repo_root),
             &self.vendor_dir(),
         )
@@ -156,15 +157,10 @@ impl<S: Sandbox> Nextest<S> {
 
 impl<S: Sandbox> Evaluator for Nextest<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
-        let repo_root = ctx
-            .workspace
-            .parent()
-            .expect(
-                "workspace always has a parent (repo_root); see model.rs's JobContext doc comment",
-            )
-            .to_path_buf();
-        self.write_repo_root_config(&repo_root)?;
-        let env = self.cargo_env(&repo_root);
+        let repo_root = &ctx.workspace;
+        let submission_dir = ctx.submission_package_dir();
+        self.write_repo_root_config(repo_root)?;
+        let env = self.cargo_env(repo_root);
 
         // Stage 1 (see this module's doc comment).
         let build_id_spec = SandboxSpec {
@@ -178,7 +174,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             limits: Some(self.limits.clone()),
             workdir: repo_root.clone(),
             env: env.clone(),
-            mounts: self.hidden_tests_mounts(&repo_root, &ctx.workspace)?,
+            mounts: self.hidden_tests_mounts(repo_root, &submission_dir)?,
             profile: Profile::Build,
         };
 
@@ -206,7 +202,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             limits: Some(self.limits.clone()),
             workdir: repo_root.clone(),
             env: env.clone(),
-            mounts: self.full_mounts(&repo_root, &ctx.workspace),
+            mounts: self.full_mounts(repo_root, &submission_dir),
             profile: Profile::Build,
         };
 
@@ -222,7 +218,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             ));
         }
 
-        write_nextest_config(&repo_root)?;
+        write_nextest_config(repo_root)?;
 
         // Stage 3 (see this module's doc comment).
         let run_spec = SandboxSpec {
@@ -240,7 +236,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
                 env.insert("AUTOGRADER_SANDBOX".to_string(), "1".to_string());
                 env
             },
-            mounts: self.full_mounts(&repo_root, &ctx.workspace),
+            mounts: self.full_mounts(repo_root, &submission_dir),
             profile: Profile::IsolateRun,
         };
 
@@ -578,32 +574,31 @@ base = 0.0
         toml::from_str(toml).unwrap()
     }
 
-    /// `workspace` and `harness/` as real siblings under one `repo_root`,
-    /// matching the invariant `Nextest::evaluate` relies on in production
-    /// (see this module's doc comment). Returns `(workspace, harness_dir)`
-    /// -- callers that don't need `harness_dir` for their own assertions
-    /// can ignore it.
+    /// Creates the `{id}/` and `harness/` siblings under `repo_root` (see
+    /// `JobContext`'s doc comment for the layout). Most tests only need the
+    /// directory-creation side effect and `harness_dir` for their own
+    /// assertions.
     fn job_dirs(repo_root: &std::path::Path) -> (PathBuf, PathBuf) {
-        let workspace = repo_root.join("hw3");
+        let submission_dir = repo_root.join("hw3");
         let harness_dir = repo_root.join("harness");
-        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&submission_dir).unwrap();
         std::fs::create_dir_all(&harness_dir).unwrap();
-        (workspace, harness_dir)
+        (submission_dir, harness_dir)
     }
 
-    fn ctx(workspace: PathBuf) -> JobContext {
+    fn ctx(repo_root: PathBuf) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
             student_id: "alice".into(),
             run_id: "run-1".into(),
-            workspace,
+            workspace: repo_root,
         }
     }
 
-    fn write_harness_manifest(package_dir: &std::path::Path) {
-        std::fs::create_dir_all(package_dir.join("harness")).unwrap();
+    fn write_harness_manifest(assignment_dir: &std::path::Path) {
+        std::fs::create_dir_all(assignment_dir.join("harness")).unwrap();
         std::fs::write(
-            package_dir.join("harness/Cargo.toml"),
+            assignment_dir.join("harness/Cargo.toml"),
             "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
              [[bin]]\nname = \"driver\"\npath = \"src/bin/driver.rs\"\n\n\
              [dependencies]\nhw3 = { path = \"../hw3\" }\n",
@@ -613,20 +608,20 @@ base = 0.0
 
     #[test]
     fn new_errors_clearly_when_the_harness_is_missing() {
-        let package_dir = tempfile::tempdir().unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
 
-        let result = Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![]));
+        let result = Nextest::new(&spec(), assignment_dir.path(), ScriptedSandbox::new(vec![]));
 
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
     #[test]
     fn write_repo_root_config_is_a_no_op_without_a_vendored_vendor_dir() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
         let evaluator =
-            Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+            Nextest::new(&spec(), assignment_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
         evaluator.write_repo_root_config(repo_root.path()).unwrap();
 
@@ -635,11 +630,11 @@ base = 0.0
 
     #[test]
     fn write_repo_root_config_copies_the_vendor_dirs_config_verbatim() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
-        std::fs::create_dir_all(package_dir.path().join("vendor")).unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
+        std::fs::create_dir_all(assignment_dir.path().join("vendor")).unwrap();
         std::fs::write(
-            package_dir.path().join("vendor/config.toml"),
+            assignment_dir.path().join("vendor/config.toml"),
             "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n\
              [source.\"git+https://example.com/x\"]\ngit = \"https://example.com/x\"\n\
              replace-with = \"vendored-sources\"\n\n\
@@ -648,7 +643,7 @@ base = 0.0
         .unwrap();
         let repo_root = tempfile::tempdir().unwrap();
         let evaluator =
-            Nextest::new(&spec(), package_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+            Nextest::new(&spec(), assignment_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
 
         evaluator.write_repo_root_config(repo_root.path()).unwrap();
 
@@ -659,15 +654,15 @@ base = 0.0
 
     #[test]
     fn stage_1_build_failure_short_circuits_before_stage_2() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
+        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         assert!(matches!(
             eval.status,
@@ -680,15 +675,15 @@ base = 0.0
 
     #[test]
     fn stage_2_build_failure_short_circuits_before_stage_3() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
+        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         assert!(matches!(
             eval.status,
@@ -700,17 +695,17 @@ base = 0.0
 
     #[test]
     fn missing_junit_report_after_a_successful_run_is_a_harness_error() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         // build id, build harness, run -- all three stages succeed, but no
         // junit report is on disk afterwards.
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
+        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         assert!(matches!(
             eval.status,
@@ -720,10 +715,10 @@ base = 0.0
 
     #[test]
     fn a_junit_report_on_disk_is_parsed_into_the_eval_result() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, _harness_dir) = job_dirs(repo_root.path());
         // Workspace builds land `target/` at the workspace root, not under
         // `harness/` -- see this module's doc comment.
         let junit_path = repo_root.path().join("target/nextest/default/junit.xml");
@@ -731,9 +726,9 @@ base = 0.0
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(workspace)).unwrap();
+        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         assert!(matches!(eval.status, EvalStatus::Ran(RunStatus::Ok)));
         assert_eq!(eval.tests.len(), 3);
@@ -741,14 +736,14 @@ base = 0.0
 
     #[test]
     fn stage_1_builds_only_id_with_harness_tests_hidden_and_build_limits() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(workspace)).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         let specs = specs.lock().unwrap();
         let build_spec = &specs[0];
@@ -769,14 +764,14 @@ base = 0.0
 
     #[test]
     fn stage_2_builds_only_harness_in_its_own_sandbox_call_with_harness_tests_visible() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(workspace)).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         let specs = specs.lock().unwrap();
         let build_spec = &specs[1];
@@ -801,17 +796,17 @@ base = 0.0
 
     #[test]
     fn stage_3_runs_direct_from_source_with_harness_tests_visible_and_no_limits() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write_harness_manifest(package_dir.path());
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, harness_dir) = job_dirs(repo_root.path());
         let junit_path = repo_root.path().join("target/nextest/default/junit.xml");
         std::fs::create_dir_all(junit_path.parent().unwrap()).unwrap();
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(&spec(), package_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(workspace)).unwrap();
+        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         let specs = specs.lock().unwrap();
         let run_spec = &specs[2];
@@ -834,10 +829,10 @@ base = 0.0
 
     #[test]
     fn a_custom_assignment_harness_name_drives_both_the_directory_and_the_p_args() {
-        let package_dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(package_dir.path().join("judge")).unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(assignment_dir.path().join("judge")).unwrap();
         std::fs::write(
-            package_dir.path().join("judge/Cargo.toml"),
+            assignment_dir.path().join("judge/Cargo.toml"),
             "[package]\nname = \"judge\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
              [[bin]]\nname = \"driver\"\npath = \"src/bin/driver.rs\"\n\n\
              [dependencies]\nhw3 = { path = \"../hw3\" }\n",
@@ -868,14 +863,14 @@ base = 0.0
 "#;
         let spec: Spec = toml::from_str(toml).unwrap();
         let repo_root = tempfile::tempdir().unwrap();
-        let (workspace, _harness_dir) = job_dirs(repo_root.path());
+        let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         // Stage 1 (build id) succeeds; stage 2 (build harness, scoped to
         // the custom harness package name) fails -- that's the one that
         // should reference "judge".
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(&spec, package_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(workspace)).unwrap();
+        let evaluator = Nextest::new(&spec, assignment_dir.path(), sandbox).unwrap();
+        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
 
         let specs = specs.lock().unwrap();
         assert!(!specs[0].args.contains(&"judge".to_string()));

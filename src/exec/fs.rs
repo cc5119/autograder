@@ -35,6 +35,10 @@ pub fn current_dir() -> Result<std::path::PathBuf> {
     std::env::current_dir().map_err(|source| io_err(Path::new("."), source))
 }
 
+pub fn temp_dir() -> Result<tempfile::TempDir> {
+    tempfile::tempdir().map_err(|source| Error::Other(format!("failed to create a temp dir: {source}")))
+}
+
 pub fn create_dir(path: &Path) -> Result<()> {
     std::fs::create_dir(path).map_err(|source| io_err(path, source))
 }

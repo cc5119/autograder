@@ -6,31 +6,16 @@ use serde::{Deserialize, Deserializer};
 use crate::error::{Error, Result};
 use crate::id::AssignmentId;
 
-/// The one spec filename, used both in the private instructor package and
-/// the published starter `publish` ships to students -- `publish` copies it
-/// verbatim (see `publish::rules`), so the two are always byte-identical.
 pub const SPEC_FILE: &str = "autograder.toml";
 
-/// `id` doubles as the student-facing crate name and dependency name.
-/// `harness` likewise names both the sibling harness package's directory
-/// (relative to the assignment package dir) and that package's own
-/// `[package].name` in `<harness>/Cargo.toml` -- the two must agree, since
-/// this one value drives both the on-disk path autograder reads and the
-/// `-p` argument it passes to cargo. No default: every assignment must set
-/// it explicitly.
-///
-/// `cargo-lock-sha256` is the SHA-256 (lowercase hex) of the workspace-root
-/// `Cargo.lock` `autograder lock` last generated -- the "blessed" lock every
-/// `Cargo.lock` in a checkout (student's `ci`, instructor's `grade`) is
-/// checked against before any build runs (see `crate::deps::lock`). It, `id`, and
-/// `harness` are what actually make `[allowed-crates]` unnecessary: instead
-/// of a hand-typed, driftable allowlist, `manifest_check` derives the real
-/// one straight from the blessed lockfile's resolved dependency graph.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Assignment {
+    /// The assignment `id` is used as the name for the package students must complete/submit
     pub id: AssignmentId,
     pub deadline: Zoned,
+    /// The name of the `harness` package
     pub harness: String,
+    /// SHA-256 of the `Cargo.lock` blessed for this assignment
     #[serde(rename = "cargo-lock-sha256")]
     pub cargo_lock_sha256: String,
 }
@@ -110,9 +95,6 @@ impl<'de> Deserialize<'de> for Duration {
     }
 }
 
-/// Applies to the build stages only -- per-test enforcement during the run
-/// stage is `isolate`'s job, configured in the harness's own test code, not
-/// here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BuildLimits {
     #[serde(rename = "wall-clock")]
@@ -125,9 +107,7 @@ pub struct BuildLimits {
 }
 
 /// How a submission's score is computed from the sum of `score=` lines
-/// tests report at run time (see `crate::pipeline::grade`). No per-test point
-/// declarations here -- a test's contribution is whatever it reports, or
-/// the 1.0/0.0 pass/fail default when it reports nothing.
+/// tests report at run time (see `crate::pipeline::grade`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScoringFormula {
     /// `score = base + sum(reported values)`, unnormalized.

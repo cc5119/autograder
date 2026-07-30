@@ -4,6 +4,7 @@ use crate::deps::cargo_lock::CargoLock;
 use crate::deps::lock;
 use crate::deps::vendor;
 use crate::error::Result;
+use crate::model::JobContext;
 use crate::pipeline::manifest_check::{self, ManifestDiagnostic};
 use crate::spec::Spec;
 
@@ -28,25 +29,22 @@ pub struct PrepareOutcome {
 }
 
 /// Installs the offline cargo env (if vendored) and diagnoses the
-/// student's `Cargo.toml` against the allowlist. Has no involvement in
-/// wiring the judge/harness to `workspace` -- the caller has already
-/// positioned that correctly by the time this runs (see
-/// `evaluator::nextest`'s module doc comment), so this function doesn't
-/// need to know the assignment kind.
+/// student's `Cargo.toml` against the allowlist.
 ///
-/// Checks `package_dir/Cargo.lock` against the blessed hash first
+/// Checks `assignment_dir/Cargo.lock` against the blessed hash first
 /// (`crate::deps::lock::verify`) -- a mismatch (a student's edited/deleted lock
 /// for `ci`, a stale one for `grade`) short-circuits straight to a
 /// diagnostic, since the allowlist itself is derived from that same lock
 /// and can't be trusted otherwise.
-pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<PrepareOutcome> {
-    let offline_env = install_offline_env(workspace, package_dir)?;
+pub fn prepare(ctx: &JobContext, assignment_dir: &Path, spec: &Spec) -> Result<PrepareOutcome> {
+    let submission_dir = ctx.submission_package_dir();
+    let offline_env = install_offline_env(&submission_dir, assignment_dir)?;
 
-    let manifest_diagnostics = match lock::verify(package_dir, spec) {
+    let manifest_diagnostics = match lock::verify(assignment_dir, spec) {
         Some(message) => vec![ManifestDiagnostic::LockfileMismatch(message)],
         None => diagnose_manifest(
-            workspace,
-            package_dir,
+            &submission_dir,
+            assignment_dir,
             spec,
             offline_env.vendor_dir.as_deref(),
         )?,
@@ -58,20 +56,15 @@ pub fn prepare(workspace: &Path, package_dir: &Path, spec: &Spec) -> Result<Prep
     })
 }
 
-/// Writes `workspace/.cargo/config.toml` -- copied verbatim from
-/// `vendor_dir`'s own `config.toml` (see `vendor::VENDOR_CONFIG_FILE`),
-/// which already carries a source-replacement block per redirected
-/// dependency (crates-io and any git source alike) -- and returns the
-/// `CARGO_NET_OFFLINE` env var the sandbox spec must set. A no-op when the
-/// package hasn't been vendored. The sandboxed evaluator's own builds don't
-/// discover this file -- they always run with `workdir` at the shared
-/// `repo_root`, never a descendant of `workspace` (`nextest::Nextest`
-/// writes the same config at `repo_root` directly instead) -- but
-/// `diagnose_manifest` below still reads it, and it's what a student's own
-/// local `cargo test`/`ci` run (which does build directly in `workspace`)
-/// picks up.
-fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEnv> {
-    let vendor_dir = package_dir.join("vendor");
+/// Writes `submission_dir/.cargo/config.toml`, copied verbatim from
+/// `vendor_dir`'s own `config.toml` (see `vendor::VENDOR_CONFIG_FILE`). A
+/// no-op when the package hasn't been vendored. `Nextest` doesn't discover
+/// this file -- its builds run with `workdir` at `repo_root`, not a
+/// descendant of it, so it writes the same config at `repo_root` directly
+/// instead -- but `diagnose_manifest` below still reads it, and it's what a
+/// student's own local `cargo test`/`ci` run picks up.
+fn install_offline_env(submission_dir: &Path, assignment_dir: &Path) -> Result<OfflineEnv> {
+    let vendor_dir = assignment_dir.join("vendor");
     if !vendor_dir.is_dir() {
         return Ok(OfflineEnv::default());
     }
@@ -79,7 +72,7 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
     let vendor_config =
         crate::exec::fs::read_to_string(&vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
             .unwrap_or_default();
-    let cargo_dir = workspace.join(".cargo");
+    let cargo_dir = submission_dir.join(".cargo");
     crate::exec::fs::create_dir_all(&cargo_dir)?;
     let config_path = cargo_dir.join("config.toml");
     crate::exec::fs::write(&config_path, &vendor_config)?;
@@ -97,21 +90,20 @@ fn install_offline_env(workspace: &Path, package_dir: &Path) -> Result<OfflineEn
 /// dependencies as resolved in the blessed `Cargo.lock` (the real
 /// allowlist -- see `manifest_check`'s module doc comment), so a
 /// disallowed dependency produces a precise diagnostic instead of an
-/// opaque offline-resolution failure at build time. Absent manifest -> no
-/// diagnostics (the build stage fails on its own with a clear error).
+/// opaque offline-resolution failure at build time.
 fn diagnose_manifest(
-    workspace: &Path,
-    package_dir: &Path,
+    submission_dir: &Path,
+    assignment_dir: &Path,
     spec: &Spec,
     vendor_dir: Option<&Path>,
 ) -> Result<Vec<ManifestDiagnostic>> {
-    let manifest_path = workspace.join("Cargo.toml");
+    let manifest_path = submission_dir.join("Cargo.toml");
     if !manifest_path.is_file() {
         return Ok(Vec::new());
     }
     let contents = crate::exec::fs::read_to_string(&manifest_path)?;
 
-    let lock_contents = crate::exec::fs::read_to_string(&package_dir.join("Cargo.lock"))?;
+    let lock_contents = crate::exec::fs::read_to_string(&assignment_dir.join("Cargo.lock"))?;
     let lock = CargoLock::parse(&lock_contents)?;
     let allowed_crates = lock.direct_dependencies(spec.assignment.id.as_str());
 
@@ -156,11 +148,11 @@ base = 0.0
         )
     }
 
-    /// Writes `package_dir/Cargo.lock` recording `hw3`'s given direct
+    /// Writes `assignment_dir/Cargo.lock` recording `hw3`'s given direct
     /// dependencies, and returns a `Spec` whose `cargo-lock-sha256` matches
     /// it -- exactly what `crate::deps::lock::lock` would have left behind, but
     /// hand-crafted so these tests don't need a real `cargo update`.
-    fn spec_with_lock(package_dir: &Path, deps: &[(&str, &str)]) -> Spec {
+    fn spec_with_lock(assignment_dir: &Path, deps: &[(&str, &str)]) -> Spec {
         let mut lock = String::from(
             "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\ndependencies = [\n",
         );
@@ -173,18 +165,31 @@ base = 0.0
                 "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n"
             ));
         }
-        write(&package_dir.join("Cargo.lock"), &lock);
+        write(&assignment_dir.join("Cargo.lock"), &lock);
 
         toml::from_str(&spec_toml(&sha256_hex(&lock))).unwrap()
     }
 
+    /// A `JobContext` whose `workspace` is `repo_root` -- matching `hw3`,
+    /// `spec_toml`'s hardcoded `[assignment].id`, so `ctx.submission_package_dir()`
+    /// resolves to `repo_root/hw3`.
+    fn ctx(repo_root: &Path) -> JobContext {
+        JobContext {
+            assignment_id: "hw3".into(),
+            student_id: "alice".into(),
+            run_id: "run-1".into(),
+            workspace: repo_root.to_path_buf(),
+        }
+    }
+
     #[test]
     fn prepare_installs_offline_env_when_the_package_has_been_vendored() {
-        let workspace = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
-        write(&workspace.path().join("src/lib.rs"), "// student code");
+        let submission_dir = repo_root.path().join("hw3");
+        write(&submission_dir.join("src/lib.rs"), "// student code");
         write(
-            &workspace.path().join("Cargo.toml"),
+            &submission_dir.join("Cargo.toml"),
             "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\n",
         );
         write(
@@ -198,29 +203,30 @@ base = 0.0
         );
 
         let spec = spec_with_lock(package.path(), &[("serde", "1.4.0")]);
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(&ctx(repo_root.path()), package.path(), &spec).unwrap();
 
         assert!(outcome.manifest_diagnostics.is_empty());
         assert_eq!(
             outcome.offline_env.env.get("CARGO_NET_OFFLINE"),
             Some(&"true".to_string())
         );
-        let config = std::fs::read_to_string(workspace.path().join(".cargo/config.toml")).unwrap();
+        let config = std::fs::read_to_string(submission_dir.join(".cargo/config.toml")).unwrap();
         assert!(config.contains("vendored-sources"));
     }
 
     #[test]
     fn prepare_surfaces_a_disallowed_dependency_diagnostic() {
-        let workspace = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
-        write(&workspace.path().join("src/lib.rs"), "// student code");
+        let submission_dir = repo_root.path().join("hw3");
+        write(&submission_dir.join("src/lib.rs"), "// student code");
         write(
-            &workspace.path().join("Cargo.toml"),
+            &submission_dir.join("Cargo.toml"),
             "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1\"\n",
         );
 
         let spec = spec_with_lock(package.path(), &[("serde", "1.4.0")]);
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(&ctx(repo_root.path()), package.path(), &spec).unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
         assert!(
@@ -232,31 +238,33 @@ base = 0.0
 
     #[test]
     fn prepare_without_a_vendored_vendor_dir_skips_offline_env() {
-        let workspace = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
-        write(&workspace.path().join("src/lib.rs"), "// student code");
+        let submission_dir = repo_root.path().join("hw3");
+        write(&submission_dir.join("src/lib.rs"), "// student code");
 
         let spec = spec_with_lock(package.path(), &[]);
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(&ctx(repo_root.path()), package.path(), &spec).unwrap();
 
         assert!(outcome.offline_env.vendor_dir.is_none());
-        assert!(!workspace.path().join(".cargo/config.toml").exists());
+        assert!(!submission_dir.join(".cargo/config.toml").exists());
     }
 
     #[test]
     fn prepare_surfaces_a_lockfile_mismatch_diagnostic_instead_of_checking_the_manifest() {
-        let workspace = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
-        write(&workspace.path().join("src/lib.rs"), "// student code");
+        let submission_dir = repo_root.path().join("hw3");
+        write(&submission_dir.join("src/lib.rs"), "// student code");
         write(
-            &workspace.path().join("Cargo.toml"),
+            &submission_dir.join("Cargo.toml"),
             "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n",
         );
         // A Cargo.lock is on disk, but doesn't match the spec's blessed hash.
         write(&package.path().join("Cargo.lock"), "version = 4\n");
         let spec: Spec = toml::from_str(&spec_toml(&"0".repeat(64))).unwrap();
 
-        let outcome = prepare(workspace.path(), package.path(), &spec).unwrap();
+        let outcome = prepare(&ctx(repo_root.path()), package.path(), &spec).unwrap();
 
         assert_eq!(outcome.manifest_diagnostics.len(), 1);
         assert!(matches!(
@@ -267,9 +275,10 @@ base = 0.0
 
     #[test]
     fn prepare_never_touches_the_harness() {
-        let workspace = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
         let package = tempfile::tempdir().unwrap();
-        write(&workspace.path().join("src/lib.rs"), "// student code");
+        let submission_dir = repo_root.path().join("hw3");
+        write(&submission_dir.join("src/lib.rs"), "// student code");
         write(
             &package.path().join("harness/Cargo.toml"),
             "[package]\nname = \"driver\"\n",
@@ -280,13 +289,13 @@ base = 0.0
         let spec = spec_with_lock(package.path(), &[]);
         let toml = spec_toml(&spec.assignment.cargo_lock_sha256);
         let spec: Spec = toml::from_str(&toml).unwrap();
-        prepare(workspace.path(), package.path(), &spec).unwrap();
+        prepare(&ctx(repo_root.path()), package.path(), &spec).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(package.path().join("harness/Cargo.toml")).unwrap(),
             "[package]\nname = \"driver\"\n"
         );
-        assert!(!workspace.path().join("harness").exists());
-        assert!(!workspace.path().join("tests").exists());
+        assert!(!submission_dir.join("harness").exists());
+        assert!(!submission_dir.join("tests").exists());
     }
 }

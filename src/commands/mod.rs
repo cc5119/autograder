@@ -49,7 +49,7 @@ pub fn dispatch(command: Command) -> Result<()> {
 
 pub(crate) fn build_evaluator(
     spec: &Spec,
-    package_dir: &Path,
+    assignment_dir: &Path,
     local_sandbox: bool,
 ) -> Result<Box<dyn Evaluator>> {
     if local_sandbox {
@@ -58,20 +58,20 @@ pub(crate) fn build_evaluator(
              host process with no container isolation -- for local development/ \
              testing only, never for grading real submissions"
         );
-        build_evaluator_for(spec, package_dir, LocalSandbox)
+        build_evaluator_for(spec, assignment_dir, LocalSandbox)
     } else {
         let sandbox = ContainerSandbox::new(spec.sandbox.image.clone());
         sandbox.preflight()?;
-        build_evaluator_for(spec, package_dir, sandbox)
+        build_evaluator_for(spec, assignment_dir, sandbox)
     }
 }
 
 fn build_evaluator_for(
     spec: &Spec,
-    package_dir: &Path,
+    assignment_dir: &Path,
     sandbox: impl Sandbox + 'static,
 ) -> Result<Box<dyn Evaluator>> {
-    Ok(Box::new(Nextest::new(spec, package_dir, sandbox)?))
+    Ok(Box::new(Nextest::new(spec, assignment_dir, sandbox)?))
 }
 
 #[cfg(test)]
@@ -147,24 +147,24 @@ base = 0.0
             "fn main() {}\n",
         );
 
-        let workspace = harness_dir.path().join("hw3");
+        let submission_dir = harness_dir.path().join("hw3");
         write(
-            &workspace.join("Cargo.toml"),
+            &submission_dir.join("Cargo.toml"),
             "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         );
-        write(&workspace.join("src/lib.rs"), "pub fn noop() {}\n");
+        write(&submission_dir.join("src/lib.rs"), "pub fn noop() {}\n");
 
         let spec = Spec::load(harness_dir.path()).unwrap();
-        let prepared = prepare::prepare(&workspace, harness_dir.path(), &spec).unwrap();
-        assert!(prepared.manifest_diagnostics.is_empty());
-
-        let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
             student_id: "local".into(),
             run_id: "run-1".into(),
-            workspace,
+            workspace: harness_dir.path().to_path_buf(),
         };
+        let prepared = prepare::prepare(&ctx, harness_dir.path(), &spec).unwrap();
+        assert!(prepared.manifest_diagnostics.is_empty());
+
+        let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let eval = evaluator.evaluate(&ctx).unwrap();
 
         assert!(matches!(

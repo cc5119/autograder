@@ -22,14 +22,14 @@ pub struct LockOutcome {
     pub sha256: String,
 }
 
-/// Runs `cargo update` against the workspace root at `package_dir`
+/// Runs `cargo update` against the workspace root at `assignment_dir`
 /// (resolving/refreshing `Cargo.lock` for every member, `{id}` and
 /// `{harness}` alike, `[dependencies]` and `[dev-dependencies]` together --
 /// there's no way to lock just one member in isolation, nor any reason to,
 /// since they share one lockfile), then writes the resulting lock's hash
 /// into `autograder.toml`'s `cargo-lock-sha256`.
-pub fn lock(package_dir: &Path) -> Result<LockOutcome> {
-    let manifest_path = package_dir.join("Cargo.toml");
+pub fn lock(assignment_dir: &Path) -> Result<LockOutcome> {
+    let manifest_path = assignment_dir.join("Cargo.toml");
     let output = Command::new("cargo")
         .arg("update")
         .arg("--manifest-path")
@@ -43,11 +43,11 @@ pub fn lock(package_dir: &Path) -> Result<LockOutcome> {
         )));
     }
 
-    let lock_path = package_dir.join("Cargo.lock");
+    let lock_path = assignment_dir.join("Cargo.lock");
     let lock_contents = exec::fs::read_to_string(&lock_path)?;
     let sha256 = sha256_hex(&lock_contents);
 
-    write_sha_into_spec(package_dir, &sha256)?;
+    write_sha_into_spec(assignment_dir, &sha256)?;
 
     Ok(LockOutcome { lock_path, sha256 })
 }
@@ -56,8 +56,8 @@ pub fn lock(package_dir: &Path) -> Result<LockOutcome> {
 /// `autograder.toml`, in place -- via `toml_edit` rather than a full `Spec`
 /// round-trip, so every other line (including the instructor's own
 /// comments) survives untouched.
-fn write_sha_into_spec(package_dir: &Path, sha256: &str) -> Result<()> {
-    let spec_path = package_dir.join(SPEC_FILE);
+fn write_sha_into_spec(assignment_dir: &Path, sha256: &str) -> Result<()> {
+    let spec_path = assignment_dir.join(SPEC_FILE);
     let contents = exec::fs::read_to_string(&spec_path)?;
     let mut doc = contents
         .parse::<toml_edit::DocumentMut>()
@@ -68,15 +68,15 @@ fn write_sha_into_spec(package_dir: &Path, sha256: &str) -> Result<()> {
     exec::fs::write(&spec_path, doc.to_string())
 }
 
-/// Verifies `package_dir/Cargo.lock` (as actually checked out -- a
+/// Verifies `assignment_dir/Cargo.lock` (as actually checked out -- a
 /// student's own possibly-edited copy for `ci`, the instructor's for
 /// `grade`/`publish`) still matches `spec.assignment.cargo_lock_sha256`,
 /// the hash `lock` last recorded. `None` means it matches; `Some(message)`
 /// is a human-readable explanation callers can either surface as a
 /// diagnostic (`prepare`, non-fatal to the batch) or a hard error
 /// (`publish`, refuses to ship).
-pub fn verify(package_dir: &Path, spec: &Spec) -> Option<String> {
-    let lock_path = package_dir.join("Cargo.lock");
+pub fn verify(assignment_dir: &Path, spec: &Spec) -> Option<String> {
+    let lock_path = assignment_dir.join("Cargo.lock");
     if !lock_path.is_file() {
         return Some(format!(
             "{} is missing -- it should be checked in alongside autograder.toml; run \
@@ -141,46 +141,46 @@ base = 0.0
 
     #[test]
     fn verify_is_none_when_the_hash_matches() {
-        let package_dir = tempfile::tempdir().unwrap();
-        write(&package_dir.path().join("Cargo.lock"), "lock contents\n");
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write(&assignment_dir.path().join("Cargo.lock"), "lock contents\n");
         let spec = spec_with_sha(&sha256_hex("lock contents\n"));
 
-        assert!(verify(package_dir.path(), &spec).is_none());
+        assert!(verify(assignment_dir.path(), &spec).is_none());
     }
 
     #[test]
     fn verify_reports_a_mismatched_hash() {
-        let package_dir = tempfile::tempdir().unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
         write(
-            &package_dir.path().join("Cargo.lock"),
+            &assignment_dir.path().join("Cargo.lock"),
             "edited by a student\n",
         );
         let spec = spec_with_sha(&sha256_hex("original\n"));
 
-        let message = verify(package_dir.path(), &spec).unwrap();
+        let message = verify(assignment_dir.path(), &spec).unwrap();
         assert!(message.contains("does not match"));
     }
 
     #[test]
     fn verify_reports_a_missing_lockfile() {
-        let package_dir = tempfile::tempdir().unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
         let spec = spec_with_sha(&sha256_hex("whatever\n"));
 
-        let message = verify(package_dir.path(), &spec).unwrap();
+        let message = verify(assignment_dir.path(), &spec).unwrap();
         assert!(message.contains("is missing"));
     }
 
     #[test]
     fn write_sha_into_spec_preserves_comments_and_other_fields() {
-        let package_dir = tempfile::tempdir().unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
         write(
-            &package_dir.path().join(SPEC_FILE),
+            &assignment_dir.path().join(SPEC_FILE),
             "# a helpful comment\n[assignment]\nid = \"hw3\"\ncargo-lock-sha256 = \"stale\"\n",
         );
 
-        write_sha_into_spec(package_dir.path(), "fresh-hash").unwrap();
+        write_sha_into_spec(assignment_dir.path(), "fresh-hash").unwrap();
 
-        let updated = std::fs::read_to_string(package_dir.path().join(SPEC_FILE)).unwrap();
+        let updated = std::fs::read_to_string(assignment_dir.path().join(SPEC_FILE)).unwrap();
         assert!(updated.contains("# a helpful comment"));
         assert!(updated.contains("id = \"hw3\""));
         assert!(updated.contains("cargo-lock-sha256 = \"fresh-hash\""));

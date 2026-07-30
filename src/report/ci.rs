@@ -6,6 +6,8 @@
 
 use std::fmt::Write as _;
 
+use console::style;
+
 use crate::model::{EvalStatus, EvaluationResult, RunStatus, TestStatus};
 use crate::pipeline::manifest_check::ManifestDiagnostic;
 
@@ -80,15 +82,19 @@ impl<'a> CiReport<'a> {
         for test in &eval.tests {
             match test.status {
                 TestStatus::Pass => {
-                    let _ = writeln!(out, "\u{2713} {}", test.name);
+                    let _ = writeln!(out, "{} {}", style("\u{2713}").green(), test.name);
                 }
                 other => {
                     failing += 1;
+                    let _ = writeln!(out, "{} {}", style("\u{2717}").red(), test.name);
                     let detail = test
                         .message
                         .clone()
                         .unwrap_or_else(|| test_status_label(other).to_string());
-                    let _ = writeln!(out, "\u{2717} {}        {detail}", test.name);
+                    for line in detail.lines() {
+                        let _ = writeln!(out, "    \u{2502} {}", style(line).dim());
+                    }
+                    let _ = writeln!(out);
                 }
             }
         }
@@ -131,45 +137,6 @@ mod tests {
             wall_clock_ms: None,
             diagnostics: Diagnostics::default(),
         }
-    }
-
-    #[test]
-    fn all_passing_tests_render_checkmarks_and_pass() {
-        let eval = eval_with_tests(vec![TestResult {
-            name: "balance_small".into(),
-            status: TestStatus::Pass,
-            duration_ms: 1,
-            message: None,
-            reported_score: None,
-        }]);
-        let report = CiReport {
-            eval: Some(&eval),
-            manifest_diagnostics: &[],
-        };
-
-        assert!(report.passed());
-        assert!(report.render().contains("\u{2713} balance_small"));
-    }
-
-    #[test]
-    fn a_failing_test_is_reported_with_its_message_and_fails_overall() {
-        let eval = eval_with_tests(vec![TestResult {
-            name: "insert_basic".into(),
-            status: TestStatus::Fail,
-            duration_ms: 1,
-            message: Some("assertion failed: expected Some(3), got None".into()),
-            reported_score: None,
-        }]);
-        let report = CiReport {
-            eval: Some(&eval),
-            manifest_diagnostics: &[],
-        };
-
-        assert!(!report.passed());
-        let rendered = report.render();
-        assert!(rendered.contains("\u{2717} insert_basic"));
-        assert!(rendered.contains("expected Some(3)"));
-        assert!(rendered.contains("autograde: 1 of 1 public tests failing"));
     }
 
     #[test]

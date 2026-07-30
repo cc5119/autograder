@@ -45,21 +45,21 @@ fn latest_persisted_eval(
 /// harness is un-writable in the sandbox and the real judge survives.
 #[test]
 fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
-    let package_dir = tempfile::tempdir().unwrap();
+    let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
     // Trusted judge scores a known baseline off the student lib.
-    let _ = library_package(package_dir.path(), "hw3");
-    let autograder_toml = package_dir.path().join("autograder.toml");
+    let _ = library_package(assignment_dir.path(), "hw3");
+    let autograder_toml = assignment_dir.path().join("autograder.toml");
     let contents = std::fs::read_to_string(&autograder_toml).unwrap();
     std::fs::write(
         &autograder_toml,
         contents.replace("base = 1.0", "base = 0.0"),
     )
     .unwrap();
-    let spec = Spec::load(package_dir.path()).unwrap();
+    let spec = Spec::load(assignment_dir.path()).unwrap();
     write(
-        &package_dir.path().join("harness/tests/judge.rs"),
+        &assignment_dir.path().join("harness/tests/judge.rs"),
         "#[test]\nfn trusted_judge() {\n    assert!(hw3::example());\n    println!(\"autograder: score=1\");\n}\n",
     );
 
@@ -77,12 +77,12 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         "fn main() {\n    std::fs::write(\n        \"../harness/tests/judge.rs\",\n        \"#[test] fn all_pass() { println!(\\\"autograder: score=1000000\\\"); }\",\n    )\n    .ok();\n}\n",
     );
 
-    let evaluator = Nextest::new(&spec, package_dir.path(), sandbox()).unwrap();
+    let evaluator = Nextest::new(&spec, assignment_dir.path(), sandbox()).unwrap();
 
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
-        package_dir.path(),
+        assignment_dir.path(),
         &spec,
     )
     .unwrap();

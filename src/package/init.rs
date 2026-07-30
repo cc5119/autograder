@@ -11,7 +11,6 @@
 //! `{deadline}` renders to "now + one week" and `[assignment].name` is a
 //! literal `"TODO: ..."` marker, both meant to be replaced.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use jiff::{ToSpan, Unit, Zoned, ZonedRound};
@@ -19,6 +18,7 @@ use jiff::{ToSpan, Unit, Zoned, ZonedRound};
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::package::template;
+use crate::str_map;
 
 #[derive(Debug, Clone)]
 pub struct InitOutcome {
@@ -49,7 +49,7 @@ pub fn init(dir: &Path, id: &str) -> Result<InitOutcome> {
         .round(ZonedRound::new().smallest(Unit::Second))
         .expect("rounding to the nearest second never fails")
         .to_string();
-    let placeholders = HashMap::from([("id", id), ("deadline", deadline.as_str())]);
+    let placeholders = str_map! {"id" => id, "deadline" => deadline};
 
     for (rel_path, content) in template::render_tree("library", &placeholders)? {
         let dst = dir.join(&rel_path);

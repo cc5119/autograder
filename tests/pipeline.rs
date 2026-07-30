@@ -22,7 +22,7 @@ use autograder::spec::Spec;
 
 use crate::common::write;
 
-/// Written to `package_dir/Cargo.lock` in every test that calls
+/// Written to `assignment_dir/Cargo.lock` in every test that calls
 /// `evaluate_batch` -- `prepare` (via `Cargo.lock`'s hash) needs it there
 /// regardless of what a given test's `Cargo.toml` actually declares.
 const LOCK_TOML: &str = "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\n";
@@ -63,9 +63,9 @@ base = 0.0
 /// lock marker matching `LOCK_TOML` is enough -- exactly what
 /// `deps::vendor::vendor` itself would leave behind for a zero-dependency
 /// workspace.
-fn write_vendor_marker(package_dir: &std::path::Path) {
+fn write_vendor_marker(assignment_dir: &std::path::Path) {
     write(
-        &package_dir.join("vendor/.lock-sha256"),
+        &assignment_dir.join("vendor/.lock-sha256"),
         &autograder::deps::cargo_lock::sha256_hex(LOCK_TOML),
     );
 }
@@ -96,15 +96,15 @@ fn persisted_evals(submissions_dir: &std::path::Path, student_id: &str) -> Vec<E
 
 #[test]
 fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
-    let package_dir = tempfile::tempdir().unwrap();
+    let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
     write(
-        &package_dir.path().join("Cargo.toml"),
+        &assignment_dir.path().join("Cargo.toml"),
         "[workspace]\nmembers = [\"hw3\"]\n",
     );
-    write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(package_dir.path());
+    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
+    write_vendor_marker(assignment_dir.path());
     write(
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",
@@ -118,7 +118,7 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
-        package_dir.path(),
+        assignment_dir.path(),
         &spec,
     )
     .unwrap();
@@ -143,7 +143,7 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
 
 #[test]
 fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
-    let package_dir = tempfile::tempdir().unwrap();
+    let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
     // No `hw3/` under `alice/` -- the checkout has no crate matching
@@ -152,7 +152,7 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
         &submissions_dir.path().join("alice/src/lib.rs"),
         "// student code",
     );
-    write_vendor_marker(package_dir.path());
+    write_vendor_marker(assignment_dir.path());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
@@ -162,7 +162,7 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
-        package_dir.path(),
+        assignment_dir.path(),
         &spec,
     )
     .unwrap();
@@ -174,16 +174,16 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
     ));
 }
 
-/// Records the sorted file names in `harness/tests/` (a sibling of
-/// `ctx.workspace`) at evaluate-time, before `evaluate_batch` deletes the
-/// scratch dir.
+/// Records the sorted file names in `harness/tests/` (under `ctx.workspace`
+/// -- see `JobContext`'s doc comment for the layout) at evaluate-time,
+/// before `evaluate_batch` deletes the scratch dir.
 struct CapturingEvaluator<'a> {
     seen: &'a std::sync::Mutex<Option<Vec<String>>>,
 }
 
 impl Evaluator for CapturingEvaluator<'_> {
     fn evaluate(&self, ctx: &JobContext) -> autograder::error::Result<EvaluationResult> {
-        let harness_tests = ctx.workspace.parent().unwrap().join("harness/tests");
+        let harness_tests = ctx.workspace.join("harness/tests");
         let mut names: Vec<String> = std::fs::read_dir(harness_tests)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -209,24 +209,24 @@ impl Evaluator for CapturingEvaluator<'_> {
 /// ships its own same-named `harness/` directory at its root, hoping to
 /// overwrite the trusted judge: the checkout side of the overlay only ever
 /// globs `{id}/**`, so `harness/` in the build dir always comes from the
-/// trusted `package_dir`, never the student.
+/// trusted `assignment_dir`, never the student.
 #[test]
 fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package() {
-    let package_dir = tempfile::tempdir().unwrap();
+    let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
     write(
-        &package_dir.path().join("Cargo.toml"),
+        &assignment_dir.path().join("Cargo.toml"),
         "[workspace]\nmembers = [\"harness\", \"wc\"]\n",
     );
-    write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(package_dir.path());
+    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
+    write_vendor_marker(assignment_dir.path());
     write(
-        &package_dir.path().join("harness/Cargo.toml"),
+        &assignment_dir.path().join("harness/Cargo.toml"),
         "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
     );
     write(
-        &package_dir.path().join("harness/tests/judge.rs"),
+        &assignment_dir.path().join("harness/tests/judge.rs"),
         "#[test]\nfn counts_words() {}\n",
     );
 
@@ -251,7 +251,7 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
     evaluate_batch(
         submissions_dir.path(),
         &evaluator,
-        package_dir.path(),
+        assignment_dir.path(),
         &spec,
     )
     .unwrap();
@@ -264,15 +264,15 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
 
 #[test]
 fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_evaluator() {
-    let package_dir = tempfile::tempdir().unwrap();
+    let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
     write(
-        &package_dir.path().join("Cargo.toml"),
+        &assignment_dir.path().join("Cargo.toml"),
         "[workspace]\nmembers = [\"hw3\"]\n",
     );
-    write(&package_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(package_dir.path());
+    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
+    write_vendor_marker(assignment_dir.path());
     write(
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",
@@ -290,7 +290,7 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
     let evals = evaluate_batch(
         submissions_dir.path(),
         &evaluator,
-        package_dir.path(),
+        assignment_dir.path(),
         &spec,
     )
     .unwrap();

@@ -8,12 +8,29 @@ use crate::id::{AssignmentId, RunId, StudentId};
 /// identifies a submission directory (see `StudentId`'s doc comment) --
 /// evaluate itself never consults roster data by it, even though the id
 /// is a `StudentId`.
+///
+/// `workspace` is the scratch root for this job (what `Nextest` calls
+/// `repo_root`), laid out as:
+///
+/// ```text
+/// workspace/
+///   Cargo.toml
+///   Cargo.lock
+///   {assignment_id}/   <- submission_package_dir(): the student's own package
+///   {harness}/         <- the trusted judge package
+/// ```
 #[derive(Debug, Clone)]
 pub struct JobContext {
     pub assignment_id: AssignmentId,
     pub student_id: StudentId,
     pub run_id: RunId,
     pub workspace: PathBuf,
+}
+
+impl JobContext {
+    pub fn submission_package_dir(&self) -> PathBuf {
+        self.workspace.join(self.assignment_id.as_str())
+    }
 }
 
 /// Verdict for a single test, as observed by the trusted judge.

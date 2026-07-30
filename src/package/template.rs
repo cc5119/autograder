@@ -18,7 +18,7 @@ static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 /// Renders the single template file at `path` (relative to `templates/`,
 /// e.g. `"autograde.yml"` -- the `.tmpl` suffix is implied and optional
 /// either way), substituting `placeholders` into its contents.
-pub fn render_file(path: &str, placeholders: &HashMap<&str, &str>) -> Result<String> {
+pub fn render_file(path: &str, placeholders: &HashMap<String, String>) -> Result<String> {
     let candidates = [format!("{path}.tmpl"), path.to_string()];
     let file = candidates
         .iter()
@@ -39,7 +39,7 @@ pub fn render_file(path: &str, placeholders: &HashMap<&str, &str>) -> Result<Str
 /// order, for the caller to write wherever it wants.
 pub fn render_tree(
     dir: &str,
-    placeholders: &HashMap<&str, &str>,
+    placeholders: &HashMap<String, String>,
 ) -> Result<Vec<(PathBuf, String)>> {
     let root = TEMPLATES.get_dir(dir).ok_or_else(|| {
         Error::Other(format!(
@@ -84,7 +84,7 @@ fn walk<'a>(dir: &'a Dir<'a>) -> Vec<&'a File<'a>> {
 /// inline-table syntax survives untouched). A single left-to-right scan,
 /// not chained `.replace` calls, so one substitution's output can never be
 /// reinterpreted by a later replacement.
-fn substitute(text: &str, placeholders: &HashMap<&str, &str>) -> String {
+fn substitute(text: &str, placeholders: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
@@ -108,10 +108,11 @@ fn substitute(text: &str, placeholders: &HashMap<&str, &str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::str_map;
 
     #[test]
     fn substitute_replaces_only_exact_known_keys() {
-        let placeholders = HashMap::from([("id", "hw3")]);
+        let placeholders = str_map! {"id" => "hw3"};
         assert_eq!(substitute("id = \"{id}\"", &placeholders), "id = \"hw3\"");
         // TOML's own inline-table braces must survive untouched, with the
         // placeholder nested inside them still substituted.
@@ -128,7 +129,7 @@ mod tests {
 
     #[test]
     fn render_file_substitutes_the_named_template() {
-        let placeholders = HashMap::from([("base_image", "autograder-base:1.86.0")]);
+        let placeholders = str_map! {"base_image" => "autograder-base:1.86.0"};
         let rendered = render_file("autograde.yml", &placeholders).unwrap();
         assert!(rendered.contains("podman pull autograder-base:1.86.0"));
     }
@@ -141,7 +142,7 @@ mod tests {
 
     #[test]
     fn render_tree_substitutes_every_file_s_path_and_contents() {
-        let placeholders = HashMap::from([("id", "hw3"), ("deadline", "2099-01-01T00:00:00Z")]);
+        let placeholders = str_map! {"id" => "hw3", "deadline" => "2099-01-01T00:00:00Z"};
         let rendered = render_tree("library", &placeholders).unwrap();
 
         let rel_paths: Vec<_> = rendered.iter().map(|(path, _)| path.clone()).collect();

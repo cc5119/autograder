@@ -27,7 +27,7 @@
 //! way this used to work. This runs regardless of `mode`: a solution
 //! publish shouldn't diverge from a broken/stale package either.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -36,6 +36,7 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::overlay::{self, Context, MatchedFile, Rule};
 use crate::spec::{self, Spec};
+use crate::str_map;
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
@@ -75,13 +76,13 @@ fn rules(mode: PublishMode) -> Vec<Rule> {
     ]
 }
 
-pub fn publish(package_dir: &Path, out_dir: &Path, mode: PublishMode) -> Result<PublishOutcome> {
-    let private_spec_path = package_dir.join(spec::SPEC_FILE);
+pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Result<PublishOutcome> {
+    let private_spec_path = assignment_dir.join(spec::SPEC_FILE);
     if !private_spec_path.is_file() {
         return Err(Error::InvalidSpec(format!(
             "publish requires {} in {} (the private instructor package)",
             spec::SPEC_FILE,
-            package_dir.display()
+            assignment_dir.display()
         )));
     }
     let spec = Spec::load_file(&private_spec_path)?;
@@ -92,7 +93,7 @@ pub fn publish(package_dir: &Path, out_dir: &Path, mode: PublishMode) -> Result<
     // `manifest_check`'s module doc comment), so if it doesn't match the
     // hash `autograder lock` last recorded, publishing would ship students
     // an allowlist inconsistent with what grading actually checks against.
-    if let Some(message) = crate::deps::lock::verify(package_dir, &spec) {
+    if let Some(message) = crate::deps::lock::verify(assignment_dir, &spec) {
         return Err(Error::InvalidSpec(format!(
             "refusing to publish: {message}"
         )));
@@ -100,13 +101,13 @@ pub fn publish(package_dir: &Path, out_dir: &Path, mode: PublishMode) -> Result<
 
     // Checked ahead of the real compile below so these still get a clear
     // `InvalidSpec`, not an opaque `cargo check` failure standing in for it.
-    let solution_dir = package_dir.join(id.as_str());
+    let solution_dir = assignment_dir.join(id.as_str());
     if !solution_dir.is_dir() {
         return Err(Error::InvalidSpec(format!(
             "no {}/ solution directory found in {} -- [assignment].id must name a sibling \
              directory holding the reference solution crate",
             id.as_str(),
-            package_dir.display()
+            assignment_dir.display()
         )));
     }
     let manifest_path = solution_dir.join("Cargo.toml");
@@ -116,15 +117,12 @@ pub fn publish(package_dir: &Path, out_dir: &Path, mode: PublishMode) -> Result<
         id.as_str(),
     )?;
 
-    check_student_view_is_clean(package_dir, id.as_str())?;
+    check_student_view_is_clean(assignment_dir, id.as_str())?;
 
-    let ctx = Context {
-        source_root: package_dir.to_path_buf(),
-        substitutions: HashMap::from([
-            ("id", id.to_string()),
-            ("harness", spec.assignment.harness.clone()),
-        ]),
-    };
+    let ctx = Context::new(
+        assignment_dir,
+        str_map! {"id" => id, "harness" => spec.assignment.harness},
+    );
 
     overlay::apply(&ctx, out_dir, &rules(mode))?;
 
@@ -241,10 +239,7 @@ fn resolve_rust_sources(
 /// themselves placeholders an instructor edits after publishing, once they
 /// stand up their own fork/release -- only `{base_image}` is filled in here.
 fn autograde_workflow_yaml(base_image: &str) -> Result<String> {
-    crate::package::template::render_file(
-        "autograde.yml",
-        &HashMap::from([("base_image", base_image)]),
-    )
+    crate::package::template::render_file("autograde.yml", &str_map! {"base_image" => base_image})
 }
 
 const PUBLISH_CONFIG_FILE: &str = "publish.toml";
@@ -258,8 +253,8 @@ struct PublishConfig {
     allowed_errors: Vec<String>,
 }
 
-fn load_publish_config(package_dir: &Path) -> Result<PublishConfig> {
-    let path = package_dir.join(PUBLISH_CONFIG_FILE);
+fn load_publish_config(assignment_dir: &Path) -> Result<PublishConfig> {
+    let path = assignment_dir.join(PUBLISH_CONFIG_FILE);
     if !path.is_file() {
         return Ok(PublishConfig::default());
     }
@@ -270,9 +265,9 @@ fn load_publish_config(package_dir: &Path) -> Result<PublishConfig> {
     })
 }
 
-fn check_student_view_is_clean(package_dir: &Path, id: &str) -> Result<()> {
-    let solution_dir = package_dir.join(id);
-    let config = load_publish_config(package_dir)?;
+fn check_student_view_is_clean(assignment_dir: &Path, id: &str) -> Result<()> {
+    let solution_dir = assignment_dir.join(id);
+    let config = load_publish_config(assignment_dir)?;
     let output = std::process::Command::new("cargo")
         .args(["check", "--features", "student", "--message-format=json"])
         .current_dir(&solution_dir)
@@ -344,10 +339,7 @@ mod tests {
     }
 
     fn ctx_with_id(id: &str) -> Context {
-        Context {
-            source_root: PathBuf::new(),
-            substitutions: HashMap::from([("id", id.to_string())]),
-        }
+        Context::new(&PathBuf::new(), str_map! {"id" => id})
     }
 
     #[test]

@@ -33,10 +33,17 @@ pub struct MatchedFile {
 /// hook needs anything this doesn't already carry.
 pub struct Context {
     pub source_root: PathBuf,
-    pub substitutions: HashMap<&'static str, String>,
+    pub substitutions: HashMap<String, String>,
 }
 
 impl Context {
+    pub fn new(source_root: &Path, substitutions: HashMap<String, String>) -> Self {
+        Self {
+            source_root: source_root.to_path_buf(),
+            substitutions,
+        }
+    }
+
     fn resolve(&self, template: &str) -> String {
         let mut resolved = template.to_string();
         for (key, value) in &self.substitutions {
@@ -142,13 +149,13 @@ mod tests {
     }
 
     fn ctx(source_root: &Path, substitutions: &[(&'static str, &str)]) -> Context {
-        Context {
-            source_root: source_root.to_path_buf(),
-            substitutions: substitutions
+        Context::new(
+            source_root,
+            substitutions
                 .iter()
-                .map(|(k, v)| (*k, v.to_string()))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
-        }
+        )
     }
 
     /// Reproduces `autograder init --id hw0 hw0` followed by a relative

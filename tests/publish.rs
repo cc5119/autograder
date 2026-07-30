@@ -60,11 +60,11 @@ const SOLUTION_SRC: &str = r#"
 
 #[test]
 fn publish_produces_the_documented_starter_tree() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
 
     let out_dir = tempfile::tempdir().unwrap();
-    let outcome = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    let outcome = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     assert!(outcome.out_dir.join(SPEC_FILE).is_file());
     assert!(outcome.out_dir.join("harness/tests/judge.rs").is_file());
@@ -81,56 +81,56 @@ fn publish_produces_the_documented_starter_tree() {
 
 #[test]
 fn publish_ships_the_spec_file_verbatim_under_the_same_name() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
-    let source = std::fs::read_to_string(package_dir.path().join(SPEC_FILE)).unwrap();
+    let source = std::fs::read_to_string(assignment_dir.path().join(SPEC_FILE)).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join(SPEC_FILE)).unwrap();
     assert_eq!(shipped, source);
 }
 
 #[test]
 fn publish_ships_the_workspace_root_cargo_lock_verbatim() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
-    let source = std::fs::read_to_string(package_dir.path().join("Cargo.lock")).unwrap();
+    let source = std::fs::read_to_string(assignment_dir.path().join("Cargo.lock")).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join("Cargo.lock")).unwrap();
     assert_eq!(shipped, source);
 }
 
 #[test]
 fn publish_refuses_to_ship_a_stale_cargo_lock() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     // The instructor changed a dependency but forgot to rerun `autograder
     // lock` -- the checked-in Cargo.lock no longer matches the hash
     // recorded in autograder.toml.
     write(
-        &package_dir.path().join("Cargo.lock"),
+        &assignment_dir.path().join("Cargo.lock"),
         "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"9.9.9\"\n",
     );
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
     assert!(!out_dir.path().join(SPEC_FILE).exists());
 }
 
 #[test]
 fn publish_derives_a_public_harness_with_only_the_kept_test_and_a_path_dependency() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
     assert!(judge.contains("fn insert_basic"));
@@ -143,22 +143,22 @@ fn publish_derives_a_public_harness_with_only_the_kept_test_and_a_path_dependenc
 
 #[test]
 fn publish_errors_clearly_when_the_solution_directory_is_missing() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    std::fs::remove_dir_all(package_dir.path().join("hw3")).unwrap();
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    std::fs::remove_dir_all(assignment_dir.path().join("hw3")).unwrap();
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
 #[test]
 fn emitted_workflow_runs_ci_from_the_repo_root_inside_podman() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let workflow =
         std::fs::read_to_string(out_dir.path().join(".github/workflows/autograde.yml")).unwrap();
@@ -173,13 +173,13 @@ fn emitted_workflow_runs_ci_from_the_repo_root_inside_podman() {
 
 #[test]
 fn emitted_workspace_manifest_matches_the_source_verbatim() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
-    let source = std::fs::read_to_string(package_dir.path().join("Cargo.toml")).unwrap();
+    let source = std::fs::read_to_string(assignment_dir.path().join("Cargo.toml")).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join("Cargo.toml")).unwrap();
     assert_eq!(shipped, source);
     assert!(shipped.contains("harness"));
@@ -188,50 +188,50 @@ fn emitted_workspace_manifest_matches_the_source_verbatim() {
 
 #[test]
 fn emitted_student_manifest_matches_the_solutions_own_cargo_toml() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let solution_manifest =
-        std::fs::read_to_string(package_dir.path().join("hw3/Cargo.toml")).unwrap();
+        std::fs::read_to_string(assignment_dir.path().join("hw3/Cargo.toml")).unwrap();
     let starter_manifest = std::fs::read_to_string(out_dir.path().join("hw3/Cargo.toml")).unwrap();
     assert_eq!(starter_manifest, solution_manifest);
 }
 
 #[test]
-fn publish_rejects_a_package_dir_without_a_private_spec() {
-    let package_dir = tempfile::tempdir().unwrap();
+fn publish_rejects_an_assignment_dir_without_a_private_spec() {
+    let assignment_dir = tempfile::tempdir().unwrap();
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
 #[test]
-fn publish_rejects_a_package_dir_without_a_root_workspace_manifest() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    std::fs::remove_file(package_dir.path().join("Cargo.toml")).unwrap();
+fn publish_rejects_an_assignment_dir_without_a_root_workspace_manifest() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    std::fs::remove_file(assignment_dir.path().join("Cargo.toml")).unwrap();
     let out_dir = tempfile::tempdir().unwrap();
 
-    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
 #[test]
 fn publish_derives_a_building_stub_from_the_id_named_solution_dir() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    write(&package_dir.path().join("hw3/src/lib.rs"), SOLUTION_SRC);
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("hw3/src/lib.rs"), SOLUTION_SRC);
     write(
-        &package_dir.path().join("publish.toml"),
+        &assignment_dir.path().join("publish.toml"),
         "allowed-warnings = [\"unused_variables\"]\n",
     );
 
     let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let src = std::fs::read_to_string(out_dir.path().join("hw3/src/lib.rs")).unwrap();
     assert!(src.contains("pub struct Stack"));
@@ -255,12 +255,12 @@ fn publish_derives_a_building_stub_from_the_id_named_solution_dir() {
 
 #[test]
 fn cargo_test_at_the_starter_root_runs_the_public_harness() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
 
     let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     let test = std::process::Command::new("cargo")
         .arg("test")
@@ -279,16 +279,16 @@ fn cargo_test_at_the_starter_root_runs_the_public_harness() {
 
 #[test]
 fn publish_solution_mode_keeps_the_real_implementation_and_reference_only_helpers() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    write(&package_dir.path().join("hw3/src/lib.rs"), SOLUTION_SRC);
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("hw3/src/lib.rs"), SOLUTION_SRC);
     write(
-        &package_dir.path().join("publish.toml"),
+        &assignment_dir.path().join("publish.toml"),
         "allowed-warnings = [\"unused_variables\"]\n",
     );
 
     let out_dir = tempfile::tempdir().unwrap();
-    publish(package_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
 
     let src = std::fs::read_to_string(out_dir.path().join("hw3/src/lib.rs")).unwrap();
     assert!(src.contains("pub struct Stack"));
@@ -311,12 +311,12 @@ fn publish_solution_mode_keeps_the_real_implementation_and_reference_only_helper
 
 #[test]
 fn publish_solution_mode_still_strips_the_harnesss_adversarial_tests() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
-    write(&package_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
 
     let judge = std::fs::read_to_string(out_dir.path().join("harness/tests/judge.rs")).unwrap();
     assert!(judge.contains("fn insert_basic"));
@@ -325,29 +325,29 @@ fn publish_solution_mode_still_strips_the_harnesss_adversarial_tests() {
 
 #[test]
 fn publish_rejects_a_solution_dir_whose_package_name_does_not_match_the_id() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     write(
-        &package_dir.path().join("hw3/Cargo.toml"),
+        &assignment_dir.path().join("hw3/Cargo.toml"),
         "[package]\nname = \"wrong-name\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
     );
 
     let out_dir = tempfile::tempdir().unwrap();
-    let err = publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
     assert!(matches!(err, Error::InvalidSpec(_)));
 }
 
 #[test]
 fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
-    let package_dir = tempfile::tempdir().unwrap();
-    library_package(package_dir.path(), "hw3");
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
     write(
-        &package_dir.path().join("hw3/vendor/some-crate/src/lib.rs"),
+        &assignment_dir.path().join("hw3/vendor/some-crate/src/lib.rs"),
         "not checked into the starter\n",
     );
     let out_dir = tempfile::tempdir().unwrap();
 
-    publish(package_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
 
     assert!(!out_dir.path().join("hw3/vendor").exists());
 }

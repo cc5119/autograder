@@ -4,6 +4,7 @@ pub mod deps;
 pub mod error;
 pub mod exec;
 pub mod id;
+mod macros;
 pub mod model;
 pub mod package;
 pub mod pipeline;

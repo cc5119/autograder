@@ -3,7 +3,6 @@ pub mod grade;
 pub mod manifest_check;
 pub mod prepare;
 
-use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -18,6 +17,7 @@ use crate::id::{RunId, StudentId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
 use crate::spec::Spec;
+use crate::str_map;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -56,12 +56,12 @@ fn list_submissions(submissions_dir: &Path) -> Result<Vec<StudentId>> {
 }
 
 /// Everything copied from the student's own fetched checkout: the untrusted submission.
-fn checkout_rules() -> Vec<Rule> {
+pub(crate) fn checkout_rules() -> Vec<Rule> {
     vec![Rule::Glob("{id}/**", None)]
 }
 
 /// Everything copied from the instructor's private package: the trusted judge.
-fn package_rules() -> Vec<Rule> {
+pub(crate) fn package_rules() -> Vec<Rule> {
     vec![
         Rule::File("Cargo.toml", None),
         Rule::File("Cargo.lock", None),
@@ -103,61 +103,50 @@ pub(crate) fn generate_run_id() -> RunId {
     ))
 }
 
-/// Runs Prepare -> Evaluate for a single submission checkout on disk.
+/// Runs Prepare -> Evaluate for a single submission checkout on disk, into
+/// `ctx.workspace` (see `JobContext`'s doc comment for the layout).
 /// Early-returns a `terminal_eval` at the first stage that didn't succeed
-/// (missing crate, disallowed dependency); only a fully prepared workspace
-/// reaches `evaluator.evaluate`.
-fn evaluate_submission(
+/// (missing package, disallowed dependency).
+pub(crate) fn evaluate_submission(
     ctx: &JobContext,
     checkout_dir: &Path,
-    build_dir: &Path,
-    package_dir: &Path,
-    workspace: &Path,
+    assignment_dir: &Path,
     spec: &Spec,
     evaluator: &dyn Evaluator,
 ) -> Result<EvaluationResult> {
-    let submitted_crate = checkout_dir.join(spec.assignment.id.as_str());
-    if !submitted_crate.is_dir() {
+    let submitted_package = checkout_dir.join(spec.assignment.id.as_str());
+    if !submitted_package.is_dir() {
         return Ok(terminal_eval(
             ctx,
             BuildStatus::Failed,
             Some(format!(
-                "submission has no {:?} directory -- expected the student's own crate \
+                "submission has no {:?} directory -- expected the student's own package \
                  there, matching [assignment].id",
                 spec.assignment.id
             )),
         ));
     }
 
-    let subs = HashMap::from([
-        ("id", spec.assignment.id.to_string()),
-        ("harness", spec.assignment.harness.clone()),
-    ]);
+    let subs = str_map! {"id" => spec.assignment.id, "harness" => spec.assignment.harness};
     overlay::apply(
-        &Context {
-            source_root: checkout_dir.to_path_buf(),
-            substitutions: subs.clone(),
-        },
-        build_dir,
+        &Context::new(checkout_dir, subs.clone()),
+        &ctx.workspace,
         &checkout_rules(),
     )?;
     overlay::apply(
-        &Context {
-            source_root: package_dir.to_path_buf(),
-            substitutions: subs,
-        },
-        build_dir,
+        &Context::new(assignment_dir, subs),
+        &ctx.workspace,
         &package_rules(),
     )?;
 
     // The sandboxed container process runs as an unprivileged,
     // rootless-podman-remapped uid, so we must grant "other" write
-    // access to `build_dir` so it can create new entries (Cargo.lock, target/).
-    let mut perms = crate::exec::fs::metadata(build_dir)?.permissions();
+    // access to `ctx.workspace` so it can create new entries (Cargo.lock, target/).
+    let mut perms = crate::exec::fs::metadata(&ctx.workspace)?.permissions();
     perms.set_mode(perms.mode() | 0o002);
-    crate::exec::fs::set_permissions(build_dir, perms)?;
+    crate::exec::fs::set_permissions(&ctx.workspace, perms)?;
 
-    let prepared = crate::pipeline::prepare::prepare(workspace, package_dir, spec)?;
+    let prepared = crate::pipeline::prepare::prepare(ctx, assignment_dir, spec)?;
     if !prepared.manifest_diagnostics.is_empty() {
         let message = prepared
             .manifest_diagnostics
@@ -192,7 +181,7 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 /// persisted at `submissions_dir/.eval/<student_id>/<run_id>.eval.json`.
 /// No scoring happens here -- run `autograder grade` afterwards for that.
 ///
-/// Refuses up front, before touching any submission, if `package_dir`
+/// Refuses up front, before touching any submission, if `assignment_dir`
 /// hasn't been vendored or was vendored from a since-changed `Cargo.lock`
 /// (`crate::deps::vendor::verify`) -- every sandboxed build runs
 /// `--offline`, so an unvendored/stale dependency set would otherwise
@@ -201,10 +190,10 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 pub fn evaluate_batch(
     submissions_dir: &Path,
     evaluator: &dyn Evaluator,
-    package_dir: &Path,
+    assignment_dir: &Path,
     spec: &Spec,
 ) -> Result<Vec<EvaluationResult>> {
-    if let Some(message) = crate::deps::vendor::verify(package_dir, spec) {
+    if let Some(message) = crate::deps::vendor::verify(assignment_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
 
@@ -226,32 +215,18 @@ pub fn evaluate_batch(
 
         let run_id = generate_run_id();
         let checkout_dir = submissions_dir.join(student_id.as_str());
-        // A fresh OS temp dir per submission -- dropped (and cleaned up)
-        // automatically at the end of this iteration, no manual cleanup.
-        let build_scratch = tempfile::tempdir().map_err(|source| {
-            Error::Other(format!("failed to create a scratch build dir: {source}"))
-        })?;
-        let build_dir = build_scratch.path();
-        // `workspace` is named after `[assignment].id`, not e.g. "student":
-        // the harness's checked-in Cargo.toml depends on that exact sibling
-        // name (see `evaluator::library`'s module doc comment).
-        let workspace = build_dir.join(spec.assignment.id.as_str());
+        // A fresh OS temp dir per submission, becoming `ctx.workspace`
+        // (see `JobContext`'s doc comment for the layout) -- dropped and
+        // cleaned up automatically at the end of this iteration.
+        let build_scratch = fs::temp_dir()?;
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
             student_id,
             run_id,
-            workspace: workspace.clone(),
+            workspace: build_scratch.path().to_path_buf(),
         };
 
-        let eval = evaluate_submission(
-            &ctx,
-            &checkout_dir,
-            build_dir,
-            package_dir,
-            &workspace,
-            spec,
-            evaluator,
-        )?;
+        let eval = evaluate_submission(&ctx, &checkout_dir, assignment_dir, spec, evaluator)?;
 
         save_eval(submissions_dir, &eval)?;
         progress.suspend(|| println!("{}", eval.describe()));
