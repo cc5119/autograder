@@ -19,13 +19,6 @@
 //! solution. The judge always lives in `harness/`, a sibling package of
 //! `{id}`, for both `library` and `binary` (see `evaluator::library`'s and
 //! `evaluator::binary`'s module doc comments).
-//!
-//! Before any of that, [`check_student_view_is_clean`] compiles the
-//! private repo's own `{id}` crate with `--features student` and refuses
-//! to publish on any warning -- checked against the solution source
-//! directly, rather than by running `cargo fix` over generated output the
-//! way this used to work. This runs regardless of `mode`: a solution
-//! publish shouldn't diverge from a broken/stale package either.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -36,7 +29,7 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::overlay::{self, Context, MatchedFile, Rule};
 use crate::spec::{self, Spec};
-use crate::str_map;
+use crate::{deps, package, str_map};
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
@@ -93,7 +86,7 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
     // `manifest_check`'s module doc comment), so if it doesn't match the
     // hash `autograder lock` last recorded, publishing would ship students
     // an allowlist inconsistent with what grading actually checks against.
-    if let Some(message) = crate::deps::lock::verify(assignment_dir, &spec) {
+    if let Some(message) = deps::lock::verify(assignment_dir, &spec) {
         return Err(Error::InvalidSpec(format!(
             "refusing to publish: {message}"
         )));
@@ -117,7 +110,7 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
         id.as_str(),
     )?;
 
-    check_student_view_is_clean(assignment_dir, id.as_str())?;
+    check_student_view_is_clean(assignment_dir)?;
 
     let ctx = Context::new(
         assignment_dir,
@@ -222,7 +215,7 @@ fn resolve_rust_sources(
         .into_iter()
         .map(|file| {
             if file.rel_path.extension().is_some_and(|ext| ext == "rs") {
-                let resolved = crate::package::stub::strip_to_stub(&file.content, enabled)
+                let resolved = package::stub::strip_to_stub(&file.content, enabled)
                     .map_err(|e| Error::Other(format!("{e} in {}", file.rel_path.display())))?;
                 Ok(MatchedFile {
                     content: resolved,
@@ -236,7 +229,7 @@ fn resolve_rust_sources(
 }
 
 fn autograde_workflow_yaml() -> Result<String> {
-    crate::package::template::render_file("autograde.yml", &str_map! {})
+    package::template::render_file("autograde.yml", &str_map! {})
 }
 
 const PUBLISH_CONFIG_FILE: &str = "publish.toml";
@@ -262,15 +255,14 @@ fn load_publish_config(assignment_dir: &Path) -> Result<PublishConfig> {
     })
 }
 
-fn check_student_view_is_clean(assignment_dir: &Path, id: &str) -> Result<()> {
-    let solution_dir = assignment_dir.join(id);
+fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
     let config = load_publish_config(assignment_dir)?;
     let output = std::process::Command::new("cargo")
         .args(["check", "--features", "student", "--message-format=json"])
-        .current_dir(&solution_dir)
+        .current_dir(assignment_dir)
         .output()
         .map_err(|source| Error::Io {
-            path: solution_dir.clone(),
+            path: assignment_dir.to_path_buf(),
             source,
         })?;
 
@@ -299,7 +291,7 @@ fn check_student_view_is_clean(assignment_dir: &Path, id: &str) -> Result<()> {
     if !output.status.success() && problems.is_empty() {
         return Err(Error::Other(format!(
             "cargo check --features student failed at {}:\n{}",
-            solution_dir.display(),
+            assignment_dir.display(),
             String::from_utf8_lossy(&output.stderr)
         )));
     }
@@ -310,7 +302,7 @@ fn check_student_view_is_clean(assignment_dir: &Path, id: &str) -> Result<()> {
              -- fix them before publishing, since they'd ship to students exactly as they \
              are:\n\n{}",
             problems.len(),
-            solution_dir.display(),
+            assignment_dir.display(),
             problems.join("\n")
         )));
     }

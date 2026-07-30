@@ -198,7 +198,7 @@ fn publish_rejects_an_assignment_dir_without_a_root_workspace_manifest() {
     let out_dir = tempfile::tempdir().unwrap();
 
     let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
-    assert!(matches!(err, Error::InvalidSpec(_)));
+    assert!(matches!(err, Error::Other(_)));
 }
 
 #[test]
