@@ -36,7 +36,8 @@ pub fn current_dir() -> Result<std::path::PathBuf> {
 }
 
 pub fn temp_dir() -> Result<tempfile::TempDir> {
-    tempfile::tempdir().map_err(|source| Error::Other(format!("failed to create a temp dir: {source}")))
+    tempfile::tempdir()
+        .map_err(|source| Error::Other(format!("failed to create a temp dir: {source}")))
 }
 
 pub fn create_dir(path: &Path) -> Result<()> {

@@ -65,7 +65,8 @@ fn latest_evals(submissions_dir: &Path) -> Result<Vec<EvaluationResult>> {
 mod tests {
     use super::*;
     use crate::exec::json::write_json;
-    use crate::model::{Diagnostics, EvalStatus, RunStatus, TestResult, TestStatus};
+    use crate::exec::sandbox::ProcessStatus;
+    use crate::model::{Diagnostics, EvalStatus, TestOutcome, TestResult, TestStatus};
 
     fn write(path: &std::path::Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -106,23 +107,25 @@ max-output-bytes = "64KiB"
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,
-            status: EvalStatus::Ran(RunStatus::Ok),
-            tests: vec![
-                TestResult {
-                    name: "insert_basic".into(),
-                    status: TestStatus::Pass,
-                    duration_ms: 0,
-                    message: None,
-                    reported_score: None,
-                },
-                TestResult {
-                    name: "balance_adversarial".into(),
-                    status: TestStatus::Fail,
-                    duration_ms: 0,
-                    message: None,
-                    reported_score: None,
-                },
-            ],
+            status: EvalStatus::Ran {
+                process: ProcessStatus::Exited(0),
+                tests: TestOutcome::Tests(vec![
+                    TestResult {
+                        name: "insert_basic".into(),
+                        status: TestStatus::Pass,
+                        duration_ms: 0,
+                        message: None,
+                        reported_score: None,
+                    },
+                    TestResult {
+                        name: "balance_adversarial".into(),
+                        status: TestStatus::Fail,
+                        duration_ms: 0,
+                        message: None,
+                        reported_score: None,
+                    },
+                ]),
+            },
             wall_clock_ms: None,
             diagnostics: Diagnostics::default(),
         }
@@ -147,7 +150,7 @@ max-output-bytes = "64KiB"
         let gradebook =
             std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
         // insert_basic passes (1.0 default), balance_adversarial fails (0.0).
-        assert!(gradebook.contains("alice,1,,fail"));
+        assert!(gradebook.contains("alice,1"));
 
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
@@ -158,6 +161,6 @@ max-output-bytes = "64KiB"
         run(assignment_dir.path(), submissions_dir.path()).unwrap();
         let gradebook =
             std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
-        assert!(gradebook.contains("alice,5,10,fail"));
+        assert!(gradebook.contains("alice,5"));
     }
 }

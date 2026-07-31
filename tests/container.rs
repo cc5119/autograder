@@ -27,10 +27,7 @@ fn sandbox() -> ContainerSandbox {
 
 /// The most recent `.eval/<student_id>/*.eval.json` under
 /// `submissions_dir`.
-fn latest_persisted_eval(
-    submissions_dir: &std::path::Path,
-    student_id: &str,
-) -> EvaluationResult {
+fn latest_persisted_eval(submissions_dir: &std::path::Path, student_id: &str) -> EvaluationResult {
     let dir = submissions_dir.join(".eval").join(student_id);
     let mut runs: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

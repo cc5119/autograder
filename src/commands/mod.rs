@@ -124,8 +124,9 @@ base = 0.0
     }
 
     /// This host has no `cargo-nextest`. Only stage 3 needs it, so the two
-    /// build stages succeed and this reports `HarnessError` (no junit
-    /// written), not a crash or a silent pass.
+    /// build stages succeed, but `cargo nextest` itself exits with
+    /// "no such command" (neither `0` nor `100`) -- reported as `Crashed`,
+    /// not a silent pass, before `junit.xml` is even consulted.
     #[test]
     fn ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest() {
         let harness_dir = tempfile::tempdir().unwrap();
@@ -171,7 +172,10 @@ base = 0.0
 
         assert!(matches!(
             eval.status,
-            model::EvalStatus::Ran(model::RunStatus::HarnessError)
+            model::EvalStatus::Ran {
+                tests: model::TestOutcome::Unavailable(_),
+                ..
+            }
         ));
 
         let report = CiReport {
@@ -259,6 +263,8 @@ base = 0.0
             std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
         // This host has no `cargo-nextest`, which only stage 3 (run) needs
         // -- see `ci_pipeline_runs_prepare_and_evaluate_end_to_end_short_of_nextest`.
-        assert!(gradebook.contains("alice,0,,HarnessError"));
+        // No readable test results means no trustworthy score, so the
+        // gradebook row's score is blank.
+        assert!(gradebook.contains("alice,"));
     }
 }

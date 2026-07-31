@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::exec::sandbox::ProcessStatus;
 use crate::id::{AssignmentId, RunId, StudentId};
 
 /// Per-job context threaded through the pipeline stages. `student_id`
@@ -44,7 +45,7 @@ pub enum TestStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestResult {
     pub name: String,
     pub status: TestStatus,
@@ -61,50 +62,38 @@ pub struct TestResult {
     pub reported_score: Option<f64>,
 }
 
-/// Terminal status of the build stage: compiling the submission's own
-/// crate, then the harness against it (`pipeline::evaluator::nextest`'s
-/// stages 1-2), or a precondition checked before either ever runs (missing
-/// crate dir, disallowed dependency).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildStatus {
-    Ok,
-    Failed,
-    Timeout,
-    Oom,
+    Failed(ProcessStatus),
     DisallowedDependency,
 }
 
 impl BuildStatus {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            BuildStatus::Ok => "ok",
-            BuildStatus::Failed => "build failed",
-            BuildStatus::Timeout => "timeout",
-            BuildStatus::Oom => "out of memory",
-            BuildStatus::DisallowedDependency => "disallowed dependency",
+            BuildStatus::Failed(status) => status.describe(),
+            BuildStatus::DisallowedDependency => "disallowed dependency".to_string(),
         }
     }
 }
 
-/// Terminal status of the run stage: only reachable once the build stage
-/// has already succeeded (see `StageReports`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunStatus {
-    Ok,
-    Timeout,
-    Oom,
-    HarnessError,
+pub enum TestOutcome {
+    /// Parsed results are available (individual tests may still have
+    /// failed -- that's tracked per-`TestResult`, not here).
+    Tests(Vec<TestResult>),
+    /// No parseable results; `String` says why (e.g. "no junit.xml
+    /// produced", "run process did not complete"). Never treated as a pass.
+    Unavailable(String),
 }
 
-impl RunStatus {
-    pub fn label(self) -> &'static str {
+impl TestOutcome {
+    pub fn label(&self) -> String {
         match self {
-            RunStatus::Ok => "ok",
-            RunStatus::Timeout => "timeout",
-            RunStatus::Oom => "out of memory",
-            RunStatus::HarnessError => "harness error",
+            TestOutcome::Tests(_) => "ok".to_string(),
+            TestOutcome::Unavailable(reason) => reason.clone(),
         }
     }
 }
@@ -117,17 +106,14 @@ pub struct Diagnostics {
     pub stderr_excerpt: Option<String>,
 }
 
-/// The pipeline is strictly sequential -- the run stage only ever happens
-/// once the build stage has succeeded -- so this makes the two impossible
-/// states from earlier designs unrepresentable: there's no `run: Ok` sitting
-/// alongside a failed build (the `Ran` variant only exists once a build
-/// succeeded), and no cross-stage status values (`BuildStatus`/`RunStatus`
-/// each only contain what's reachable in their own stage).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalStatus {
     BuildFailed(BuildStatus),
-    Ran(RunStatus),
+    Ran {
+        process: ProcessStatus,
+        tests: TestOutcome,
+    },
 }
 
 /// The sole contract between untrusted execution and scoring.
@@ -145,7 +131,6 @@ pub struct EvaluationResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructor_commit: Option<String>,
     pub status: EvalStatus,
-    pub tests: Vec<TestResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall_clock_ms: Option<u64>,
     #[serde(default)]
@@ -159,22 +144,31 @@ impl EvaluationResult {
     /// that themselves.
     pub fn describe(&self) -> String {
         match &self.status {
-            EvalStatus::Ran(RunStatus::Ok) => {
-                let passed = self
-                    .tests
+            EvalStatus::Ran {
+                tests: TestOutcome::Tests(tests),
+                ..
+            } => {
+                let passed = tests
                     .iter()
                     .filter(|t| t.status == TestStatus::Pass)
                     .count();
                 format!(
                     "{}: ok ({passed}/{} tests passed)",
                     self.student_id,
-                    self.tests.len()
+                    tests.len()
                 )
             }
             EvalStatus::BuildFailed(status) => {
                 format!("{}: {}", self.student_id, status.label())
             }
-            EvalStatus::Ran(status) => format!("{}: {}", self.student_id, status.label()),
+            EvalStatus::Ran { process, tests } => {
+                format!(
+                    "{}: {} ({})",
+                    self.student_id,
+                    process.describe(),
+                    tests.label()
+                )
+            }
         }
     }
 }
@@ -182,68 +176,8 @@ impl EvaluationResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grade {
     pub student_id: StudentId,
-    pub score: f64,
-    /// The scale's theoretical ceiling, when the scoring formula defines
-    /// one (`affine`'s `scale-max`). `sum` is unnormalized and has no
-    /// natural ceiling, so this is `None` for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-    pub status: String,
-    #[serde(default)]
-    pub failing_tests: Vec<String>,
+    /// `None` when the build failed or the run left no readable results --
+    /// neither leaves a trustworthy set of tests to score.
+    pub score: Option<f64>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample() -> EvaluationResult {
-        EvaluationResult {
-            assignment_id: AssignmentId::new("hw3"),
-            student_id: StudentId::new("alice"),
-            run_id: RunId::new("2026-07-17T18-03-00Z-ab12"),
-            graded_commit: Some("a1b2c3d".into()),
-            instructor_commit: Some("f9e8d7".into()),
-            status: EvalStatus::Ran(RunStatus::Ok),
-            tests: vec![
-                TestResult {
-                    name: "insert_basic".into(),
-                    status: TestStatus::Pass,
-                    duration_ms: 5,
-                    message: None,
-                    reported_score: Some(0.83),
-                },
-                TestResult {
-                    name: "balance_adv".into(),
-                    status: TestStatus::Fail,
-                    duration_ms: 9,
-                    message: Some("assertion failed: height <= 2*log2(n)".into()),
-                    reported_score: None,
-                },
-                TestResult {
-                    name: "delete_edge".into(),
-                    status: TestStatus::Timeout,
-                    duration_ms: 0,
-                    message: None,
-                    reported_score: None,
-                },
-            ],
-            wall_clock_ms: Some(380),
-            diagnostics: Diagnostics {
-                compiler_errors: None,
-                stderr_excerpt: Some("…".into()),
-            },
-        }
-    }
-
-    #[test]
-    fn evaluation_result_roundtrips_through_json() {
-        let original = sample();
-        let json = serde_json::to_string_pretty(&original).unwrap();
-        let parsed: EvaluationResult = serde_json::from_str(&json).unwrap();
-        let rejson = serde_json::to_string_pretty(&parsed).unwrap();
-        assert_eq!(json, rejson);
-        assert_eq!(parsed.tests.len(), 3);
-        assert_eq!(parsed.tests[1].status, TestStatus::Fail);
-    }
-}

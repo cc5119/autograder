@@ -3,8 +3,10 @@ pub mod nextest;
 use std::path::Path;
 
 use crate::error::Result;
-use crate::exec::sandbox::{Mount, MountMode, SandboxLimits};
-use crate::model::{Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult};
+use crate::exec::sandbox::{Mount, MountMode, ProcessStatus, SandboxLimits};
+use crate::model::{
+    Diagnostics, EvalStatus, EvaluationResult, JobContext, TestOutcome, TestResult,
+};
 use crate::spec::BuildLimits;
 
 /// Applied to the two build stages only -- the run stage gets no
@@ -152,8 +154,10 @@ impl Evaluator for StubEvaluator {
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
-            status: EvalStatus::Ran(RunStatus::Ok),
-            tests,
+            status: EvalStatus::Ran {
+                process: ProcessStatus::Exited(0),
+                tests: TestOutcome::Tests(tests),
+            },
             wall_clock_ms: None,
             diagnostics: Diagnostics::default(),
         })
@@ -185,11 +189,14 @@ mod tests {
         };
 
         let eval = evaluator.evaluate(&ctx).unwrap();
-        assert_eq!(eval.tests.len(), 1);
-        assert_eq!(eval.tests[0].status, TestStatus::Pass);
-        assert!(matches!(
-            eval.status,
-            crate::model::EvalStatus::Ran(crate::model::RunStatus::Ok)
-        ));
+        let crate::model::EvalStatus::Ran {
+            tests: crate::model::TestOutcome::Tests(tests),
+            ..
+        } = &eval.status
+        else {
+            panic!("expected Ran {{ tests: Tests(_) }}");
+        };
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].status, TestStatus::Pass);
     }
 }

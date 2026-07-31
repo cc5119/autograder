@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::Result;
-use crate::model::{EvalStatus, EvaluationResult, RunStatus};
+use crate::model::{EvalStatus, EvaluationResult, TestOutcome};
 use crate::pipeline;
 use crate::spec::Spec;
 
@@ -28,7 +28,15 @@ fn render_summary(evals: &[EvaluationResult]) -> String {
     }
     let ok = evals
         .iter()
-        .filter(|eval| matches!(eval.status, EvalStatus::Ran(RunStatus::Ok)))
+        .filter(|eval| {
+            matches!(
+                eval.status,
+                EvalStatus::Ran {
+                    tests: TestOutcome::Tests(_),
+                    ..
+                }
+            )
+        })
         .count();
     format!(
         "{} submissions evaluated: {ok} ok, {} not ok\n",

@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::read_json;
 use crate::id::StudentId;
-use crate::model::{EvalStatus, EvaluationResult, RunStatus, TestStatus};
+use crate::model::{EvalStatus, EvaluationResult, TestOutcome, TestStatus};
 use crate::submissions::{FetchRecord, FetchStatus, SubmissionDate, read_fetch_record};
 
 const EVAL_DIR: &str = ".eval";
@@ -49,7 +49,12 @@ fn student_id(submission: &Path) -> Result<StudentId> {
         .file_name()
         .and_then(|s| s.to_str())
         .map(StudentId::new)
-        .ok_or_else(|| Error::Other(format!("{} is not a valid submission path", submission.display())))
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "{} is not a valid submission path",
+                submission.display()
+            ))
+        })
 }
 
 fn render_fetch(out: &mut String, record: &FetchRecord) {
@@ -92,7 +97,10 @@ fn render_submission_date(out: &mut String, date: &SubmissionDate) {
 /// `<submissions>/.eval/<id>/`, alongside the total number of runs on
 /// record -- mirrors `commands::grade`'s `latest_evals`, but for a single
 /// submission and keeping the count around for the caller to note.
-fn latest_eval(submissions_dir: &Path, id: &StudentId) -> Result<Option<(EvaluationResult, usize)>> {
+fn latest_eval(
+    submissions_dir: &Path,
+    id: &StudentId,
+) -> Result<Option<(EvaluationResult, usize)>> {
     let dir = submissions_dir.join(EVAL_DIR).join(id.as_str());
     if !dir.is_dir() {
         return Ok(None);
@@ -122,46 +130,47 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
         eval.run_id
     );
 
-    match &eval.status {
+    let tests = match &eval.status {
         EvalStatus::BuildFailed(status) => {
             let _ = writeln!(
                 out,
                 "  status         {}",
                 style(format!("build failed ({})", status.label())).red()
             );
-            if verbose
-                && let Some(errors) = &eval.diagnostics.compiler_errors
-            {
+            if verbose && let Some(errors) = &eval.diagnostics.compiler_errors {
                 let _ = writeln!(out, "\n{errors}");
             }
             return;
         }
-        EvalStatus::Ran(status) if *status != RunStatus::Ok => {
-            let _ = writeln!(
-                out,
-                "  status         {}",
-                style(format!("run failed ({})", status.label())).red()
-            );
-            if verbose
-                && let Some(excerpt) = &eval.diagnostics.stderr_excerpt
-            {
-                let _ = writeln!(out, "\n{excerpt}");
+        EvalStatus::Ran { process, tests } => {
+            let _ = writeln!(out, "  process        {}", process.describe());
+            match tests {
+                TestOutcome::Unavailable(reason) => {
+                    let _ = writeln!(
+                        out,
+                        "  tests          {}",
+                        style(format!("unavailable ({reason})")).red()
+                    );
+                    if verbose && let Some(excerpt) = &eval.diagnostics.stderr_excerpt {
+                        let _ = writeln!(out, "\n{excerpt}");
+                    }
+                    return;
+                }
+                TestOutcome::Tests(tests) => {
+                    let _ = writeln!(out, "  tests          {}", style("ok").green());
+                    tests
+                }
             }
-            return;
         }
-        EvalStatus::Ran(RunStatus::Ok) => {
-            let _ = writeln!(out, "  status         {}", style("ok").green());
-        }
-        EvalStatus::Ran(_) => unreachable!("handled by the RunStatus::Ok arm above"),
-    }
+    };
 
     if let Some(wall_clock_ms) = eval.wall_clock_ms {
         let _ = writeln!(out, "  wall clock     {wall_clock_ms}ms");
     }
     let _ = writeln!(out);
 
-    let name_width = eval.tests.iter().map(|t| t.name.len()).max().unwrap_or(0);
-    let mut sorted_tests: Vec<_> = eval.tests.iter().collect();
+    let name_width = tests.iter().map(|t| t.name.len()).max().unwrap_or(0);
+    let mut sorted_tests: Vec<_> = tests.iter().collect();
     sorted_tests.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut passed = 0;
@@ -180,7 +189,8 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
             (TestStatus::Pass, None) => String::new(),
             (status, _) => test_status_label(status).to_string(),
         };
-        let annotation_padding = " ".repeat(10usize.saturating_sub(plain_annotation.chars().count()));
+        let annotation_padding =
+            " ".repeat(10usize.saturating_sub(plain_annotation.chars().count()));
         let annotation = if test.status == TestStatus::Pass {
             plain_annotation
         } else {
@@ -191,9 +201,7 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
             "  {mark} {:<name_width$}  {annotation}{annotation_padding}{:>6}ms",
             test.name, test.duration_ms
         );
-        if verbose
-            && let Some(message) = &test.message
-        {
+        if verbose && let Some(message) = &test.message {
             for line in message.lines() {
                 let _ = writeln!(out, "      \u{2502} {}", style(line).dim());
             }
@@ -203,7 +211,7 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
     let _ = writeln!(
         out,
         "\n  {}",
-        style(format!("{passed}/{} tests passed", eval.tests.len())).bold()
+        style(format!("{passed}/{} tests passed", tests.len())).bold()
     );
 }
 

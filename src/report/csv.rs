@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use crate::error::{Error, Result};
 use crate::model::Grade;
 
-/// Gradebook CSV: `student_id,score,max,status`.
+/// Gradebook CSV: `student_id,score`. `score` is blank when the build
+/// failed or the run left no readable results.
 pub fn render(grades: &[Grade]) -> Result<String> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer
-        .write_record(["student_id", "score", "max", "status"])
+        .write_record(["student_id", "score"])
         .map_err(|source| Error::Csv {
             path: PathBuf::from("<gradebook>"),
             source: Box::new(source),
@@ -16,9 +17,7 @@ pub fn render(grades: &[Grade]) -> Result<String> {
         writer
             .write_record([
                 grade.student_id.to_string(),
-                grade.score.to_string(),
-                grade.max.map(|m| m.to_string()).unwrap_or_default(),
-                grade.status.clone(),
+                grade.score.map(|s| s.to_string()).unwrap_or_default(),
             ])
             .map_err(|source| Error::Csv {
                 path: PathBuf::from("<gradebook>"),
@@ -40,24 +39,18 @@ mod tests {
         let grades = vec![
             Grade {
                 student_id: "alice".into(),
-                score: 10.0,
-                max: Some(30.0),
-                status: "fail".into(),
-                failing_tests: vec!["balance_adversarial".into()],
+                score: Some(10.0),
             },
             Grade {
                 student_id: "bob".into(),
-                score: 30.0,
-                max: Some(30.0),
-                status: "pass".into(),
-                failing_tests: vec![],
+                score: None,
             },
         ];
 
         let csv = render(&grades).unwrap();
         let mut lines = csv.lines();
-        assert_eq!(lines.next(), Some("student_id,score,max,status"));
-        assert_eq!(lines.next(), Some("alice,10,30,fail"));
-        assert_eq!(lines.next(), Some("bob,30,30,pass"));
+        assert_eq!(lines.next(), Some("student_id,score"));
+        assert_eq!(lines.next(), Some("alice,10"));
+        assert_eq!(lines.next(), Some("bob,"));
     }
 }

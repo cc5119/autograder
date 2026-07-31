@@ -127,7 +127,10 @@ fn publish_refuses_to_ship_a_stale_cargo_lock() {
 fn publish_derives_a_public_harness_with_only_the_kept_test_and_a_path_dependency() {
     let assignment_dir = tempfile::tempdir().unwrap();
     library_package(assignment_dir.path(), "hw3");
-    write(&assignment_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    write(
+        &assignment_dir.path().join("harness/tests/judge.rs"),
+        JUDGE_RS,
+    );
     let out_dir = tempfile::tempdir().unwrap();
 
     publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
@@ -238,7 +241,10 @@ fn publish_derives_a_building_stub_from_the_id_named_solution_dir() {
 fn cargo_test_at_the_starter_root_runs_the_public_harness() {
     let assignment_dir = tempfile::tempdir().unwrap();
     library_package(assignment_dir.path(), "hw3");
-    write(&assignment_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    write(
+        &assignment_dir.path().join("harness/tests/judge.rs"),
+        JUDGE_RS,
+    );
 
     let out_dir = tempfile::tempdir().unwrap();
     publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
@@ -294,7 +300,10 @@ fn publish_solution_mode_keeps_the_real_implementation_and_reference_only_helper
 fn publish_solution_mode_still_strips_the_harnesss_adversarial_tests() {
     let assignment_dir = tempfile::tempdir().unwrap();
     library_package(assignment_dir.path(), "hw3");
-    write(&assignment_dir.path().join("harness/tests/judge.rs"), JUDGE_RS);
+    write(
+        &assignment_dir.path().join("harness/tests/judge.rs"),
+        JUDGE_RS,
+    );
     let out_dir = tempfile::tempdir().unwrap();
 
     publish(assignment_dir.path(), out_dir.path(), PublishMode::Solution).unwrap();
@@ -323,7 +332,9 @@ fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
     let assignment_dir = tempfile::tempdir().unwrap();
     library_package(assignment_dir.path(), "hw3");
     write(
-        &assignment_dir.path().join("hw3/vendor/some-crate/src/lib.rs"),
+        &assignment_dir
+            .path()
+            .join("hw3/vendor/some-crate/src/lib.rs"),
         "not checked into the starter\n",
     );
     let out_dir = tempfile::tempdir().unwrap();
@@ -332,4 +343,3 @@ fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
 
     assert!(!out_dir.path().join("hw3/vendor").exists());
 }
-

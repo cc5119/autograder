@@ -16,9 +16,6 @@ use super::{MountMode, ProcessStatus, Profile, Sandbox, SandboxOutcome, SandboxS
 /// against podman itself being wedged -- it isn't meant to be tight.
 const CONTAINER_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Signal number `decode_podman_status` treats as an OOM kill.
-const SIGKILL: i32 = 9;
-
 /// Default path an operator can drop a hardened seccomp profile at for
 /// `ContainerSandbox::new` to pick up.
 const DEFAULT_SECCOMP_PROFILE: &str = "/etc/autograder/seccomp.json";
@@ -208,19 +205,10 @@ impl Sandbox for ContainerSandbox {
 
 /// Reverses podman's own convention for reporting a signal-killed
 /// *contained* process: `podman run` itself exits normally with `128 +
-/// signal` rather than being signaled itself. `SIGKILL` specifically is
-/// treated as an OOM kill -- best-effort, not certain, since any `SIGKILL`
-/// looks the same, but it's what a cgroup memory-limit kill delivers.
+/// signal` rather than being signaled itself.
 fn decode_podman_status(raw: ProcessStatus) -> ProcessStatus {
     match raw {
-        ProcessStatus::Exited(code) if code > 128 => {
-            let signal = code - 128;
-            if signal == SIGKILL {
-                ProcessStatus::MemoryExceeded
-            } else {
-                ProcessStatus::Signaled(signal)
-            }
-        }
+        ProcessStatus::Exited(code) if code > 128 => ProcessStatus::Signaled(code - 128),
         other => other,
     }
 }

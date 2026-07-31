@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::Result;
 
 pub use container::ContainerSandbox;
@@ -94,19 +96,30 @@ pub struct SandboxSpec {
     pub profile: Profile,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProcessStatus {
     /// Exited normally (or with a nonzero code) -- the exit code is real
     /// either way.
     Exited(i32),
-    /// Killed by this signal, not attributed to an OOM kill.
+    /// Killed by this signal.
     Signaled(i32),
     /// The wall-clock limit was hit before the process finished.
     TimedOut,
-    /// Killed by the cgroup for exceeding the memory limit.
-    MemoryExceeded,
     /// Couldn't be determined (the process was never successfully reaped).
     Unknown,
+}
+
+impl ProcessStatus {
+    /// Mirrors `autograder_test::Status::describe`.
+    pub fn describe(&self) -> String {
+        match self {
+            ProcessStatus::Exited(code) => format!("exited ({code})"),
+            ProcessStatus::Signaled(signal) => format!("signaled ({signal})"),
+            ProcessStatus::TimedOut => "timed out".to_string(),
+            ProcessStatus::Unknown => "unknown".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -126,9 +139,5 @@ impl SandboxOutcome {
 
     pub fn timed_out(&self) -> bool {
         self.status == ProcessStatus::TimedOut
-    }
-
-    pub fn oom(&self) -> bool {
-        self.status == ProcessStatus::MemoryExceeded
     }
 }

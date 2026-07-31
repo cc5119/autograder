@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::write_json;
 use crate::exec::overlay::{self, Context, Rule};
+use crate::exec::sandbox::ProcessStatus;
 use crate::id::{RunId, StudentId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
@@ -85,7 +86,6 @@ fn terminal_eval(
         graded_commit: None,
         instructor_commit: None,
         status: EvalStatus::BuildFailed(status),
-        tests: Vec::new(),
         wall_clock_ms: None,
         diagnostics: Diagnostics {
             compiler_errors: None,
@@ -118,7 +118,7 @@ pub(crate) fn evaluate_submission(
     if !submitted_package.is_dir() {
         return Ok(terminal_eval(
             ctx,
-            BuildStatus::Failed,
+            BuildStatus::Failed(ProcessStatus::Unknown),
             Some(format!(
                 "submission has no {:?} directory -- expected the student's own package \
                  there, matching [assignment].id",

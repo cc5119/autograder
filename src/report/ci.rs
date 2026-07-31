@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use console::style;
 
-use crate::model::{EvalStatus, EvaluationResult, RunStatus, TestStatus};
+use crate::model::{EvalStatus, EvaluationResult, TestOutcome, TestStatus};
 use crate::pipeline::manifest_check::ManifestDiagnostic;
 
 /// Renders and judges a CI run. `eval` is `None` when a disallowed
@@ -30,8 +30,13 @@ impl<'a> CiReport<'a> {
         let Some(eval) = self.eval else {
             return false;
         };
-        matches!(eval.status, EvalStatus::Ran(RunStatus::Ok))
-            && eval.tests.iter().all(|t| t.status == TestStatus::Pass)
+        match &eval.status {
+            EvalStatus::Ran {
+                tests: TestOutcome::Tests(tests),
+                ..
+            } => tests.iter().all(|t| t.status == TestStatus::Pass),
+            _ => false,
+        }
     }
 
     pub fn render(&self) -> String {
@@ -54,7 +59,7 @@ impl<'a> CiReport<'a> {
             return out;
         };
 
-        match eval.status {
+        let tests = match &eval.status {
             EvalStatus::BuildFailed(status) => {
                 if let Some(errors) = &eval.diagnostics.compiler_errors {
                     out.push_str(errors);
@@ -65,21 +70,26 @@ impl<'a> CiReport<'a> {
                 let _ = writeln!(out, "autograde: build failed ({})", status.label());
                 return out;
             }
-            EvalStatus::Ran(status) if status != RunStatus::Ok => {
-                if let Some(excerpt) = &eval.diagnostics.stderr_excerpt {
-                    out.push_str(excerpt);
-                    if !excerpt.ends_with('\n') {
-                        out.push('\n');
+            EvalStatus::Ran { process, tests } => {
+                let _ = writeln!(out, "autograde: process {}", process.describe());
+                match tests {
+                    TestOutcome::Unavailable(reason) => {
+                        if let Some(excerpt) = &eval.diagnostics.stderr_excerpt {
+                            out.push_str(excerpt);
+                            if !excerpt.ends_with('\n') {
+                                out.push('\n');
+                            }
+                        }
+                        let _ = writeln!(out, "autograde: tests unavailable ({reason})");
+                        return out;
                     }
+                    TestOutcome::Tests(tests) => tests,
                 }
-                let _ = writeln!(out, "autograde: run failed ({})", status.label());
-                return out;
             }
-            EvalStatus::Ran(_) => {}
-        }
+        };
 
         let mut failing = 0usize;
-        for test in &eval.tests {
+        for test in tests {
             match test.status {
                 TestStatus::Pass => {
                     let _ = writeln!(out, "{} {}", style("\u{2713}").green(), test.name);
@@ -102,7 +112,7 @@ impl<'a> CiReport<'a> {
         let _ = writeln!(
             out,
             "autograde: {failing} of {} public tests failing",
-            eval.tests.len()
+            tests.len()
         );
         out
     }
@@ -121,6 +131,7 @@ fn test_status_label(status: TestStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::sandbox::ProcessStatus;
     use crate::model::BuildStatus;
     use crate::model::Diagnostics;
     use crate::model::TestResult;
@@ -132,8 +143,10 @@ mod tests {
             run_id: "run-1".into(),
             graded_commit: None,
             instructor_commit: None,
-            status: EvalStatus::Ran(RunStatus::Ok),
-            tests,
+            status: EvalStatus::Ran {
+                process: ProcessStatus::Exited(0),
+                tests: TestOutcome::Tests(tests),
+            },
             wall_clock_ms: None,
             diagnostics: Diagnostics::default(),
         }
@@ -158,7 +171,7 @@ mod tests {
     #[test]
     fn build_failure_reports_compiler_errors_without_test_list() {
         let mut eval = eval_with_tests(vec![]);
-        eval.status = EvalStatus::BuildFailed(BuildStatus::Failed);
+        eval.status = EvalStatus::BuildFailed(BuildStatus::Failed(ProcessStatus::Exited(1)));
         eval.diagnostics.compiler_errors = Some("error[E0433]: failed to resolve".into());
         let report = CiReport {
             eval: Some(&eval),

@@ -19,7 +19,10 @@ pub fn run(assignment: &Path, out: &Path, mode: PublishMode) -> Result<()> {
 
 fn confirm_overwrite(out: &Path) -> Result<bool> {
     Confirm::new()
-        .with_prompt(format!("{} already exists and is not empty, overwrite?", out.display()))
+        .with_prompt(format!(
+            "{} already exists and is not empty, overwrite?",
+            out.display()
+        ))
         .default(false)
         .interact()
         .map_err(|source| Error::Other(format!("failed to read confirmation: {source}")))

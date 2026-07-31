@@ -174,7 +174,10 @@ mod tests {
             &assignment_dir.join("harness/Cargo.toml"),
             "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhw3 = { path = \"../hw3\" }\n",
         );
-        write(&assignment_dir.join("harness/src/main.rs"), "fn main() {}\n");
+        write(
+            &assignment_dir.join("harness/src/main.rs"),
+            "fn main() {}\n",
+        );
 
         let toml = format!(
             r#"

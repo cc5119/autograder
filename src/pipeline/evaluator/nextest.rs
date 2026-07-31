@@ -50,10 +50,10 @@ use std::path::{Path, PathBuf};
 use crate::deps::vendor;
 use crate::error::{Error, Result};
 use crate::exec::sandbox::{
-    Mount, Profile, ProcessStatus, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec,
+    Mount, ProcessStatus, Profile, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec,
 };
 use crate::model::{
-    BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult,
+    BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext, TestOutcome, TestResult,
     TestStatus,
 };
 use crate::spec::Spec;
@@ -243,35 +243,16 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         };
 
         let run_outcome = self.sandbox.run(&run_spec)?;
-        if run_outcome.timed_out() {
-            return Ok(run_failed_result(
-                ctx,
-                RunStatus::Timeout,
-                run_diagnostics(&run_outcome),
-            ));
-        }
-        if run_outcome.oom() {
-            return Ok(run_failed_result(
-                ctx,
-                RunStatus::Oom,
-                run_diagnostics(&run_outcome),
-            ));
-        }
         // `cargo nextest run` only ever exits `0` (all passed) or `100`
-        // (some tests failed) for a session that actually completed. Any
-        // other status -- including a signal decoded from podman's `128 +
-        // signal` convention, e.g. a sandboxed test's setup crashing the
-        // whole nextest process -- means the session was cut short.
-        // Trusting `junit.xml` in that case would silently grade against
-        // however many `<testcase>`s happened to be flushed before the
-        // crash, as if that were the full run.
+        // (some tests failed) for a session that actually completed.
         if !matches!(
             run_outcome.status,
             ProcessStatus::Exited(0) | ProcessStatus::Exited(100)
         ) {
             return Ok(run_failed_result(
                 ctx,
-                RunStatus::HarnessError,
+                run_outcome.status,
+                TestOutcome::Unavailable("run process did not complete".to_string()),
                 run_diagnostics(&run_outcome),
             ));
         }
@@ -282,7 +263,8 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             // completed -- never treat that as a pass.
             return Ok(run_failed_result(
                 ctx,
-                RunStatus::HarnessError,
+                run_outcome.status,
+                TestOutcome::Unavailable("no junit.xml produced".to_string()),
                 run_diagnostics(&run_outcome),
             ));
         };
@@ -295,8 +277,10 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
-            status: EvalStatus::Ran(RunStatus::Ok),
-            tests,
+            status: EvalStatus::Ran {
+                process: run_outcome.status,
+                tests: TestOutcome::Tests(tests),
+            },
             wall_clock_ms: run_outcome.wall_clock_ms,
             diagnostics,
         })
@@ -315,7 +299,6 @@ fn build_failed_result(
         graded_commit: None,
         instructor_commit: None,
         status: EvalStatus::BuildFailed(status),
-        tests: Vec::new(),
         wall_clock_ms: None,
         diagnostics,
     }
@@ -323,7 +306,8 @@ fn build_failed_result(
 
 fn run_failed_result(
     ctx: &JobContext,
-    status: RunStatus,
+    process: ProcessStatus,
+    tests: TestOutcome,
     diagnostics: Diagnostics,
 ) -> EvaluationResult {
     EvaluationResult {
@@ -332,21 +316,14 @@ fn run_failed_result(
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
-        status: EvalStatus::Ran(status),
-        tests: Vec::new(),
+        status: EvalStatus::Ran { process, tests },
         wall_clock_ms: None,
         diagnostics,
     }
 }
 
 fn build_stage_status(outcome: &SandboxOutcome) -> BuildStatus {
-    if outcome.timed_out() {
-        BuildStatus::Timeout
-    } else if outcome.oom() {
-        BuildStatus::Oom
-    } else {
-        BuildStatus::Failed
-    }
+    BuildStatus::Failed(outcome.status)
 }
 
 fn run_diagnostics(outcome: &SandboxOutcome) -> Diagnostics {
@@ -678,14 +655,15 @@ base = 0.0
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         assert!(matches!(
             eval.status,
-            EvalStatus::BuildFailed(BuildStatus::Failed)
+            EvalStatus::BuildFailed(BuildStatus::Failed(_))
         ));
         assert!(eval.diagnostics.compiler_errors.unwrap().contains("E0433"));
-        assert!(eval.tests.is_empty());
         assert_eq!(specs.lock().unwrap().len(), 1);
     }
 
@@ -699,13 +677,14 @@ base = 0.0
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         assert!(matches!(
             eval.status,
-            EvalStatus::BuildFailed(BuildStatus::Failed)
+            EvalStatus::BuildFailed(BuildStatus::Failed(_))
         ));
-        assert!(eval.tests.is_empty());
         assert_eq!(specs.lock().unwrap().len(), 2);
     }
 
@@ -721,11 +700,16 @@ base = 0.0
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         assert!(matches!(
             eval.status,
-            EvalStatus::Ran(RunStatus::HarnessError)
+            EvalStatus::Ran {
+                tests: TestOutcome::Unavailable(_),
+                ..
+            }
         ));
     }
 
@@ -744,10 +728,18 @@ base = 0.0
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
 
-        let eval = evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        let eval = evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
-        assert!(matches!(eval.status, EvalStatus::Ran(RunStatus::Ok)));
-        assert_eq!(eval.tests.len(), 3);
+        let EvalStatus::Ran {
+            tests: TestOutcome::Tests(tests),
+            ..
+        } = &eval.status
+        else {
+            panic!("expected Ran {{ tests: Tests(_) }}");
+        };
+        assert_eq!(tests.len(), 3);
     }
 
     #[test]
@@ -759,7 +751,9 @@ base = 0.0
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         let specs = specs.lock().unwrap();
         let build_spec = &specs[0];
@@ -787,7 +781,9 @@ base = 0.0
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         let specs = specs.lock().unwrap();
         let build_spec = &specs[1];
@@ -822,7 +818,9 @@ base = 0.0
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
         let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         let specs = specs.lock().unwrap();
         let run_spec = &specs[2];
@@ -886,7 +884,9 @@ base = 0.0
         // should reference "judge".
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
         let evaluator = Nextest::new(&spec, assignment_dir.path(), sandbox).unwrap();
-        evaluator.evaluate(&ctx(repo_root.path().to_path_buf())).unwrap();
+        evaluator
+            .evaluate(&ctx(repo_root.path().to_path_buf()))
+            .unwrap();
 
         let specs = specs.lock().unwrap();
         assert!(!specs[0].args.contains(&"judge".to_string()));

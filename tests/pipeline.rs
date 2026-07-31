@@ -13,8 +13,9 @@
 //! does.
 
 use autograder::exec::json::read_json;
+use autograder::exec::sandbox::ProcessStatus;
 use autograder::model::{
-    BuildStatus, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult, TestStatus,
+    BuildStatus, EvalStatus, EvaluationResult, JobContext, TestOutcome, TestResult, TestStatus,
 };
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::{Evaluator, StubEvaluator};
@@ -126,8 +127,7 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
     assert_eq!(evals.len(), 1);
     assert_eq!(evals[0].student_id, "alice");
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
-    assert_eq!(grade.score, 1.0);
-    assert_eq!(grade.max, None);
+    assert_eq!(grade.score, Some(1.0));
 
     let persisted = persisted_evals(submissions_dir.path(), "alice");
     assert_eq!(persisted.len(), 1);
@@ -170,7 +170,7 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
     assert_eq!(evals.len(), 1);
     assert!(matches!(
         evals[0].status,
-        EvalStatus::BuildFailed(BuildStatus::Failed)
+        EvalStatus::BuildFailed(BuildStatus::Failed(_))
     ));
 }
 
@@ -197,8 +197,10 @@ impl Evaluator for CapturingEvaluator<'_> {
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
-            status: EvalStatus::Ran(RunStatus::Ok),
-            tests: Vec::new(),
+            status: EvalStatus::Ran {
+                process: ProcessStatus::Exited(0),
+                tests: TestOutcome::Tests(Vec::new()),
+            },
             wall_clock_ms: None,
             diagnostics: Default::default(),
         })
@@ -297,8 +299,7 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
 
     assert_eq!(evals.len(), 1);
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
-    assert_eq!(grade.score, 0.0);
-    assert_eq!(grade.status, "DisallowedDependency");
+    assert_eq!(grade.score, None);
 
     let persisted = persisted_evals(submissions_dir.path(), "alice");
     assert_eq!(persisted.len(), 1);
