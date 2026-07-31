@@ -15,6 +15,7 @@ jobs:
           sha256sum -c autograder-x86_64-linux.sha256   # verify before exec
           mv autograder-x86_64-linux autograder
           chmod +x autograder
+      - run: ./autograder --version --verbose
       - run: command -v podman || (sudo apt-get update && sudo apt-get install -y podman)
       - name: Read base image from autograder.toml
         id: base_image

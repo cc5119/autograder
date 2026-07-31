@@ -38,6 +38,11 @@ jobs:
           cd dist
           sha256sum ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
 
+      - name: Move the latest tag to this commit
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}

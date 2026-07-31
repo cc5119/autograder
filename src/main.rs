@@ -1,5 +1,5 @@
-use autograder::cli::Cli;
-use clap::Parser;
+use autograder::cli::{self, Cli};
+use clap::{CommandFactory, Parser};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -7,7 +7,21 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
-    if let Err(err) = autograder::dispatch(cli.command) {
+    if cli.version {
+        println!("{}", cli::version_string(cli.verbose));
+        return;
+    }
+
+    let Some(command) = cli.command else {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "a subcommand is required (or pass --version)",
+            )
+            .exit();
+    };
+
+    if let Err(err) = autograder::dispatch(command, cli.verbose) {
         eprintln!("Error: {err}");
         std::process::exit(1);
     }

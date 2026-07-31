@@ -5,10 +5,31 @@ use clap::{Parser, Subcommand};
 use crate::package::publish::PublishMode;
 
 #[derive(Debug, Parser)]
-#[command(name = "autograder", version, about = "Rust assignment autograder")]
+#[command(name = "autograder", about = "Rust assignment autograder")]
 pub struct Cli {
+    /// Print the commit this binary was built from (and its date) and exit.
+    #[arg(short = 'V', long)]
+    pub version: bool,
+    /// With `--version`, show the full commit hash instead of the short
+    /// one; with `show`, print full diagnostics instead of a one-line
+    /// status/label.
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
+}
+
+/// `env!()`, not `option_env!()` -- `build.rs` always sets these (falling
+/// back to `"unknown"` itself when `git` isn't available), so a missing var
+/// here would mean `build.rs` itself is broken, not a legitimate runtime
+/// case to handle gracefully.
+pub fn version_string(verbose: bool) -> String {
+    let hash = if verbose {
+        env!("AUTOGRADER_COMMIT_FULL")
+    } else {
+        env!("AUTOGRADER_COMMIT_SHORT")
+    };
+    format!("autograder {hash} ({})", env!("AUTOGRADER_COMMIT_DATE"))
 }
 
 #[derive(Debug, Subcommand)]
@@ -95,10 +116,6 @@ pub enum Command {
         /// --submissions` use) -- `.fetch/`/`.eval/` records are looked up
         /// as its siblings.
         submission: PathBuf,
-        /// Print full diagnostics (compiler errors/stderr) and per-test
-        /// failure messages, instead of just a one-line status/label.
-        #[arg(long)]
-        verbose: bool,
     },
     /// Publish either the starter/template repo (for distribution to
     /// students) or the solution repo (real implementations, kept out of

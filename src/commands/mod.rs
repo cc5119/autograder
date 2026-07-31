@@ -18,7 +18,7 @@ use crate::pipeline::evaluator::Evaluator;
 use crate::pipeline::evaluator::nextest::Nextest;
 use crate::spec::Spec;
 
-pub fn dispatch(command: Command) -> Result<()> {
+pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
     match command {
         Command::Init { dir, id } => init::run(&dir, &id),
         Command::Lock { assignment } => lock::run(&assignment),
@@ -39,7 +39,7 @@ pub fn dispatch(command: Command) -> Result<()> {
             assignment,
             submissions,
         } => grade::run(&assignment, &submissions),
-        Command::Show { submission, verbose } => show::run(&submission, verbose),
+        Command::Show { submission } => show::run(&submission, verbose),
         Command::Publish {
             assignment,
             out,
