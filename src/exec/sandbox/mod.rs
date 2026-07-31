@@ -28,6 +28,12 @@ pub trait Sandbox {
     fn preflight(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Whether `isolate` is available to the judge's tests. Only the
+    /// container image ships it.
+    fn provides_isolate(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

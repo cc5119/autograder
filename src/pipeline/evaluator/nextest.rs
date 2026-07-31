@@ -228,6 +228,8 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             args: vec![
                 "nextest".into(),
                 "run".into(),
+                // Don't stop at the first failing test -- we need a score for every one.
+                "--no-fail-fast".into(),
                 "-p".into(),
                 self.harness_package.clone(),
             ],
@@ -235,7 +237,10 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             workdir: repo_root.clone(),
             env: {
                 let mut env = env.clone();
-                env.insert("AUTOGRADER_SANDBOX".to_string(), "1".to_string());
+                // Tells `autograder-test` to spawn student binaries under `isolate`.
+                if self.sandbox.provides_isolate() {
+                    env.insert("AUTOGRADER_SANDBOX".to_string(), "1".to_string());
+                }
                 env
             },
             mounts: self.full_mounts(repo_root, &submission_dir),
@@ -826,7 +831,10 @@ base = 0.0
         let run_spec = &specs[2];
         assert_eq!(run_spec.command, "cargo");
         assert!(!run_spec.args.contains(&"--archive-file".to_string()));
-        assert_eq!(run_spec.args[..4], ["nextest", "run", "-p", "harness"]);
+        assert_eq!(
+            run_spec.args[..5],
+            ["nextest", "run", "--no-fail-fast", "-p", "harness"]
+        );
         assert!(run_spec.limits.is_none());
 
         // harness/tests is real here, not shadowed -- safe per the isolate

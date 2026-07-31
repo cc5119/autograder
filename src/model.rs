@@ -180,4 +180,3 @@ pub struct Grade {
     /// neither leaves a trustworthy set of tests to score.
     pub score: Option<f64>,
 }
-

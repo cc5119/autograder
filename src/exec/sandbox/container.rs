@@ -170,6 +170,10 @@ impl Sandbox for ContainerSandbox {
         }
     }
 
+    fn provides_isolate(&self) -> bool {
+        true
+    }
+
     fn run(&self, spec: &SandboxSpec) -> Result<SandboxOutcome> {
         // `--cidfile` gives us a way to address the container after the
         // fact: conmon detaches from the `podman run` client process by

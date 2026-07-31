@@ -7,7 +7,7 @@ mod common;
 
 use autograder::exec::json::read_json;
 use autograder::exec::sandbox::{ContainerSandbox, Sandbox};
-use autograder::model::EvaluationResult;
+use autograder::model::{EvalStatus, EvaluationResult, TestOutcome};
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::nextest::Nextest;
 use autograder::spec::Spec;
@@ -86,7 +86,17 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
 
     assert_eq!(evals.len(), 1);
     let stored_eval = latest_persisted_eval(submissions_dir.path(), "mallory");
-    let names: Vec<&str> = stored_eval.tests.iter().map(|t| t.name.as_str()).collect();
+    let EvalStatus::Ran {
+        tests: TestOutcome::Tests(tests),
+        ..
+    } = &stored_eval.status
+    else {
+        panic!(
+            "expected the judge to produce test results: {:?}",
+            stored_eval.status
+        );
+    };
+    let names: Vec<&str> = tests.iter().map(|t| t.name.as_str()).collect();
 
     assert!(
         names.iter().any(|n| n.contains("trusted_judge")),
@@ -99,7 +109,8 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
 
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
     assert_eq!(
-        grade.score, 1.0,
+        grade.score,
+        Some(1.0),
         "expected the trusted judge's baseline, not a forged score"
     );
 }
