@@ -5,16 +5,31 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use subprocess::{Exec, Redirection};
+use subprocess::{Exec, ExitStatus, Redirection};
 
 use crate::error::{Error, Result};
 
+use super::ProcessStatus;
+
 pub struct ExecOutcome {
-    pub exit_code: Option<i32>,
+    /// Never `MemoryExceeded`
+    pub status: ProcessStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
-    pub timed_out: bool,
     pub wall_clock: Duration,
+}
+
+fn process_status(status: Option<ExitStatus>) -> ProcessStatus {
+    let Some(status) = status else {
+        return ProcessStatus::Unknown;
+    };
+    if let Some(code) = status.code() {
+        ProcessStatus::Exited(code as i32)
+    } else if let Some(signal) = status.signal() {
+        ProcessStatus::Signaled(signal)
+    } else {
+        ProcessStatus::Unknown
+    }
 }
 
 /// Spawns `exec`, capturing stdout/stderr (a combined cap of
@@ -64,11 +79,16 @@ pub fn exec_with_timeout(
         .wait_timeout(Duration::from_secs(2))
         .map_err(|source| Error::Other(format!("failed to reap: {source}")))?;
 
+    let status = if timed_out {
+        ProcessStatus::TimedOut
+    } else {
+        process_status(status)
+    };
+
     Ok(ExecOutcome {
-        exit_code: status.and_then(|s| s.code()).map(|c| c as i32),
+        status,
         stdout,
         stderr,
-        timed_out,
         wall_clock: start.elapsed(),
     })
 }
@@ -82,10 +102,9 @@ mod tests {
         let exec = Exec::cmd("sh").args(&["-c", "echo out; echo err >&2; exit 3"]);
         let outcome = exec_with_timeout(exec, Some(Duration::from_secs(5)), Some(1024)).unwrap();
 
-        assert_eq!(outcome.exit_code, Some(3));
+        assert_eq!(outcome.status, ProcessStatus::Exited(3));
         assert_eq!(outcome.stdout, b"out\n");
         assert_eq!(outcome.stderr, b"err\n");
-        assert!(!outcome.timed_out);
     }
 
     #[test]
@@ -94,7 +113,7 @@ mod tests {
         let outcome =
             exec_with_timeout(exec, Some(Duration::from_millis(150)), Some(1024)).unwrap();
 
-        assert!(outcome.timed_out);
+        assert_eq!(outcome.status, ProcessStatus::TimedOut);
         assert!(outcome.wall_clock < Duration::from_secs(2));
     }
 
@@ -111,8 +130,7 @@ mod tests {
         let exec = Exec::cmd("sh").args(&["-c", "echo out; exit 0"]);
         let outcome = exec_with_timeout(exec, None, None).unwrap();
 
-        assert_eq!(outcome.exit_code, Some(0));
+        assert_eq!(outcome.status, ProcessStatus::Exited(0));
         assert_eq!(outcome.stdout, b"out\n");
-        assert!(!outcome.timed_out);
     }
 }

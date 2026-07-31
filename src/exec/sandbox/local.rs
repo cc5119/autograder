@@ -27,13 +27,9 @@ impl Sandbox for LocalSandbox {
         )?;
 
         Ok(SandboxOutcome {
-            exit_code: outcome.exit_code,
+            status: outcome.status,
             stdout: outcome.stdout,
             stderr: outcome.stderr,
-            timed_out: outcome.timed_out,
-            // No cgroup accounting without a container runtime: OOM is
-            // never detected locally, and only wall-clock is reported.
-            oom: false,
             wall_clock_ms: Some(outcome.wall_clock.as_millis() as u64),
         })
     }
@@ -73,7 +69,7 @@ mod tests {
         let outcome = LocalSandbox.run(&spec).unwrap();
 
         assert!(outcome.succeeded());
-        assert!(!outcome.timed_out);
+        assert!(!outcome.timed_out());
     }
 
     #[test]
@@ -86,7 +82,7 @@ mod tests {
 
         let outcome = LocalSandbox.run(&spec).unwrap();
 
-        assert!(outcome.timed_out);
+        assert!(outcome.timed_out());
         assert!(!outcome.succeeded());
     }
 
@@ -110,6 +106,6 @@ mod tests {
         let outcome = LocalSandbox.run(&spec).unwrap();
 
         assert!(outcome.succeeded());
-        assert!(!outcome.timed_out);
+        assert!(!outcome.timed_out());
     }
 }

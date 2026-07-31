@@ -5,9 +5,10 @@ use std::time::Duration;
 use subprocess::Exec;
 
 use crate::error::{Error, Result};
+use crate::exec::fs;
 
 use super::exec::exec_with_timeout;
-use super::{MountMode, Profile, Sandbox, SandboxOutcome, SandboxSpec};
+use super::{MountMode, ProcessStatus, Profile, Sandbox, SandboxOutcome, SandboxSpec};
 
 /// How long to give `podman kill`/`podman rm -f` to finish once we've
 /// decided a run timed out. These are trusted, fixed-argument commands we
@@ -15,11 +16,8 @@ use super::{MountMode, Profile, Sandbox, SandboxOutcome, SandboxSpec};
 /// against podman itself being wedged -- it isn't meant to be tight.
 const CONTAINER_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Podman exit code for a process killed by a signal is 128 + signal
-/// number; SIGKILL is 9, which is what a cgroup OOM-kill delivers -- so
-/// `137` is a best-effort (not certain: any SIGKILL looks the same) signal
-/// that memory was exceeded.
-const OOM_LIKELY_EXIT_CODE: i32 = 137;
+/// Signal number `decode_podman_status` treats as an OOM kill.
+const SIGKILL: i32 = 9;
 
 /// Default path an operator can drop a hardened seccomp profile at for
 /// `ContainerSandbox::new` to pick up.
@@ -183,8 +181,7 @@ impl Sandbox for ContainerSandbox {
         // required because `podman run --cidfile` refuses to start if the
         // path already exists; dropping the dir at the end of this
         // function also cleans up the cidfile.
-        let cidfile_dir = tempfile::tempdir()
-            .map_err(|source| Error::Other(format!("failed to create cidfile dir: {source}")))?;
+        let cidfile_dir = fs::temp_dir()?;
         let cidfile_path = cidfile_dir.path().join("cid");
 
         let argv = self.build_argv(spec, &cidfile_path);
@@ -196,20 +193,35 @@ impl Sandbox for ContainerSandbox {
             spec.limits.as_ref().map(|l| l.max_output_bytes as usize),
         )?;
 
-        if outcome.timed_out {
+        if outcome.status == ProcessStatus::TimedOut {
             kill_container_by_cidfile(&self.podman_bin, &cidfile_path);
         }
 
-        let oom = !outcome.timed_out && outcome.exit_code == Some(OOM_LIKELY_EXIT_CODE);
-
         Ok(SandboxOutcome {
-            exit_code: outcome.exit_code,
+            status: decode_podman_status(outcome.status),
             stdout: outcome.stdout,
             stderr: outcome.stderr,
-            timed_out: outcome.timed_out,
-            oom,
             wall_clock_ms: Some(outcome.wall_clock.as_millis() as u64),
         })
+    }
+}
+
+/// Reverses podman's own convention for reporting a signal-killed
+/// *contained* process: `podman run` itself exits normally with `128 +
+/// signal` rather than being signaled itself. `SIGKILL` specifically is
+/// treated as an OOM kill -- best-effort, not certain, since any `SIGKILL`
+/// looks the same, but it's what a cgroup memory-limit kill delivers.
+fn decode_podman_status(raw: ProcessStatus) -> ProcessStatus {
+    match raw {
+        ProcessStatus::Exited(code) if code > 128 => {
+            let signal = code - 128;
+            if signal == SIGKILL {
+                ProcessStatus::MemoryExceeded
+            } else {
+                ProcessStatus::Signaled(signal)
+            }
+        }
+        other => other,
     }
 }
 
@@ -223,7 +235,7 @@ fn kill_container_by_cidfile(podman_bin: &str, cidfile: &Path) {
 
     let kill = Exec::cmd(podman_bin).args(["kill", &cidfile_arg]);
     match exec_with_timeout(kill, Some(CONTAINER_KILL_TIMEOUT), Some(0)) {
-        Ok(outcome) if outcome.timed_out => {
+        Ok(outcome) if outcome.status == ProcessStatus::TimedOut => {
             tracing::warn!(cidfile = %cidfile.display(), "`podman kill --cidfile` itself timed out");
         }
         _ => {}
@@ -231,7 +243,7 @@ fn kill_container_by_cidfile(podman_bin: &str, cidfile: &Path) {
 
     let rm = Exec::cmd(podman_bin).args(["rm", "-f", &cidfile_arg]);
     match exec_with_timeout(rm, Some(CONTAINER_KILL_TIMEOUT), Some(0)) {
-        Ok(outcome) if outcome.timed_out => {
+        Ok(outcome) if outcome.status == ProcessStatus::TimedOut => {
             tracing::warn!(cidfile = %cidfile.display(), "`podman rm -f --cidfile` itself timed out");
         }
         _ => {}

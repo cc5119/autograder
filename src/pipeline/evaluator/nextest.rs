@@ -49,7 +49,9 @@ use std::path::{Path, PathBuf};
 
 use crate::deps::vendor;
 use crate::error::{Error, Result};
-use crate::exec::sandbox::{Mount, Profile, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec};
+use crate::exec::sandbox::{
+    Mount, Profile, ProcessStatus, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec,
+};
 use crate::model::{
     BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext, RunStatus, TestResult,
     TestStatus,
@@ -241,17 +243,35 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         };
 
         let run_outcome = self.sandbox.run(&run_spec)?;
-        if run_outcome.timed_out {
+        if run_outcome.timed_out() {
             return Ok(run_failed_result(
                 ctx,
                 RunStatus::Timeout,
                 run_diagnostics(&run_outcome),
             ));
         }
-        if run_outcome.oom {
+        if run_outcome.oom() {
             return Ok(run_failed_result(
                 ctx,
                 RunStatus::Oom,
+                run_diagnostics(&run_outcome),
+            ));
+        }
+        // `cargo nextest run` only ever exits `0` (all passed) or `100`
+        // (some tests failed) for a session that actually completed. Any
+        // other status -- including a signal decoded from podman's `128 +
+        // signal` convention, e.g. a sandboxed test's setup crashing the
+        // whole nextest process -- means the session was cut short.
+        // Trusting `junit.xml` in that case would silently grade against
+        // however many `<testcase>`s happened to be flushed before the
+        // crash, as if that were the full run.
+        if !matches!(
+            run_outcome.status,
+            ProcessStatus::Exited(0) | ProcessStatus::Exited(100)
+        ) {
+            return Ok(run_failed_result(
+                ctx,
+                RunStatus::HarnessError,
                 run_diagnostics(&run_outcome),
             ));
         }
@@ -320,9 +340,9 @@ fn run_failed_result(
 }
 
 fn build_stage_status(outcome: &SandboxOutcome) -> BuildStatus {
-    if outcome.timed_out {
+    if outcome.timed_out() {
         BuildStatus::Timeout
-    } else if outcome.oom {
+    } else if outcome.oom() {
         BuildStatus::Oom
     } else {
         BuildStatus::Failed
@@ -527,22 +547,18 @@ autograder: case=b score=0.25
 
     fn ok_outcome() -> SandboxOutcome {
         SandboxOutcome {
-            exit_code: Some(0),
+            status: ProcessStatus::Exited(0),
             stdout: Vec::new(),
             stderr: Vec::new(),
-            timed_out: false,
-            oom: false,
             wall_clock_ms: None,
         }
     }
 
     fn failed_outcome() -> SandboxOutcome {
         SandboxOutcome {
-            exit_code: Some(1),
+            status: ProcessStatus::Exited(1),
             stdout: Vec::new(),
             stderr: b"error[E0433]: failed to resolve".to_vec(),
-            timed_out: false,
-            oom: false,
             wall_clock_ms: None,
         }
     }

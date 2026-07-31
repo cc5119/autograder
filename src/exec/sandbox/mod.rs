@@ -94,20 +94,41 @@ pub struct SandboxSpec {
     pub profile: Profile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessStatus {
+    /// Exited normally (or with a nonzero code) -- the exit code is real
+    /// either way.
+    Exited(i32),
+    /// Killed by this signal, not attributed to an OOM kill.
+    Signaled(i32),
+    /// The wall-clock limit was hit before the process finished.
+    TimedOut,
+    /// Killed by the cgroup for exceeding the memory limit.
+    MemoryExceeded,
+    /// Couldn't be determined (the process was never successfully reaped).
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct SandboxOutcome {
-    pub exit_code: Option<i32>,
+    pub status: ProcessStatus,
     /// Captured stdout, capped at `limits.max_output_bytes`.
     pub stdout: Vec<u8>,
     /// Captured stderr, capped at `limits.max_output_bytes`.
     pub stderr: Vec<u8>,
-    pub timed_out: bool,
-    pub oom: bool,
     pub wall_clock_ms: Option<u64>,
 }
 
 impl SandboxOutcome {
     pub fn succeeded(&self) -> bool {
-        !self.timed_out && !self.oom && self.exit_code == Some(0)
+        self.status == ProcessStatus::Exited(0)
+    }
+
+    pub fn timed_out(&self) -> bool {
+        self.status == ProcessStatus::TimedOut
+    }
+
+    pub fn oom(&self) -> bool {
+        self.status == ProcessStatus::MemoryExceeded
     }
 }
