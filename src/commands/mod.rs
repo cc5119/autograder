@@ -163,7 +163,7 @@ base = 0.0
         let spec = Spec::load(harness_dir.path()).unwrap();
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            student_id: "local".into(),
+            github_user: "local".into(),
             run_id: "run-1".into(),
             workspace: harness_dir.path().to_path_buf(),
         };

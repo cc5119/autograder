@@ -11,7 +11,7 @@ use console::style;
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::read_json;
-use crate::id::StudentId;
+use crate::id::GithubUser;
 use crate::model::{EvalStatus, EvaluationResult, TestOutcome, TestStatus};
 use crate::render;
 use crate::submissions::{FetchRecord, FetchResult, SubmissionDate, read_fetch_record};
@@ -19,7 +19,7 @@ use crate::submissions::{FetchRecord, FetchResult, SubmissionDate, read_fetch_re
 const EVAL_DIR: &str = ".eval";
 
 pub fn run(submission: &Path, verbose: bool) -> Result<()> {
-    let id = student_id(submission)?;
+    let id = github_user(submission)?;
     let submissions_dir = submission.parent().ok_or_else(|| {
         Error::Other(format!(
             "{} has no parent directory to look for .fetch/.eval records in",
@@ -45,11 +45,11 @@ pub fn run(submission: &Path, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn student_id(submission: &Path) -> Result<StudentId> {
+fn github_user(submission: &Path) -> Result<GithubUser> {
     submission
         .file_name()
         .and_then(|s| s.to_str())
-        .map(StudentId::new)
+        .map(GithubUser::new)
         .ok_or_else(|| {
             Error::Other(format!(
                 "{} is not a valid submission path",
@@ -60,7 +60,7 @@ fn student_id(submission: &Path) -> Result<StudentId> {
 
 fn render_fetch(out: &mut String, record: &FetchRecord) {
     let _ = writeln!(out, "\n{}", style("Fetch").bold());
-    let _ = writeln!(out, "  university id  {}", record.university_id);
+    let _ = writeln!(out, "  student id     {}", record.student_id);
     // The roster's own extra columns, verbatim -- whatever the instructor
     // put there (email, section, ...) is worth seeing next to the id.
     for (key, value) in &record.metadata {
@@ -150,7 +150,7 @@ fn render_submission_date(out: &mut String, record: &FetchRecord, date: &Submiss
 /// submission and keeping the count around for the caller to note.
 fn latest_eval(
     submissions_dir: &Path,
-    id: &StudentId,
+    id: &GithubUser,
 ) -> Result<Option<(EvaluationResult, usize)>> {
     let dir = submissions_dir.join(EVAL_DIR).join(id.as_str());
     if !dir.is_dir() {

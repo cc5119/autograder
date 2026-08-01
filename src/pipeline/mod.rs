@@ -14,7 +14,7 @@ use crate::exec::fs;
 use crate::exec::json::write_json;
 use crate::exec::overlay::{self, Context, Rule};
 use crate::exec::sandbox::ProcessStatus;
-use crate::id::{RunId, StudentId};
+use crate::id::{GithubUser, RunId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
 use crate::spec::Spec;
@@ -34,7 +34,7 @@ const EVAL_DIR: &str = ".eval";
 /// checkout got there -- no fetch record required or consulted -- so a
 /// directory dropped in by hand works exactly like one `autograder fetch`
 /// produced. Sorted by name.
-fn list_submissions(submissions_dir: &Path) -> Result<Vec<StudentId>> {
+fn list_submissions(submissions_dir: &Path) -> Result<Vec<GithubUser>> {
     if !submissions_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -50,7 +50,7 @@ fn list_submissions(submissions_dir: &Path) -> Result<Vec<StudentId>> {
         if name.starts_with('.') {
             continue;
         }
-        ids.push(StudentId::new(name));
+        ids.push(GithubUser::new(name));
     }
     ids.sort();
     Ok(ids)
@@ -81,7 +81,7 @@ fn terminal_eval(
 ) -> EvaluationResult {
     EvaluationResult {
         assignment_id: ctx.assignment_id,
-        student_id: ctx.student_id,
+        github_user: ctx.github_user,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
@@ -166,7 +166,7 @@ pub(crate) fn evaluate_submission(
 fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
     let path = submissions_dir
         .join(EVAL_DIR)
-        .join(eval.student_id.as_str())
+        .join(eval.github_user.as_str())
         .join(format!("{}.eval.json", eval.run_id));
     write_json(&path, eval)
 }
@@ -178,7 +178,7 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 /// `list_submissions`) -- so a submission never aborts the batch, and
 /// which student (if any) a submission maps to is entirely `autograder
 /// fetch`/`autograder grade`'s concern, not evaluate's. Each result is
-/// persisted at `submissions_dir/.eval/<student_id>/<run_id>.eval.json`.
+/// persisted at `submissions_dir/.eval/<github_user>/<run_id>.eval.json`.
 /// No scoring happens here -- run `autograder grade` afterwards for that.
 ///
 /// Refuses up front, before touching any submission, if `assignment_dir`
@@ -197,7 +197,7 @@ pub fn evaluate_batch(
         return Err(Error::InvalidSpec(message));
     }
 
-    let student_ids = list_submissions(submissions_dir)?;
+    let github_users = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
 
     // A single reused spinner, not one `ProgressBar` per submission: each
@@ -210,18 +210,18 @@ pub fn evaluate_batch(
     );
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    for student_id in student_ids {
-        progress.set_message(format!("evaluating {student_id}..."));
+    for github_user in github_users {
+        progress.set_message(format!("evaluating {github_user}..."));
 
         let run_id = generate_run_id();
-        let checkout_dir = submissions_dir.join(student_id.as_str());
+        let checkout_dir = submissions_dir.join(github_user.as_str());
         // A fresh OS temp dir per submission, becoming `ctx.workspace`
         // (see `JobContext`'s doc comment for the layout) -- dropped and
         // cleaned up automatically at the end of this iteration.
         let build_scratch = fs::temp_dir()?;
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            student_id,
+            github_user,
             run_id,
             workspace: build_scratch.path().to_path_buf(),
         };

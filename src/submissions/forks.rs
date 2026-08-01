@@ -13,7 +13,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::id::StudentId;
+use crate::id::GithubUser;
 
 const GH_BIN: &str = "gh";
 
@@ -157,7 +157,7 @@ fn parse_collaborators(stdout: &[u8]) -> Result<Vec<String>> {
 #[derive(Debug, Clone)]
 pub struct SharedFork {
     pub fork: Fork,
-    pub students: Vec<StudentId>,
+    pub students: Vec<GithubUser>,
 }
 
 /// Every fork sorted into one of three buckets. See [`match_forks`].
@@ -166,7 +166,7 @@ pub struct Matches {
     /// Forks a single roster student can push to, in GitHub's order, so
     /// `[0]` is the one to fetch and any remainder is the ambiguity to
     /// report.
-    pub by_student: BTreeMap<StudentId, Vec<Fork>>,
+    pub by_student: BTreeMap<GithubUser, Vec<Fork>>,
     pub shared: Vec<SharedFork>,
     /// No roster student can push to these -- outsiders forking a public
     /// assignment is normal.
@@ -176,7 +176,7 @@ pub struct Matches {
 impl Matches {
     /// The shared forks blocking `student`, for the message their `Failed`
     /// record carries.
-    pub fn shared_for(&self, student: &StudentId) -> Vec<&SharedFork> {
+    pub fn shared_for(&self, student: &GithubUser) -> Vec<&SharedFork> {
         self.shared
             .iter()
             .filter(|s| s.students.contains(student))
@@ -191,18 +191,18 @@ impl Matches {
 /// case-sensitive, and a roster is hand-typed. Collaborators who aren't on
 /// the roster -- instructors, TAs, org admins -- are ignored.
 pub fn match_forks(
-    students: impl IntoIterator<Item = StudentId>,
+    students: impl IntoIterator<Item = GithubUser>,
     forks: Vec<Fork>,
     mut collaborators: impl FnMut(&Fork) -> Result<Vec<String>>,
 ) -> Result<Matches> {
-    let by_handle: BTreeMap<String, StudentId> = students
+    let by_handle: BTreeMap<String, GithubUser> = students
         .into_iter()
         .map(|id| (id.as_str().to_lowercase(), id))
         .collect();
 
     let mut matches = Matches::default();
     for fork in forks {
-        let mut owners: Vec<StudentId> = collaborators(&fork)?
+        let mut owners: Vec<GithubUser> = collaborators(&fork)?
             .iter()
             .filter_map(|login| by_handle.get(&login.to_lowercase()).copied())
             .collect();
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn match_forks_attributes_by_collaborator_not_by_owner_or_name() {
-        let students = [StudentId::new("alice"), StudentId::new("bob")];
+        let students = [GithubUser::new("alice"), GithubUser::new("bob")];
         let forks = vec![fork("hw3-a"), fork("whatever")];
         let matches = match_forks(
             students,
@@ -310,11 +310,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            matches.by_student[&StudentId::new("alice")][0].name,
+            matches.by_student[&GithubUser::new("alice")][0].name,
             "hw3-a"
         );
         assert_eq!(
-            matches.by_student[&StudentId::new("bob")][0].name,
+            matches.by_student[&GithubUser::new("bob")][0].name,
             "whatever"
         );
         assert!(matches.unmatched.is_empty());
@@ -323,19 +323,19 @@ mod tests {
     #[test]
     fn match_forks_compares_logins_case_insensitively() {
         let matches = match_forks(
-            [StudentId::new("Alice")],
+            [GithubUser::new("Alice")],
             vec![fork("hw3-a")],
             access(&[("hw3-a", &["ALICE"])]),
         )
         .unwrap();
 
-        assert_eq!(matches.by_student[&StudentId::new("Alice")].len(), 1);
+        assert_eq!(matches.by_student[&GithubUser::new("Alice")].len(), 1);
     }
 
     #[test]
     fn match_forks_sets_aside_a_fork_no_roster_student_can_push_to() {
         let matches = match_forks(
-            [StudentId::new("alice")],
+            [GithubUser::new("alice")],
             vec![fork("hw3-x")],
             access(&[("hw3-x", &["carol", "instructor"])]),
         )
@@ -348,13 +348,13 @@ mod tests {
     #[test]
     fn match_forks_keeps_every_candidate_in_github_order() {
         let matches = match_forks(
-            [StudentId::new("alice")],
+            [GithubUser::new("alice")],
             vec![fork("first"), fork("second")],
             access(&[("first", &["alice"]), ("second", &["alice"])]),
         )
         .unwrap();
 
-        let candidates = &matches.by_student[&StudentId::new("alice")];
+        let candidates = &matches.by_student[&GithubUser::new("alice")];
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].name, "first");
         assert_eq!(candidates[1].name, "second");
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn match_forks_sets_aside_a_fork_two_students_share_rather_than_guessing() {
-        let students = [StudentId::new("alice"), StudentId::new("bob")];
+        let students = [GithubUser::new("alice"), GithubUser::new("bob")];
         let matches = match_forks(
             students,
             vec![fork("shared")],
@@ -374,18 +374,18 @@ mod tests {
         assert_eq!(matches.shared.len(), 1);
         assert_eq!(
             matches.shared[0].students,
-            [StudentId::new("alice"), StudentId::new("bob")]
+            [GithubUser::new("alice"), GithubUser::new("bob")]
         );
         assert_eq!(
-            matches.shared_for(&StudentId::new("bob"))[0].fork.name,
+            matches.shared_for(&GithubUser::new("bob"))[0].fork.name,
             "shared"
         );
-        assert!(matches.shared_for(&StudentId::new("carol")).is_empty());
+        assert!(matches.shared_for(&GithubUser::new("carol")).is_empty());
     }
 
     #[test]
     fn a_shared_fork_does_not_cost_a_student_their_own_unshared_one() {
-        let students = [StudentId::new("alice"), StudentId::new("bob")];
+        let students = [GithubUser::new("alice"), GithubUser::new("bob")];
         let matches = match_forks(
             students,
             vec![fork("shared"), fork("alices-own")],
@@ -394,7 +394,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            matches.by_student[&StudentId::new("alice")][0].name,
+            matches.by_student[&GithubUser::new("alice")][0].name,
             "alices-own"
         );
         assert_eq!(matches.shared.len(), 1);
@@ -402,13 +402,13 @@ mod tests {
 
     #[test]
     fn match_forks_leaves_out_a_student_with_no_fork() {
-        let matches = match_forks([StudentId::new("alice")], vec![], access(&[])).unwrap();
+        let matches = match_forks([GithubUser::new("alice")], vec![], access(&[])).unwrap();
         assert!(matches.by_student.is_empty());
     }
 
     #[test]
     fn match_forks_propagates_a_collaborator_lookup_failure() {
-        let err = match_forks([StudentId::new("alice")], vec![fork("hw3-a")], |_| {
+        let err = match_forks([GithubUser::new("alice")], vec![fork("hw3-a")], |_| {
             Err(Error::Other("403".to_string()))
         })
         .unwrap_err();

@@ -42,17 +42,17 @@ pub fn render(grades: &[Grade], gradebook: &Path) -> String {
             (None, None) => Ordering::Equal,
         }
         // Ties broken by name, so re-running doesn't reshuffle the list.
-        .then_with(|| a.student_id.cmp(&b.student_id))
+        .then_with(|| a.github_user.cmp(&b.github_user))
     });
 
     let width = rows
         .iter()
-        .map(|g| g.student_id.as_str().len())
+        .map(|g| g.github_user.as_str().len())
         .max()
         .unwrap_or(0);
 
     for grade in &rows {
-        let id = grade.student_id.as_str();
+        let id = grade.github_user.as_str();
         match &grade.outcome {
             GradeOutcome::Scored {
                 score,

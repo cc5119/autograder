@@ -63,7 +63,7 @@ pub enum Command {
         /// The public assignment repo students forked, as `owner/name`.
         #[arg(long)]
         repo: crate::submissions::forks::Upstream,
-        /// Roster CSV: `student_id,university_id,...`, where `student_id`
+        /// Roster CSV: `github_user,student_id,...`, where `github_user`
         /// is the student's GitHub handle and any further columns are
         /// carried into the fetch record.
         #[arg(long)]

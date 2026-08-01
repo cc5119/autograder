@@ -108,25 +108,26 @@ impl<'de, Tag> Deserialize<'de> for Id<Tag> {
     }
 }
 
-pub enum StudentTag {}
+pub enum GithubTag {}
 pub enum AssignmentTag {}
 pub enum RunTag {}
-pub enum UniversityTag {}
+pub enum StudentTag {}
 pub enum CommitTag {}
 
-/// A student's roster id, and also what identifies one submission
-/// directory under a submissions dir: `fetch` names each checkout after
-/// the student it fetched, and evaluate/grade reuse that exact directory
-/// name (see `pipeline::evaluate_batch`'s module doc comment). There's no
-/// separate submission identity -- a submission's id *is* the student id
-/// it was checked out under.
-pub type StudentId = Id<StudentTag>;
+/// A student's GitHub handle: what their fork is matched by, and also what
+/// identifies one submission directory under a submissions dir. `fetch`
+/// names each checkout after the handle it fetched, and evaluate/grade
+/// reuse that exact directory name (see `pipeline::evaluate_batch`'s module
+/// doc comment). There's no separate submission identity -- a submission's
+/// id *is* the GitHub user it was checked out under.
+pub type GithubUser = Id<GithubTag>;
 pub type AssignmentId = Id<AssignmentTag>;
 pub type RunId = Id<RunTag>;
 
 /// A student's id in the university's grade system -- carried through
 /// fetch so exports can join on it, never used to name anything on disk.
-pub type UniversityId = Id<UniversityTag>;
+/// Not to be confused with [`GithubUser`], which is what names things.
+pub type StudentId = Id<StudentTag>;
 
 /// A full 40-char git commit sha.
 pub type CommitSha = Id<CommitTag>;
@@ -137,8 +138,8 @@ mod tests {
 
     #[test]
     fn same_value_is_equal_and_copy() {
-        let a = StudentId::new("alice");
-        let b = StudentId::new("alice");
+        let a = GithubUser::new("alice");
+        let b = GithubUser::new("alice");
         let c = a; // Copy, not a move
         assert_eq!(a, b);
         assert_eq!(a, c);
@@ -148,10 +149,10 @@ mod tests {
 
     #[test]
     fn roundtrips_through_json() {
-        let id = StudentId::new("alice");
+        let id = GithubUser::new("alice");
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, "\"alice\"");
-        let parsed: StudentId = serde_json::from_str(&json).unwrap();
+        let parsed: GithubUser = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, id);
     }
 }

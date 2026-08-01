@@ -176,7 +176,7 @@ base = 0.0
     fn ctx(repo_root: &Path) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
-            student_id: "alice".into(),
+            github_user: "alice".into(),
             run_id: "run-1".into(),
             workspace: repo_root.to_path_buf(),
         }

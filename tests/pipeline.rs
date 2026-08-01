@@ -81,11 +81,11 @@ fn passing_test(name: &str) -> TestResult {
     }
 }
 
-/// The most recent `.eval/<student_id>/*.eval.json` under
+/// The most recent `.eval/<github_user>/*.eval.json` under
 /// `submissions_dir`, for asserting `evaluate_batch` actually persisted
 /// what it returned.
-fn persisted_evals(submissions_dir: &std::path::Path, student_id: &str) -> Vec<EvaluationResult> {
-    let dir = submissions_dir.join(".eval").join(student_id);
+fn persisted_evals(submissions_dir: &std::path::Path, github_user: &str) -> Vec<EvaluationResult> {
+    let dir = submissions_dir.join(".eval").join(github_user);
     if !dir.is_dir() {
         return Vec::new();
     }
@@ -125,7 +125,7 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
     .unwrap();
 
     assert_eq!(evals.len(), 1);
-    assert_eq!(evals[0].student_id, "alice");
+    assert_eq!(evals[0].github_user, "alice");
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
     assert_eq!(grade.score(), Some(1.0));
 
@@ -193,7 +193,7 @@ impl Evaluator for CapturingEvaluator<'_> {
 
         Ok(EvaluationResult {
             assignment_id: ctx.assignment_id,
-            student_id: ctx.student_id,
+            github_user: ctx.github_user,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,

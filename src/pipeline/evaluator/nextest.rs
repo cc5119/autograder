@@ -278,7 +278,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
 
         Ok(EvaluationResult {
             assignment_id: ctx.assignment_id,
-            student_id: ctx.student_id,
+            github_user: ctx.github_user,
             run_id: ctx.run_id,
             graded_commit: None,
             instructor_commit: None,
@@ -299,7 +299,7 @@ fn build_failed_result(
 ) -> EvaluationResult {
     EvaluationResult {
         assignment_id: ctx.assignment_id,
-        student_id: ctx.student_id,
+        github_user: ctx.github_user,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
@@ -317,7 +317,7 @@ fn run_failed_result(
 ) -> EvaluationResult {
     EvaluationResult {
         assignment_id: ctx.assignment_id,
-        student_id: ctx.student_id,
+        github_user: ctx.github_user,
         run_id: ctx.run_id,
         graded_commit: None,
         instructor_commit: None,
@@ -587,7 +587,7 @@ base = 0.0
     fn ctx(repo_root: PathBuf) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
-            student_id: "alice".into(),
+            github_user: "alice".into(),
             run_id: "run-1".into(),
             workspace: repo_root,
         }

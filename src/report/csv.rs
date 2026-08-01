@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use crate::error::{Error, Result};
 use crate::model::Grade;
 
-/// Gradebook CSV: `student_id,score`. `score` is blank when the build
+/// Gradebook CSV: `github_user,score`. `score` is blank when the build
 /// failed or the run left no readable results.
 pub fn render(grades: &[Grade]) -> Result<String> {
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer
-        .write_record(["student_id", "score"])
+        .write_record(["github_user", "score"])
         .map_err(|source| Error::Csv {
             path: PathBuf::from("<gradebook>"),
             source: Box::new(source),
@@ -16,7 +16,7 @@ pub fn render(grades: &[Grade]) -> Result<String> {
     for grade in grades {
         writer
             .write_record([
-                grade.student_id.to_string(),
+                grade.github_user.to_string(),
                 grade.score().map(|s| s.to_string()).unwrap_or_default(),
             ])
             .map_err(|source| Error::Csv {
@@ -38,7 +38,7 @@ mod tests {
     fn renders_gradebook_header_and_rows() {
         let grades = vec![
             Grade {
-                student_id: "alice".into(),
+                github_user: "alice".into(),
                 outcome: crate::model::GradeOutcome::Scored {
                     score: 10.0,
                     passed: 3,
@@ -46,7 +46,7 @@ mod tests {
                 },
             },
             Grade {
-                student_id: "bob".into(),
+                github_user: "bob".into(),
                 outcome: crate::model::GradeOutcome::Unscored {
                     reason: "build failed: exited (101)".to_string(),
                 },
@@ -55,7 +55,7 @@ mod tests {
 
         let csv = render(&grades).unwrap();
         let mut lines = csv.lines();
-        assert_eq!(lines.next(), Some("student_id,score"));
+        assert_eq!(lines.next(), Some("github_user,score"));
         assert_eq!(lines.next(), Some("alice,10"));
         assert_eq!(lines.next(), Some("bob,"));
     }

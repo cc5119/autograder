@@ -1,6 +1,6 @@
 //! The Fetch stage: pulls each student's submission onto disk at
-//! `out_dir/<student_id>/` (flat) and a `FetchRecord` at
-//! `out_dir/.fetch/<student_id>.json`, independently of grading --
+//! `out_dir/<github_user>/` (flat) and a `FetchRecord` at
+//! `out_dir/.fetch/<github_user>.json`, independently of grading --
 //! `fetch_batch` is what `autograder fetch` runs. Neither `autograder
 //! evaluate` nor `autograder grade` touch this module or read a
 //! `FetchRecord` back -- a submission directory dropped in by hand works
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::{read_json, write_json};
-use crate::id::{CommitSha, StudentId, UniversityId};
+use crate::id::{CommitSha, GithubUser, StudentId};
 use crate::submissions::forks::{Fork, Upstream};
 use crate::submissions::github_events::PushEvent;
 use crate::submissions::source::{CsvRoster, RosterEntry};
@@ -297,8 +297,8 @@ fn commit_date(dest: &Path, sha: &str) -> std::result::Result<Timestamp, String>
 }
 
 /// Durable record of the last fetch attempt for one student, written by
-/// `fetch_batch` to `<out>/.fetch/<student_id>.json` (kept out of
-/// `<out>/<student_id>/`, the submission's own flat checkout dir, so nothing
+/// `fetch_batch` to `<out>/.fetch/<github_user>.json` (kept out of
+/// `<out>/<github_user>/`, the submission's own flat checkout dir, so nothing
 /// downstream ever needs to filter it out). Nothing in this codebase reads
 /// it back except [`read_fetch_record`] itself -- see this module's doc
 /// comment.
@@ -310,7 +310,7 @@ pub struct FetchRecord {
     /// stays derivable from the record alone: how late a `Late` submission
     /// is, and which deadline a re-fetch applied.
     pub deadline: Zoned,
-    pub university_id: UniversityId,
+    pub student_id: StudentId,
     /// Every fork matching this student, in GitHub's order. `[0]` is the
     /// one that was fetched; a longer list is an ambiguity that was
     /// resolved arbitrarily and is recorded here to be audited. Empty
@@ -363,17 +363,21 @@ impl FetchRecord {
     }
 }
 
-pub(crate) fn fetch_record_path(out_dir: &Path, student_id: &StudentId) -> PathBuf {
-    out_dir.join(".fetch").join(format!("{student_id}.json"))
+pub(crate) fn fetch_record_path(out_dir: &Path, github_user: &GithubUser) -> PathBuf {
+    out_dir.join(".fetch").join(format!("{github_user}.json"))
 }
 
-fn write_fetch_record(out_dir: &Path, student_id: &StudentId, record: &FetchRecord) -> Result<()> {
-    write_json(&fetch_record_path(out_dir, student_id), record)
+fn write_fetch_record(
+    out_dir: &Path,
+    github_user: &GithubUser,
+    record: &FetchRecord,
+) -> Result<()> {
+    write_json(&fetch_record_path(out_dir, github_user), record)
 }
 
 /// `None` if `fetch_batch` has never run for this student.
-pub fn read_fetch_record(out_dir: &Path, student_id: &StudentId) -> Result<Option<FetchRecord>> {
-    let path = fetch_record_path(out_dir, student_id);
+pub fn read_fetch_record(out_dir: &Path, github_user: &GithubUser) -> Result<Option<FetchRecord>> {
+    let path = fetch_record_path(out_dir, github_user);
     if !path.is_file() {
         return Ok(None);
     }
@@ -425,7 +429,7 @@ impl FetchPlan {
 pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> {
     let entries = roster.roster()?;
 
-    // Rejected here rather than tolerated: two rows sharing a student_id
+    // Rejected here rather than tolerated: two rows sharing a github_user
     // write the same fetch record, and which one wins is decided by
     // whichever thread finishes last.
     if let Some(duplicate) = first_duplicate(&entries) {
@@ -443,7 +447,7 @@ pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> 
 
     let total = forks.len();
     let mut done = 0;
-    let mut matches = forks::match_forks(entries.iter().map(|e| e.student_id), forks, |fork| {
+    let mut matches = forks::match_forks(entries.iter().map(|e| e.github_user), forks, |fork| {
         done += 1;
         progress.set_message(format!(
             "checking access to {} ({done}/{total})",
@@ -458,21 +462,21 @@ pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> 
         .map(|entry| {
             let mut candidates = matches
                 .by_student
-                .remove(&entry.student_id)
+                .remove(&entry.github_user)
                 .unwrap_or_default();
-            let shared = matches.shared_for(&entry.student_id);
+            let shared = matches.shared_for(&entry.github_user);
 
             let plan = if candidates.is_empty() {
                 if shared.is_empty() {
                     Plan::Missing {
                         message: format!(
                             "no fork of {upstream} that {} can push to",
-                            entry.student_id
+                            entry.github_user
                         ),
                     }
                 } else {
                     Plan::Shared {
-                        message: shared_message(&shared, &entry.student_id),
+                        message: shared_message(&shared, &entry.github_user),
                         forks: shared.iter().map(|s| s.fork.clone()).collect(),
                     }
                 }
@@ -492,17 +496,17 @@ pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> 
     })
 }
 
-fn first_duplicate(entries: &[RosterEntry]) -> Option<StudentId> {
+fn first_duplicate(entries: &[RosterEntry]) -> Option<GithubUser> {
     let mut seen = std::collections::BTreeSet::new();
     entries
         .iter()
-        .find(|entry| !seen.insert(entry.student_id))
-        .map(|entry| entry.student_id)
+        .find(|entry| !seen.insert(entry.github_user))
+        .map(|entry| entry.github_user)
 }
 
 /// Runs the Fetch stage alone: lands each submission `plan` resolved at
-/// `out_dir/<student_id>/` (flat -- no `checkout/` nesting) and records the
-/// outcome at `out_dir/.fetch/<student_id>.json`. Safe to run again --
+/// `out_dir/<github_user>/` (flat -- no `checkout/` nesting) and records the
+/// outcome at `out_dir/.fetch/<github_user>.json`. Safe to run again --
 /// always overwrites both.
 ///
 /// A roster row with no usable fork still gets a `Failed` record rather
@@ -517,8 +521,8 @@ pub fn fetch_batch(
     out_dir: &Path,
     deadline: &Zoned,
     jobs: usize,
-    on_result: &(dyn Fn(&StudentId, &FetchRecord) + Sync),
-) -> Result<Vec<(StudentId, FetchRecord)>> {
+    on_result: &(dyn Fn(&GithubUser, &FetchRecord) + Sync),
+) -> Result<Vec<(GithubUser, FetchRecord)>> {
     // Only the clones get a progress unit. The rows with no fork to clone
     // finish the instant they're claimed, and counting those would make
     // the early ETA nonsense.
@@ -538,7 +542,7 @@ pub fn fetch_batch(
     // latter short-circuits, and one repo breaking shouldn't cost every
     // student behind it in the queue their fetch. `collect` restores
     // roster order regardless of what finished when.
-    let results: Vec<Result<(StudentId, FetchRecord)>> = pool.install(|| {
+    let results: Vec<Result<(GithubUser, FetchRecord)>> = pool.install(|| {
         plan.rows
             .par_iter()
             .map(|row| {
@@ -546,11 +550,11 @@ pub fn fetch_batch(
                 if matches!(row.plan, Plan::Fetch { .. }) {
                     progress.inc(1);
                 }
-                let (student_id, record) = fetched?;
+                let (github_user, record) = fetched?;
                 // Through `suspend`, so the line is printed above the bar
                 // rather than scribbled over by the next redraw.
-                progress.suspend(|| on_result(&student_id, &record));
-                Ok((student_id, record))
+                progress.suspend(|| on_result(&github_user, &record));
+                Ok((github_user, record))
             })
             .collect()
     });
@@ -579,11 +583,11 @@ pub fn fetch_batch(
 /// One roster row: its fetch (or the recorded reason there wasn't one)
 /// plus its record on disk. An `Err` is the machinery breaking -- a bad
 /// submission comes back `Ok` with a `Failed` record, see [`FetchOutcome`].
-fn fetch_row(row: &PlanRow, out_dir: &Path, deadline: &Zoned) -> Result<(StudentId, FetchRecord)> {
-    let student_id = row.entry.student_id;
+fn fetch_row(row: &PlanRow, out_dir: &Path, deadline: &Zoned) -> Result<(GithubUser, FetchRecord)> {
+    let github_user = row.entry.github_user;
     let (outcome, forks) = match &row.plan {
         Plan::Fetch { fork, also } => {
-            let outcome = fetch_fork(fork, &out_dir.join(student_id.as_str()), deadline)?;
+            let outcome = fetch_fork(fork, &out_dir.join(github_user.as_str()), deadline)?;
             let mut forks = vec![fork.clone()];
             forks.extend(also.iter().cloned());
             (outcome, forks)
@@ -606,12 +610,12 @@ fn fetch_row(row: &PlanRow, out_dir: &Path, deadline: &Zoned) -> Result<(Student
         result,
         fetched_at: Timestamp::now(),
         deadline: deadline.clone(),
-        university_id: row.entry.university_id,
+        student_id: row.entry.student_id,
         forks,
         metadata: row.entry.metadata.clone(),
     };
-    write_fetch_record(out_dir, &student_id, &record)?;
-    Ok((student_id, record))
+    write_fetch_record(out_dir, &github_user, &record)?;
+    Ok((github_user, record))
 }
 
 /// A steady-ticking spinner on one rewritten line. `indicatif` draws to
@@ -639,7 +643,7 @@ fn bar(total: u64) -> ProgressBar {
     progress
 }
 
-fn shared_message(shared: &[&forks::SharedFork], student: &StudentId) -> String {
+fn shared_message(shared: &[&forks::SharedFork], student: &GithubUser) -> String {
     let described: Vec<String> = shared
         .iter()
         .map(|s| {
@@ -998,7 +1002,7 @@ mod tests {
         let record = FetchRecord {
             fetched_at: Timestamp::now(),
             deadline: deadline("2026-02-14T00:00:00Z"),
-            university_id: UniversityId::new("A123"),
+            student_id: StudentId::new("A123"),
             forks: Vec::new(),
             metadata: BTreeMap::new(),
             result: FetchResult::Ok {
@@ -1022,7 +1026,7 @@ mod tests {
         let record = FetchRecord {
             fetched_at: Timestamp::now(),
             deadline: deadline("2026-02-14T00:00:00Z"),
-            university_id: UniversityId::new("A123"),
+            student_id: StudentId::new("A123"),
             forks: Vec::new(),
             metadata: BTreeMap::new(),
             result: FetchResult::Ok {

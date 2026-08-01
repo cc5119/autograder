@@ -16,7 +16,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
         } => tests,
         status => {
             return Grade {
-                student_id: eval.student_id,
+                github_user: eval.github_user,
                 outcome: GradeOutcome::Unscored {
                     reason: unscored_reason(status),
                 },
@@ -39,7 +39,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     };
 
     Grade {
-        student_id: eval.student_id,
+        github_user: eval.github_user,
         outcome: GradeOutcome::Scored {
             score,
             passed: tests

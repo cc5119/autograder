@@ -2,7 +2,7 @@ use crate::deps::vendor;
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::overlay::{self, Context};
-use crate::id::StudentId;
+use crate::id::GithubUser;
 use crate::model::JobContext;
 use crate::pipeline::{self, manifest_check::ManifestDiagnostic};
 use crate::report::ci::CiReport;
@@ -44,7 +44,7 @@ pub fn run(local_sandbox: bool) -> Result<()> {
         let build_scratch = fs::temp_dir()?;
         let ctx = JobContext {
             assignment_id: spec.assignment.id,
-            student_id: StudentId::new("local"),
+            github_user: GithubUser::new("local"),
             run_id: pipeline::generate_run_id(),
             workspace: build_scratch.path().to_path_buf(),
         };

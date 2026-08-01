@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::exec::sandbox::ProcessStatus;
-use crate::id::{AssignmentId, CommitSha, RunId, StudentId};
+use crate::id::{AssignmentId, CommitSha, GithubUser, RunId};
 
-/// Per-job context threaded through the pipeline stages. `student_id`
-/// identifies a submission directory (see `StudentId`'s doc comment) --
+/// Per-job context threaded through the pipeline stages. `github_user`
+/// identifies a submission directory (see `GithubUser`'s doc comment) --
 /// evaluate itself never consults roster data by it, even though the id
-/// is a `StudentId`.
+/// is a `GithubUser`.
 ///
 /// `workspace` is the scratch root for this job (what `Nextest` calls
 /// `repo_root`), laid out as:
@@ -23,7 +23,7 @@ use crate::id::{AssignmentId, CommitSha, RunId, StudentId};
 #[derive(Debug, Clone)]
 pub struct JobContext {
     pub assignment_id: AssignmentId,
-    pub student_id: StudentId,
+    pub github_user: GithubUser,
     pub run_id: RunId,
     pub workspace: PathBuf,
 }
@@ -117,12 +117,12 @@ pub enum EvalStatus {
 }
 
 /// The sole contract between untrusted execution and scoring.
-/// `student_id` identifies the submission this ran -- see `JobContext`'s
+/// `github_user` identifies the submission this ran -- see `JobContext`'s
 /// doc comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
     pub assignment_id: AssignmentId,
-    pub student_id: StudentId,
+    pub github_user: GithubUser,
     pub run_id: RunId,
     /// The graded submission's own commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,17 +154,17 @@ impl EvaluationResult {
                     .count();
                 format!(
                     "{}: ok ({passed}/{} tests passed)",
-                    self.student_id,
+                    self.github_user,
                     tests.len()
                 )
             }
             EvalStatus::BuildFailed(status) => {
-                format!("{}: {}", self.student_id, status.label())
+                format!("{}: {}", self.github_user, status.label())
             }
             EvalStatus::Ran { process, tests } => {
                 format!(
                     "{}: {} ({})",
-                    self.student_id,
+                    self.github_user,
                     process.describe(),
                     tests.label()
                 )
@@ -175,7 +175,7 @@ impl EvaluationResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grade {
-    pub student_id: StudentId,
+    pub github_user: GithubUser,
     pub outcome: GradeOutcome,
 }
 

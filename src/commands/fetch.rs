@@ -9,7 +9,7 @@ use console::{Term, style};
 use dialoguer::Confirm;
 
 use crate::error::{Error, Result};
-use crate::id::StudentId;
+use crate::id::GithubUser;
 use crate::render;
 use crate::spec::Spec;
 use crate::submissions::forks::Upstream;
@@ -47,7 +47,7 @@ pub fn run(
 /// rather than after the whole batch -- with several fetches in flight
 /// and nothing else on screen but a progress bar, waiting until the end
 /// to say anything would leave a class-sized run silent for minutes.
-fn report(student_id: &StudentId, record: &FetchRecord) {
+fn report(github_user: &GithubUser, record: &FetchRecord) {
     match &record.result {
         // Late and empty submissions are fetched, not failed -- they're
         // logged loudly but grading, not fetching, decides what they're
@@ -59,7 +59,7 @@ fn report(student_id: &StudentId, record: &FetchRecord) {
                 _ => "",
             };
             tracing::info!(
-                %student_id,
+                %github_user,
                 repo = record.forks.first().map(|f| f.nwo()).unwrap_or_default(),
                 commit = record.graded_commit().map(|c| c.sha.as_str()).unwrap_or(""),
                 note,
@@ -67,7 +67,7 @@ fn report(student_id: &StudentId, record: &FetchRecord) {
             );
         }
         FetchResult::Failed { message } => {
-            tracing::warn!(%student_id, message, "fetch failed");
+            tracing::warn!(%github_user, message, "fetch failed");
         }
     }
 }
@@ -96,13 +96,13 @@ fn render_plan(
     let width = plan
         .rows
         .iter()
-        .map(|row| row.entry.student_id.as_str().len())
+        .map(|row| row.entry.github_user.as_str().len())
         .max()
         .unwrap_or(0);
 
     for row in &plan.rows {
-        let id = row.entry.student_id.as_str();
-        let uid = row.entry.university_id.as_str();
+        let id = row.entry.github_user.as_str();
+        let student_id = row.entry.student_id.as_str();
         let (repo, note) = match &row.plan {
             Plan::Fetch { fork, also } if also.is_empty() => (fork.nwo(), String::new()),
             Plan::Fetch { fork, also } => (
@@ -125,7 +125,7 @@ fn render_plan(
             ),
             Plan::Missing { .. } => ("--".to_string(), style("no fork").red().to_string()),
         };
-        let _ = writeln!(s, "  {id:<width$}  {uid:<12}  {repo:<40}  {note}");
+        let _ = writeln!(s, "  {id:<width$}  {student_id:<12}  {repo:<40}  {note}");
     }
 
     let fetching = plan.to_fetch();
@@ -169,7 +169,7 @@ fn render_plan(
         .rows
         .iter()
         .filter(|row| matches!(row.plan, Plan::Fetch { .. }))
-        .filter(|row| out.join(row.entry.student_id.as_str()).exists())
+        .filter(|row| out.join(row.entry.github_user.as_str()).exists())
         .count();
     if overwritten > 0 {
         let _ = writeln!(
