@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::exec::sandbox::ProcessStatus;
-use crate::id::{AssignmentId, RunId, StudentId};
+use crate::id::{AssignmentId, CommitSha, RunId, StudentId};
 
 /// Per-job context threaded through the pipeline stages. `student_id`
 /// identifies a submission directory (see `StudentId`'s doc comment) --
@@ -126,10 +126,10 @@ pub struct EvaluationResult {
     pub run_id: RunId,
     /// The graded submission's own commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graded_commit: Option<String>,
+    pub graded_commit: Option<CommitSha>,
     /// The private assignment repo's commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instructor_commit: Option<String>,
+    pub instructor_commit: Option<CommitSha>,
     pub status: EvalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall_clock_ms: Option<u64>,

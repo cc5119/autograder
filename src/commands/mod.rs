@@ -25,10 +25,13 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
         Command::Vendor { assignment } => vendor::run(&assignment),
         Command::Fetch {
             assignment,
+            repo,
             roster,
             out,
             as_of,
-        } => fetch::run(&assignment, &roster, &out, as_of),
+            yes,
+            jobs,
+        } => fetch::run(&assignment, &repo, &roster, &out, as_of, yes, jobs),
         Command::Evaluate {
             assignment,
             submissions,

@@ -32,23 +32,6 @@ struct RawPayload {
     head: Option<String>,
 }
 
-/// `None` means "not a GitHub URL," not an error.
-pub fn parse_github_url(url: &str) -> Option<(String, String)> {
-    let trimmed = url.trim_end_matches('/');
-    let path = trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
-        .or_else(|| trimmed.strip_prefix("git@github.com:"))?;
-    let path = path.strip_suffix(".git").unwrap_or(path);
-
-    let (owner, repo) = path.split_once('/')?;
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    Some((owner.to_string(), repo.to_string()))
-}
-
 pub fn list_push_events(owner: &str, repo: &str) -> Result<Vec<PushEvent>> {
     let output = Command::new(GH_BIN)
         .args(["api", &format!("repos/{owner}/{repo}/events"), "--paginate"])
@@ -104,31 +87,6 @@ pub fn latest<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_github_url_handles_https_and_ssh_forms() {
-        assert_eq!(
-            parse_github_url("https://github.com/org/repo.git"),
-            Some(("org".to_string(), "repo".to_string()))
-        );
-        assert_eq!(
-            parse_github_url("https://github.com/org/repo"),
-            Some(("org".to_string(), "repo".to_string()))
-        );
-        assert_eq!(
-            parse_github_url("git@github.com:org/repo.git"),
-            Some(("org".to_string(), "repo".to_string()))
-        );
-        assert_eq!(
-            parse_github_url("ssh://git@github.com/org/repo.git"),
-            Some(("org".to_string(), "repo".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_github_url_rejects_non_github_hosts() {
-        assert_eq!(parse_github_url("https://gitlab.com/org/repo.git"), None);
-    }
 
     #[test]
     fn parse_push_events_skips_non_push_events_and_reads_across_pages() {

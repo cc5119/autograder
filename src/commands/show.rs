@@ -13,7 +13,8 @@ use crate::exec::fs;
 use crate::exec::json::read_json;
 use crate::id::StudentId;
 use crate::model::{EvalStatus, EvaluationResult, TestOutcome, TestStatus};
-use crate::submissions::{FetchRecord, FetchStatus, SubmissionDate, read_fetch_record};
+use crate::render;
+use crate::submissions::{FetchRecord, FetchResult, SubmissionDate, read_fetch_record};
 
 const EVAL_DIR: &str = ".eval";
 
@@ -59,36 +60,86 @@ fn student_id(submission: &Path) -> Result<StudentId> {
 
 fn render_fetch(out: &mut String, record: &FetchRecord) {
     let _ = writeln!(out, "\n{}", style("Fetch").bold());
-    let _ = writeln!(out, "  fetched at     {}", record.fetched_at);
-    match record.status {
-        FetchStatus::Failed => {
+    let _ = writeln!(out, "  university id  {}", record.university_id);
+    // The roster's own extra columns, verbatim -- whatever the instructor
+    // put there (email, section, ...) is worth seeing next to the id.
+    for (key, value) in &record.metadata {
+        let _ = writeln!(out, "  {key:<13}  {value}");
+    }
+    let _ = writeln!(
+        out,
+        "  fetched at     {}  ({})",
+        render::instant(record.fetched_at),
+        render::relative(
+            &record.fetched_at.to_zoned(jiff::tz::TimeZone::system()),
+            &jiff::Zoned::now()
+        )
+    );
+    if let Some(fork) = record.forks.first() {
+        let _ = writeln!(out, "  repo           {}", fork.nwo());
+    }
+    // Ambiguity survives in the record even though the fetch went ahead.
+    if record.forks.len() > 1 {
+        let others: Vec<String> = record.forks[1..].iter().map(|f| f.nwo()).collect();
+        let _ = writeln!(
+            out,
+            "  {}      also matched {}",
+            style("ambiguous").yellow(),
+            others.join(", ")
+        );
+    }
+    let _ = writeln!(
+        out,
+        "  deadline       {}",
+        render::datetime(&record.deadline)
+    );
+    match &record.result {
+        FetchResult::Failed { message } => {
             let _ = writeln!(out, "  status         {}", style("failed").red());
-            if let Some(message) = &record.message {
-                let _ = writeln!(out, "  message        {message}");
-            }
+            let _ = writeln!(out, "  message        {message}");
         }
-        FetchStatus::Ok => {
-            if let Some(commit) = &record.graded_commit {
-                let _ = writeln!(out, "  commit         {commit}");
+        FetchResult::Ok { submission_date } => {
+            match submission_date.graded() {
+                Some(commit) => {
+                    let _ = writeln!(out, "  commit         {}", commit.sha);
+                }
+                None => {
+                    let _ = writeln!(
+                        out,
+                        "  commit         {}",
+                        style("none -- the fork has no commits").red()
+                    );
+                }
             }
-            if let Some(date) = &record.submission_date {
-                render_submission_date(out, date);
-            }
+            render_submission_date(out, record, submission_date);
         }
     }
 }
 
-fn render_submission_date(out: &mut String, date: &SubmissionDate) {
-    let blessed = matches!(date, SubmissionDate::Blessed { .. });
+fn render_submission_date(out: &mut String, record: &FetchRecord, date: &SubmissionDate) {
+    let note = match date {
+        SubmissionDate::Blessed { .. } => style("  (blessed)").to_string(),
+        // Late by the deadline on the record, so this needs nothing the
+        // record doesn't already carry.
+        SubmissionDate::Late(_) => match record.late_by() {
+            Some(by) => style(format!("  ({} late)", render::duration(by)))
+                .red()
+                .to_string(),
+            None => String::new(),
+        },
+        _ => String::new(),
+    };
+
     match date.trusted_submitted_at() {
-        Some(ts) if blessed => {
-            let _ = writeln!(out, "  submitted at   {ts}  (blessed)");
-        }
         Some(ts) => {
-            let _ = writeln!(out, "  submitted at   {ts}");
+            let _ = writeln!(out, "  submitted at   {}{note}", render::instant(ts));
         }
+        None if matches!(date, SubmissionDate::Empty) => {}
         None => {
-            let _ = writeln!(out, "  submitted at   unknown (no verified timestamp)");
+            let _ = writeln!(
+                out,
+                "  submitted at   unknown (no verified timestamp){note}"
+            );
         }
     }
 }

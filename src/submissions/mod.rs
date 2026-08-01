@@ -7,11 +7,16 @@
 //! exactly like one `fetch_batch` produced. [`read_fetch_record`] exists
 //! for whatever external tooling wants to know what a prior fetch did.
 //!
-//! `GitRepo::fetch` shells out to `git` on `PATH` -- a full, fresh clone
-//! into `dest` on every call, no shared bare-clone cache (a cache keyed by
-//! `repo_url` never helps the common one-fork-per-student case, and a full
-//! clone is what the deadline-based ref search needs anyway).
+//! Submissions aren't listed anywhere: the roster names students by GitHub
+//! handle and [`forks`] finds each one's fork of the upstream assignment
+//! repo. Cloning goes through `gh` (so private forks work off the
+//! instructor's existing login) and everything after it through `git` on
+//! `PATH` -- a full, fresh clone into `dest` on every call, no shared
+//! bare-clone cache (a cache never helps the one-fork-per-student case,
+//! and a full clone is what the deadline-based commit search needs
+//! anyway).
 
+pub mod forks;
 pub mod github_events;
 pub mod source;
 
@@ -19,34 +24,21 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use jiff::{Timestamp, Zoned};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::{read_json, write_json};
-use crate::id::StudentId;
-use crate::submissions::source::CsvRoster;
+use crate::id::{CommitSha, StudentId, UniversityId};
+use crate::submissions::forks::{Fork, Upstream};
+use crate::submissions::github_events::PushEvent;
+use crate::submissions::source::{CsvRoster, RosterEntry};
 
 const GIT_BIN: &str = "git";
-
-/// One roster row: a student and the git remote to fetch their submission
-/// from.
-#[derive(Debug, Clone)]
-pub struct Submission {
-    pub student_id: StudentId,
-    pub git: GitRepo,
-    pub metadata: BTreeMap<String, String>,
-}
-
-/// A git remote to fetch a submission from: a clone URL plus an optional
-/// pinned ref/branch override -- when unset, `GitRepo::fetch` resolves it
-/// via push-time deadline selection instead. Produced by `CsvRoster`.
-#[derive(Debug, Clone)]
-pub struct GitRepo {
-    pub url: String,
-    pub r#ref: Option<String>,
-}
+const GH_BIN: &str = "gh";
 
 /// Tag a student pushes to bless a commit.
 const BLESS_TAG: &str = "listoco";
@@ -60,30 +52,56 @@ pub struct CommitTimestamp {
     pub commit_date: Timestamp,
 }
 
-/// The latest on-time commit, captured alongside a `Blessed` submission so
-/// grading can still fall back to it later.
+/// A commit and how its date was established.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FallbackCommit {
-    pub sha: String,
+pub struct Commit {
+    pub sha: CommitSha,
     pub timestamp: CommitTimestamp,
 }
 
-/// How a submission's date was determined, and how much to trust it.
+/// How a submission's date was determined, and how much to trust it. Also
+/// what names the graded commit -- there's no separate `graded_commit`
+/// field anywhere, since the commit that was checked out is exactly the
+/// one whose date this describes ([`SubmissionDate::graded`]).
+///
+/// Lateness isn't a variant's business to carry: the deadline this was
+/// resolved against is on the [`FetchRecord`], so how late a `Late`
+/// submission is stays derivable rather than baked in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SubmissionDate {
-    /// Never deadline-gated.
+    /// A bless tag. Never deadline-gated.
     Blessed {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tag_push_event: Option<Timestamp>,
-        commit: CommitTimestamp,
+        commit: Commit,
+        /// The latest on-time commit, kept so grading can still fall back
+        /// to it later. The one field here naming a commit *other* than
+        /// the graded one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        fallback: Option<FallbackCommit>,
+        fallback: Option<Commit>,
     },
-    Unblessed(CommitTimestamp),
+    /// The latest commit at or before the deadline.
+    OnTime(Commit),
+    /// Nothing at or before the deadline -- this is the latest commit
+    /// there is. Fetched and checked out anyway: what to do about lateness
+    /// is grading's call, not fetch's.
+    Late(Commit),
+    /// The fork has no commits at all.
+    Empty,
 }
 
 impl SubmissionDate {
+    /// The commit that was checked out, or `None` for a fork with no
+    /// commits to check out.
+    pub fn graded(&self) -> Option<&Commit> {
+        match self {
+            SubmissionDate::Blessed { commit, .. } => Some(commit),
+            SubmissionDate::OnTime(commit) | SubmissionDate::Late(commit) => Some(commit),
+            SubmissionDate::Empty => None,
+        }
+    }
+
     /// `None` unless there's a GitHub-verified timestamp -- except for
     /// `Blessed`, where `commit_date` alone is fine since blessing already
     /// bypasses the deadline gate.
@@ -93,128 +111,105 @@ impl SubmissionDate {
                 tag_push_event: Some(t),
                 ..
             } => Some(*t),
-            SubmissionDate::Blessed { commit, .. } => Some(commit.commit_date),
-            SubmissionDate::Unblessed(commit) => commit.push_event,
+            SubmissionDate::Blessed { commit, .. } => Some(commit.timestamp.commit_date),
+            SubmissionDate::OnTime(commit) | SubmissionDate::Late(commit) => {
+                commit.timestamp.push_event
+            }
+            SubmissionDate::Empty => None,
         }
     }
 }
 
-/// Terminal status of the Fetch stage alone -- distinct from
-/// `model::BuildStatus`/`model::RunStatus`, which are Evaluate's own
-/// build/run vocabulary and have no notion of fetching at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FetchStatus {
-    Ok,
-    Failed,
-}
-
-/// Outcome of the Fetch stage for one submission.
+/// Outcome of fetching one fork. `Failed` is reserved for the machinery
+/// breaking -- a clone, a branch lookup or a push-history read. Anything
+/// about the *submission itself* (late, empty) is a successful fetch of a
+/// poor submission: it's recorded and left for evaluate/grade to judge,
+/// so problems get fixed downstream rather than hidden here.
 #[derive(Debug, Clone)]
-pub struct FetchOutcome {
-    pub status: FetchStatus,
-    pub workspace: Option<PathBuf>,
-    pub graded_commit: Option<String>,
-    pub message: Option<String>,
-    pub submission_date: Option<SubmissionDate>,
+pub enum FetchOutcome {
+    Ok {
+        workspace: PathBuf,
+        submission_date: SubmissionDate,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 impl FetchOutcome {
     fn failed(message: impl Into<String>) -> Self {
-        Self {
-            status: FetchStatus::Failed,
-            workspace: None,
-            graded_commit: None,
-            message: Some(message.into()),
-            submission_date: None,
-        }
-    }
-
-    fn ok(workspace: PathBuf, graded_commit: String) -> Self {
-        Self {
-            status: FetchStatus::Ok,
-            workspace: Some(workspace),
-            graded_commit: Some(graded_commit),
-            message: None,
-            submission_date: None,
+        FetchOutcome::Failed {
+            message: message.into(),
         }
     }
 }
 
-impl GitRepo {
-    /// Every failure degrades to `FetchOutcome::failed` rather than a hard `Err`,
-    /// so one bad repo doesn't abort the batch.
-    pub fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
-        if dest.exists() {
-            fs::remove_dir_all(dest)?;
-        }
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if let Err(e) = run_git(GIT_BIN, &clone_argv(&self.url, dest)) {
-            return Ok(FetchOutcome::failed(format!(
-                "failed to clone {}: {e}",
-                self.url
-            )));
-        }
-
-        let (sha, submission_date) = match &self.r#ref {
-            Some(r) => match run_git(GIT_BIN, &rev_parse_argv(dest, r)) {
-                Ok(sha) if !sha.is_empty() => (sha, None),
-                _ => {
-                    return Ok(FetchOutcome::failed(format!(
-                        "ref {r:?} not found in {}",
-                        self.url
-                    )));
-                }
-            },
-            None => {
-                let branch = match run_git(GIT_BIN, &default_branch_argv(dest)) {
-                    Ok(b) if !b.is_empty() => b,
-                    _ => {
-                        return Ok(FetchOutcome::failed(format!(
-                            "could not determine the default branch for {}",
-                            self.url
-                        )));
-                    }
-                };
-                match resolve_unpinned(dest, &self.url, &branch, deadline) {
-                    Ok((sha, submission_date)) => (sha, Some(submission_date)),
-                    Err(e) => return Ok(FetchOutcome::failed(e)),
-                }
-            }
-        };
-
-        if let Err(e) = run_git(GIT_BIN, &checkout_argv(dest, &sha)) {
-            return Ok(FetchOutcome::failed(format!(
-                "failed to check out {sha} for {}: {e}",
-                self.url
-            )));
-        }
-
-        Ok(FetchOutcome {
-            submission_date,
-            ..FetchOutcome::ok(dest.to_path_buf(), sha)
-        })
+/// Clones `fork` into `dest` and checks out the commit the deadline (or a
+/// bless tag) selects. Every failure degrades to `FetchOutcome::Failed`
+/// rather than a hard `Err`, so one bad repo doesn't abort the batch.
+pub fn fetch_fork(fork: &Fork, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
+    if dest.exists() {
+        fs::remove_dir_all(dest)?;
     }
-}
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
-/// A `gh` failure fails the fetch outright, rather than silently falling
-/// back to the forgeable `git log` date for every submission.
-fn resolve_unpinned(
-    dest: &Path,
-    url: &str,
-    branch: &str,
-    deadline: &Zoned,
-) -> std::result::Result<(String, SubmissionDate), String> {
-    let events = match github_events::parse_github_url(url) {
-        Some((owner, repo)) => github_events::list_push_events(&owner, &repo)
-            .map_err(|e| format!("failed to read GitHub push history for {url}: {e}"))?,
-        None => Vec::new(),
+    let nwo = fork.nwo();
+    if let Err(e) = clone(&nwo, dest) {
+        return Ok(FetchOutcome::failed(format!("failed to clone {nwo}: {e}")));
+    }
+
+    let branch = match run_git(GIT_BIN, &default_branch_argv(dest)) {
+        Ok(b) if !b.is_empty() => b,
+        _ => {
+            return Ok(FetchOutcome::failed(format!(
+                "could not determine the default branch for {nwo}"
+            )));
+        }
     };
 
-    let fallback = resolve_fallback_commit(dest, branch, deadline, &events)?;
+    // A `gh` failure fails the fetch outright, rather than silently
+    // falling back to the forgeable `git log` date for every submission.
+    let events = match github_events::list_push_events(&fork.owner, &fork.name) {
+        Ok(events) => events,
+        Err(e) => {
+            return Ok(FetchOutcome::failed(format!(
+                "failed to read GitHub push history for {nwo}: {e}"
+            )));
+        }
+    };
+
+    let submission_date = match resolve_commit(dest, &branch, deadline, &events) {
+        Ok(date) => date,
+        Err(e) => return Ok(FetchOutcome::failed(e)),
+    };
+
+    if let Some(commit) = submission_date.graded() {
+        let sha = commit.sha;
+        if let Err(e) = run_git(GIT_BIN, &checkout_argv(dest, sha.as_str())) {
+            return Ok(FetchOutcome::failed(format!(
+                "failed to check out {sha} for {nwo}: {e}"
+            )));
+        }
+    }
+
+    Ok(FetchOutcome::Ok {
+        workspace: dest.to_path_buf(),
+        submission_date,
+    })
+}
+
+/// Picks the commit to grade: the bless tag if there is one (deadline
+/// exempt), otherwise the latest commit at or before `deadline`, otherwise
+/// the latest commit there is, marked late.
+fn resolve_commit(
+    dest: &Path,
+    branch: &str,
+    deadline: &Zoned,
+    events: &[PushEvent],
+) -> std::result::Result<SubmissionDate, String> {
+    let fallback = resolve_fallback_commit(dest, branch, deadline, events)?;
 
     let tag_ref = format!("refs/tags/{BLESS_TAG}");
     let tag_sha = run_git(
@@ -224,24 +219,30 @@ fn resolve_unpinned(
     .ok();
 
     if let Some(sha) = tag_sha.filter(|sha| !sha.is_empty()) {
-        let tag_push_event = github_events::latest(&events, &tag_ref, None).map(|e| e.created_at);
+        let tag_push_event = github_events::latest(events, &tag_ref, None).map(|e| e.created_at);
         let commit_date = commit_date(dest, &sha)?;
-        let submission_date = SubmissionDate::Blessed {
+        return Ok(SubmissionDate::Blessed {
             tag_push_event,
-            commit: CommitTimestamp {
-                push_event: tag_push_event,
-                commit_date,
+            commit: Commit {
+                sha: CommitSha::new(sha),
+                timestamp: CommitTimestamp {
+                    push_event: tag_push_event,
+                    commit_date,
+                },
             },
             fallback,
-        };
-        return Ok((sha, submission_date));
+        });
     }
 
+    // Nothing on time isn't a failed fetch: take the latest commit there
+    // is and say it's late, so the work is on disk to look at and grading
+    // gets to decide what that's worth.
     match fallback {
-        Some(FallbackCommit { sha, timestamp }) => Ok((sha, SubmissionDate::Unblessed(timestamp))),
-        None => Err(format!(
-            "no commit on {branch} at or before the deadline ({deadline}) for {url}"
-        )),
+        Some(commit) => Ok(SubmissionDate::OnTime(commit)),
+        None => match latest_commit(dest, branch, None)? {
+            Some(commit) => Ok(SubmissionDate::Late(commit)),
+            None => Ok(SubmissionDate::Empty),
+        },
     }
 }
 
@@ -250,13 +251,13 @@ fn resolve_fallback_commit(
     dest: &Path,
     branch: &str,
     deadline: &Zoned,
-    events: &[github_events::PushEvent],
-) -> std::result::Result<Option<FallbackCommit>, String> {
+    events: &[PushEvent],
+) -> std::result::Result<Option<Commit>, String> {
     let branch_ref = format!("refs/heads/{branch}");
     if let Some(event) = github_events::latest(events, &branch_ref, Some(deadline.timestamp())) {
         let commit_date = commit_date(dest, &event.head)?;
-        return Ok(Some(FallbackCommit {
-            sha: event.head.clone(),
+        return Ok(Some(Commit {
+            sha: CommitSha::new(event.head.clone()),
             timestamp: CommitTimestamp {
                 push_event: Some(event.created_at),
                 commit_date,
@@ -264,14 +265,24 @@ fn resolve_fallback_commit(
         }));
     }
 
-    let sha =
-        run_git(GIT_BIN, &last_commit_before_argv(dest, branch, deadline)).unwrap_or_default();
+    latest_commit(dest, branch, Some(deadline))
+}
+
+/// The latest commit on `branch`, optionally capped at `before`. `None`
+/// means there isn't one: either the cap excluded everything, or the fork
+/// has no commits at all.
+fn latest_commit(
+    dest: &Path,
+    branch: &str,
+    before: Option<&Zoned>,
+) -> std::result::Result<Option<Commit>, String> {
+    let sha = run_git(GIT_BIN, &last_commit_argv(dest, branch, before)).unwrap_or_default();
     if sha.is_empty() {
         return Ok(None);
     }
     let commit_date = commit_date(dest, &sha)?;
-    Ok(Some(FallbackCommit {
-        sha,
+    Ok(Some(Commit {
+        sha: CommitSha::new(sha),
         timestamp: CommitTimestamp {
             push_event: None,
             commit_date,
@@ -285,12 +296,6 @@ fn commit_date(dest: &Path, sha: &str) -> std::result::Result<Timestamp, String>
         .map_err(|e| format!("failed to parse commit date {raw:?} for {sha}: {e}"))
 }
 
-impl Submission {
-    pub fn fetch(&self, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
-        self.git.fetch(dest, deadline)
-    }
-}
-
 /// Durable record of the last fetch attempt for one student, written by
 /// `fetch_batch` to `<out>/.fetch/<student_id>.json` (kept out of
 /// `<out>/<student_id>/`, the submission's own flat checkout dir, so nothing
@@ -299,11 +304,63 @@ impl Submission {
 /// comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRecord {
-    pub status: FetchStatus,
-    pub graded_commit: Option<String>,
-    pub message: Option<String>,
     pub fetched_at: Timestamp,
-    pub submission_date: Option<SubmissionDate>,
+    /// The deadline this fetch resolved against -- the spec's, or whatever
+    /// `--as-of` overrode it with. Recorded so everything about timing
+    /// stays derivable from the record alone: how late a `Late` submission
+    /// is, and which deadline a re-fetch applied.
+    pub deadline: Zoned,
+    pub university_id: UniversityId,
+    /// Every fork matching this student, in GitHub's order. `[0]` is the
+    /// one that was fetched; a longer list is an ambiguity that was
+    /// resolved arbitrarily and is recorded here to be audited. Empty
+    /// means no fork was found.
+    #[serde(default)]
+    pub forks: Vec<Fork>,
+    /// The roster row's remaining columns, verbatim.
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    pub result: FetchResult,
+}
+
+/// The fetch's terminal state, with the payload attached to the variant
+/// that has one -- see [`FetchOutcome`] for what does and doesn't count as
+/// a failure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FetchResult {
+    Ok { submission_date: SubmissionDate },
+    Failed { message: String },
+}
+
+impl FetchRecord {
+    /// The commit that was checked out: `None` if the fetch failed or the
+    /// fork had no commits.
+    pub fn graded_commit(&self) -> Option<&Commit> {
+        self.submission_date()?.graded()
+    }
+
+    pub fn submission_date(&self) -> Option<&SubmissionDate> {
+        match &self.result {
+            FetchResult::Ok { submission_date } => Some(submission_date),
+            FetchResult::Failed { .. } => None,
+        }
+    }
+
+    /// How late the graded commit is, or `None` if it isn't. Measured
+    /// against the verified push time where there is one, since the
+    /// commit's own date is the student's to set.
+    pub fn late_by(&self) -> Option<jiff::SignedDuration> {
+        let commit = match self.submission_date()? {
+            SubmissionDate::Late(commit) => commit,
+            _ => return None,
+        };
+        let submitted = commit
+            .timestamp
+            .push_event
+            .unwrap_or(commit.timestamp.commit_date);
+        Some(submitted.duration_since(self.deadline.timestamp()))
+    }
 }
 
 pub(crate) fn fetch_record_path(out_dir: &Path, student_id: &StudentId) -> PathBuf {
@@ -323,44 +380,302 @@ pub fn read_fetch_record(out_dir: &Path, student_id: &StudentId) -> Result<Optio
     read_json(&path)
 }
 
-/// Runs the Fetch stage alone: lands each submission at `out_dir/<student_id>/`
-/// (flat -- no `checkout/` nesting) and records the outcome at
-/// `out_dir/.fetch/<student_id>.json`. Safe to run again -- always overwrites
-/// both.
+/// What one roster row's fetch will do. Decided before anything is
+/// cloned, so `autograder fetch` can show it and ask.
+#[derive(Debug, Clone)]
+pub enum Plan {
+    /// `fork` is the one to clone; `also` is the rest of the candidates,
+    /// kept for the record so an arbitrary pick stays auditable.
+    Fetch { fork: Fork, also: Vec<Fork> },
+    /// Every fork this student can push to is shared with another student,
+    /// so none of them can be attributed -- see [`forks::SharedFork`].
+    Shared { forks: Vec<Fork>, message: String },
+    /// No fork at all.
+    Missing { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanRow {
+    pub entry: RosterEntry,
+    pub plan: Plan,
+}
+
+/// Everything `fetch_batch` is about to do, in roster order.
+#[derive(Debug)]
+pub struct FetchPlan {
+    pub rows: Vec<PlanRow>,
+    /// Forks no roster student can push to -- outsiders forking a public
+    /// assignment repo is normal and not the instructor's problem.
+    pub unmatched: Vec<Fork>,
+}
+
+impl FetchPlan {
+    pub fn to_fetch(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.plan, Plan::Fetch { .. }))
+            .count()
+    }
+}
+
+/// Works out what to fetch without fetching it: lists `upstream`'s forks
+/// and attributes each to a roster student by its collaborators. Read-only
+/// -- nothing on disk is touched, so a plan can be shown and declined for
+/// free.
+pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> {
+    let entries = roster.roster()?;
+
+    // Rejected here rather than tolerated: two rows sharing a student_id
+    // write the same fetch record, and which one wins is decided by
+    // whichever thread finishes last.
+    if let Some(duplicate) = first_duplicate(&entries) {
+        return Err(Error::InvalidSpec(format!(
+            "roster lists {duplicate} more than once"
+        )));
+    }
+
+    // Discovery is one API call for the fork list plus one per fork, and
+    // the per-fork half is the slow part -- worth a live count so a class
+    // -sized wait doesn't look like a hang.
+    let progress = spinner();
+    progress.set_message(format!("listing forks of {upstream}..."));
+    let forks = forks::list_forks(upstream)?;
+
+    let total = forks.len();
+    let mut done = 0;
+    let mut matches = forks::match_forks(entries.iter().map(|e| e.student_id), forks, |fork| {
+        done += 1;
+        progress.set_message(format!(
+            "checking access to {} ({done}/{total})",
+            fork.nwo()
+        ));
+        forks::list_collaborators(fork)
+    })?;
+    progress.finish_and_clear();
+
+    let rows = entries
+        .into_iter()
+        .map(|entry| {
+            let mut candidates = matches
+                .by_student
+                .remove(&entry.student_id)
+                .unwrap_or_default();
+            let shared = matches.shared_for(&entry.student_id);
+
+            let plan = if candidates.is_empty() {
+                if shared.is_empty() {
+                    Plan::Missing {
+                        message: format!(
+                            "no fork of {upstream} that {} can push to",
+                            entry.student_id
+                        ),
+                    }
+                } else {
+                    Plan::Shared {
+                        message: shared_message(&shared, &entry.student_id),
+                        forks: shared.iter().map(|s| s.fork.clone()).collect(),
+                    }
+                }
+            } else {
+                Plan::Fetch {
+                    fork: candidates.remove(0),
+                    also: candidates,
+                }
+            };
+            PlanRow { entry, plan }
+        })
+        .collect();
+
+    Ok(FetchPlan {
+        rows,
+        unmatched: matches.unmatched,
+    })
+}
+
+fn first_duplicate(entries: &[RosterEntry]) -> Option<StudentId> {
+    let mut seen = std::collections::BTreeSet::new();
+    entries
+        .iter()
+        .find(|entry| !seen.insert(entry.student_id))
+        .map(|entry| entry.student_id)
+}
+
+/// Runs the Fetch stage alone: lands each submission `plan` resolved at
+/// `out_dir/<student_id>/` (flat -- no `checkout/` nesting) and records the
+/// outcome at `out_dir/.fetch/<student_id>.json`. Safe to run again --
+/// always overwrites both.
+///
+/// A roster row with no usable fork still gets a `Failed` record rather
+/// than being skipped, so it shows up downstream instead of vanishing.
+///
+/// Rows are fetched `jobs` at a time. Every row is attempted even if some
+/// fail, and the returned records stay in roster order no matter what
+/// order they finished in; `on_result` is called once per row as it lands,
+/// in completion order.
 pub fn fetch_batch(
-    source: &CsvRoster,
+    plan: &FetchPlan,
     out_dir: &Path,
     deadline: &Zoned,
+    jobs: usize,
+    on_result: &(dyn Fn(&StudentId, &FetchRecord) + Sync),
 ) -> Result<Vec<(StudentId, FetchRecord)>> {
-    let submissions = source.submissions()?;
-    let mut records = Vec::new();
-    for submission in submissions {
-        let checkout_dir = out_dir.join(submission.student_id.as_str());
-        let outcome = submission.fetch(&checkout_dir, deadline)?;
-        let record = FetchRecord {
-            status: outcome.status,
-            graded_commit: outcome.graded_commit,
-            message: outcome.message,
-            fetched_at: Timestamp::now(),
-            submission_date: outcome.submission_date,
-        };
-        write_fetch_record(out_dir, &submission.student_id, &record)?;
-        records.push((submission.student_id, record));
+    // Only the clones get a progress unit. The rows with no fork to clone
+    // finish the instant they're claimed, and counting those would make
+    // the early ETA nonsense.
+    let progress = bar(plan.to_fetch() as u64);
+
+    // Our own pool, not rayon's global one, which sizes itself to the CPU
+    // count -- the wrong number entirely for work that spends its life
+    // blocked on `gh` and `git`.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .map_err(|source| {
+            Error::Other(format!("failed to start {jobs} fetch threads: {source}"))
+        })?;
+
+    // `Vec<Result<_>>` and not `Result<Vec<_>>`: collecting into the
+    // latter short-circuits, and one repo breaking shouldn't cost every
+    // student behind it in the queue their fetch. `collect` restores
+    // roster order regardless of what finished when.
+    let results: Vec<Result<(StudentId, FetchRecord)>> = pool.install(|| {
+        plan.rows
+            .par_iter()
+            .map(|row| {
+                let fetched = fetch_row(row, out_dir, deadline);
+                if matches!(row.plan, Plan::Fetch { .. }) {
+                    progress.inc(1);
+                }
+                let (student_id, record) = fetched?;
+                // Through `suspend`, so the line is printed above the bar
+                // rather than scribbled over by the next redraw.
+                progress.suspend(|| on_result(&student_id, &record));
+                Ok((student_id, record))
+            })
+            .collect()
+    });
+    progress.finish_and_clear();
+
+    let mut records = Vec::with_capacity(results.len());
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok(record) => records.push(record),
+            Err(e) => errors.push(e),
+        }
+    }
+    // Everything fetchable is already on disk by now, so the only thing
+    // left is to say what broke. The first failure is the return value
+    // and the rest would otherwise vanish with it.
+    if !errors.is_empty() {
+        for e in &errors[1..] {
+            tracing::error!(error = %e, "fetch failed");
+        }
+        return Err(errors.remove(0));
     }
     Ok(records)
 }
 
-/// A full clone, not shallow: [`last_commit_before_argv`] needs the real
-/// commit history to search when a roster row doesn't pin a `ref`.
-fn clone_argv(repo_url: &str, dest: &Path) -> Vec<String> {
-    vec![
-        "clone".to_string(),
-        repo_url.to_string(),
-        dest.display().to_string(),
-    ]
+/// One roster row: its fetch (or the recorded reason there wasn't one)
+/// plus its record on disk. An `Err` is the machinery breaking -- a bad
+/// submission comes back `Ok` with a `Failed` record, see [`FetchOutcome`].
+fn fetch_row(row: &PlanRow, out_dir: &Path, deadline: &Zoned) -> Result<(StudentId, FetchRecord)> {
+    let student_id = row.entry.student_id;
+    let (outcome, forks) = match &row.plan {
+        Plan::Fetch { fork, also } => {
+            let outcome = fetch_fork(fork, &out_dir.join(student_id.as_str()), deadline)?;
+            let mut forks = vec![fork.clone()];
+            forks.extend(also.iter().cloned());
+            (outcome, forks)
+        }
+        // A shared fork is fetched for nobody, but still goes in the
+        // record, so the failure names what was found rather than
+        // reading like a missing submission.
+        Plan::Shared { forks, message } => (FetchOutcome::failed(message), forks.clone()),
+        Plan::Missing { message } => (FetchOutcome::failed(message), Vec::new()),
+    };
+
+    let result = match outcome {
+        FetchOutcome::Ok {
+            submission_date, ..
+        } => FetchResult::Ok { submission_date },
+        FetchOutcome::Failed { message } => FetchResult::Failed { message },
+    };
+
+    let record = FetchRecord {
+        result,
+        fetched_at: Timestamp::now(),
+        deadline: deadline.clone(),
+        university_id: row.entry.university_id,
+        forks,
+        metadata: row.entry.metadata.clone(),
+    };
+    write_fetch_record(out_dir, &student_id, &record)?;
+    Ok((student_id, record))
 }
 
-/// Used when a roster row leaves `ref` unset.
+/// A steady-ticking spinner on one rewritten line. `indicatif` draws to
+/// stderr and hides itself when that isn't a terminal, so piped output
+/// stays clean.
+fn spinner() -> ProgressBar {
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::with_template("{spinner} {msg}").expect("static template is valid"),
+    );
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+    progress
+}
+
+/// The same one line as [`spinner`], for work whose total is known up
+/// front so it can carry a count and an ETA.
+fn bar(total: u64) -> ProgressBar {
+    let progress = ProgressBar::new(total);
+    progress.set_style(
+        ProgressStyle::with_template("{spinner} [{bar:22}] {pos}/{len}  eta {eta}")
+            .expect("static template is valid")
+            .progress_chars("█░"),
+    );
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+    progress
+}
+
+fn shared_message(shared: &[&forks::SharedFork], student: &StudentId) -> String {
+    let described: Vec<String> = shared
+        .iter()
+        .map(|s| {
+            let others: Vec<&str> = s
+                .students
+                .iter()
+                .filter(|id| *id != student)
+                .map(|id| id.as_str())
+                .collect();
+            format!("{} (shared with {})", s.fork.nwo(), others.join(", "))
+        })
+        .collect();
+    format!(
+        "fetched nothing: the only fork {student} can push to is shared -- {}",
+        described.join("; ")
+    )
+}
+
+/// `gh repo clone` rather than `git clone`, so a private fork works off
+/// the instructor's existing `gh` login with no token in this process's
+/// argv. A full clone, not shallow: [`last_commit_before_argv`] needs the
+/// real commit history to search.
+fn clone(nwo: &str, dest: &Path) -> Result<()> {
+    let output = Command::new(GH_BIN)
+        .args(["repo", "clone", nwo, &dest.display().to_string()])
+        .output()
+        .map_err(|source| Error::Other(format!("failed to run `{GH_BIN}`: {source}")))?;
+    if !output.status.success() {
+        return Err(Error::Other(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The fork's own default branch, whatever the student set it to.
 fn default_branch_argv(dest: &Path) -> Vec<String> {
     vec![
         "-C".to_string(),
@@ -371,21 +686,26 @@ fn default_branch_argv(dest: &Path) -> Vec<String> {
     ]
 }
 
-/// Push-time deadline selection: the last commit at or before `deadline` on
-/// `branch`. Empty stdout means nothing was pushed before the deadline.
-fn last_commit_before_argv(dest: &Path, branch: &str, deadline: &Zoned) -> Vec<String> {
-    vec![
+/// The last commit on `branch`, optionally capped at `before` for
+/// deadline selection. Empty stdout means there's no such commit.
+fn last_commit_argv(dest: &Path, branch: &str, before: Option<&Zoned>) -> Vec<String> {
+    let mut argv = vec![
         "-C".to_string(),
         dest.display().to_string(),
         "log".to_string(),
-        format!("--before={}", deadline.timestamp()),
+    ];
+    if let Some(before) = before {
+        argv.push(format!("--before={}", before.timestamp()));
+    }
+    argv.extend([
         "-1".to_string(),
         "--format=%H".to_string(),
         branch.to_string(),
-    ]
+    ]);
+    argv
 }
 
-/// Resolves a pinned branch/tag/sha to a full commit SHA.
+/// Resolves a branch/tag/sha to a full commit SHA.
 fn rev_parse_argv(dest: &Path, r#ref: &str) -> Vec<String> {
     vec![
         "-C".to_string(),
@@ -433,22 +753,14 @@ fn run_git(git_bin: &str, argv: &[String]) -> Result<String> {
 }
 
 /// Everything about the Fetch stage's public workflow
-/// (`GitRepo::fetch`/`fetch_batch`/`read_fetch_record`) lives in
+/// (`fetch_fork`/`fetch_batch`/`read_fetch_record`) lives in
 /// `tests/fetch.rs` as an integration test instead (see that file's doc
-/// comment). These stay here because the `git`-argv builders and `run_git`
-/// are private -- there's no way to reach them from outside the crate.
+/// comment). These stay here because the `git`-argv builders, `run_git`
+/// and the commit-selection functions are private -- there's no way to
+/// reach them from outside the crate.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clone_argv_is_a_full_clone_to_dest() {
-        let argv = clone_argv("https://github.com/org/repo.git", Path::new("/tmp/dest"));
-        assert_eq!(
-            argv,
-            vec!["clone", "https://github.com/org/repo.git", "/tmp/dest"]
-        );
-    }
 
     #[test]
     fn default_branch_argv_reads_symbolic_head() {
@@ -460,11 +772,11 @@ mod tests {
     }
 
     #[test]
-    fn last_commit_before_argv_searches_the_given_branch_up_to_the_deadline() {
+    fn last_commit_argv_caps_at_the_deadline_when_one_is_given() {
         let deadline: Zoned = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
             .parse()
             .unwrap();
-        let argv = last_commit_before_argv(Path::new("/tmp/dest"), "main", &deadline);
+        let argv = last_commit_argv(Path::new("/tmp/dest"), "main", Some(&deadline));
         assert_eq!(
             argv,
             vec![
@@ -476,6 +788,15 @@ mod tests {
                 "--format=%H",
                 "main",
             ]
+        );
+    }
+
+    #[test]
+    fn last_commit_argv_without_a_deadline_takes_the_branch_tip() {
+        let argv = last_commit_argv(Path::new("/tmp/dest"), "main", None);
+        assert_eq!(
+            argv,
+            vec!["-C", "/tmp/dest", "log", "-1", "--format=%H", "main"]
         );
     }
 
@@ -497,8 +818,9 @@ mod tests {
         assert!(err.to_string().contains("failed to run"));
     }
 
-    // `GitRepo::fetch` itself needs real network -- [deferred]. The
-    // functions below don't, so they're tested directly.
+    // `fetch_fork` itself needs real network -- [deferred]. The functions
+    // below don't (push events are passed in, not fetched), so they're
+    // tested directly.
 
     fn git(dir: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
@@ -553,7 +875,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-        assert_eq!(fallback.sha, sha);
+        assert_eq!(fallback.sha, sha.as_str());
         assert!(fallback.timestamp.push_event.is_none());
         assert_eq!(
             fallback.timestamp.commit_date,
@@ -566,7 +888,7 @@ mod tests {
         let repo = init_repo();
         // Backdated to look on-time -- the verified event should still win.
         let sha = commit(repo.path(), "a.txt", "2026-01-01T00:00:00Z");
-        let events = vec![github_events::PushEvent {
+        let events = vec![PushEvent {
             created_at: "2026-02-12T00:00:00Z".parse().unwrap(),
             r#ref: "refs/heads/main".to_string(),
             head: sha.clone(),
@@ -581,7 +903,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(fallback.sha, sha);
+        assert_eq!(fallback.sha, sha.as_str());
         assert_eq!(
             fallback.timestamp.push_event,
             Some("2026-02-12T00:00:00Z".parse().unwrap())
@@ -601,56 +923,119 @@ mod tests {
     }
 
     #[test]
-    fn resolve_unpinned_blessed_tag_bypasses_the_deadline_entirely() {
+    fn resolve_commit_blessed_tag_bypasses_the_deadline_entirely() {
         let repo = init_repo();
         let sha = commit(repo.path(), "a.txt", "2026-03-01T00:00:00Z");
         git(repo.path(), &["tag", BLESS_TAG]);
 
-        // Deadline is well before the (blessed) commit -- an `Unblessed`
-        // resolution would reject this outright.
-        let (resolved_sha, submission_date) = resolve_unpinned(
-            repo.path(),
-            "local-repo-not-a-github-url",
-            "main",
-            &deadline("2026-01-01T00:00:00Z"),
-        )
-        .unwrap();
+        // Deadline is well before the (blessed) commit -- unblessed, this
+        // would resolve as `Late`.
+        let date =
+            resolve_commit(repo.path(), "main", &deadline("2026-01-01T00:00:00Z"), &[]).unwrap();
 
-        assert_eq!(resolved_sha, sha);
-        assert!(matches!(submission_date, SubmissionDate::Blessed { .. }));
+        assert!(matches!(date, SubmissionDate::Blessed { .. }));
+        assert_eq!(date.graded().unwrap().sha, sha.as_str());
     }
 
     #[test]
-    fn resolve_unpinned_unblessed_respects_the_deadline() {
+    fn resolve_commit_on_time_respects_the_deadline() {
         let repo = init_repo();
         let on_time = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
         commit(repo.path(), "b.txt", "2026-02-20T00:00:00Z");
 
-        let (sha, submission_date) = resolve_unpinned(
-            repo.path(),
-            "local-repo-not-a-github-url",
-            "main",
-            &deadline("2026-02-14T00:00:00Z"),
-        )
-        .unwrap();
+        let date =
+            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
 
-        assert_eq!(sha, on_time);
-        assert!(matches!(submission_date, SubmissionDate::Unblessed(_)));
+        assert!(matches!(date, SubmissionDate::OnTime(_)));
+        assert_eq!(date.graded().unwrap().sha, on_time.as_str());
+    }
+
+    /// Fetch records lateness rather than refusing: the work lands on disk
+    /// and grading decides what it's worth.
+    #[test]
+    fn resolve_commit_takes_the_latest_commit_when_nothing_is_on_time() {
+        let repo = init_repo();
+        commit(repo.path(), "a.txt", "2026-02-20T00:00:00Z");
+        let latest = commit(repo.path(), "b.txt", "2026-02-21T00:00:00Z");
+
+        let date =
+            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
+
+        assert!(matches!(date, SubmissionDate::Late(_)));
+        assert_eq!(date.graded().unwrap().sha, latest.as_str());
     }
 
     #[test]
-    fn resolve_unpinned_unblessed_errs_when_nothing_predates_the_deadline() {
+    fn resolve_commit_reports_a_fork_with_no_commits_as_empty() {
         let repo = init_repo();
-        commit(repo.path(), "a.txt", "2026-02-20T00:00:00Z");
 
-        let err = resolve_unpinned(
-            repo.path(),
-            "local-repo-not-a-github-url",
-            "main",
-            &deadline("2026-02-14T00:00:00Z"),
-        )
-        .unwrap_err();
+        let date =
+            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
 
-        assert!(err.contains("no commit on main"));
+        assert!(matches!(date, SubmissionDate::Empty));
+        assert!(date.graded().is_none());
+    }
+
+    #[test]
+    fn blessing_keeps_the_on_time_commit_as_the_fallback() {
+        let repo = init_repo();
+        let on_time = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
+        let late = commit(repo.path(), "b.txt", "2026-02-20T00:00:00Z");
+        git(repo.path(), &["tag", BLESS_TAG]);
+
+        let date =
+            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
+
+        assert_eq!(date.graded().unwrap().sha, late.as_str());
+        let SubmissionDate::Blessed { fallback, .. } = &date else {
+            panic!("expected a blessed submission, got {date:?}");
+        };
+        assert_eq!(fallback.as_ref().unwrap().sha, on_time.as_str());
+    }
+
+    #[test]
+    fn late_by_measures_against_the_deadline_on_the_record() {
+        let record = FetchRecord {
+            fetched_at: Timestamp::now(),
+            deadline: deadline("2026-02-14T00:00:00Z"),
+            university_id: UniversityId::new("A123"),
+            forks: Vec::new(),
+            metadata: BTreeMap::new(),
+            result: FetchResult::Ok {
+                submission_date: SubmissionDate::Late(Commit {
+                    sha: CommitSha::new("abc123"),
+                    timestamp: CommitTimestamp {
+                        push_event: Some("2026-02-14T03:00:00Z".parse().unwrap()),
+                        // Backdated to look on time -- the verified push
+                        // time is what lateness is measured from.
+                        commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
+                    },
+                }),
+            },
+        };
+
+        assert_eq!(record.late_by().unwrap().as_hours(), 3);
+    }
+
+    #[test]
+    fn late_by_is_none_for_an_on_time_submission() {
+        let record = FetchRecord {
+            fetched_at: Timestamp::now(),
+            deadline: deadline("2026-02-14T00:00:00Z"),
+            university_id: UniversityId::new("A123"),
+            forks: Vec::new(),
+            metadata: BTreeMap::new(),
+            result: FetchResult::Ok {
+                submission_date: SubmissionDate::OnTime(Commit {
+                    sha: CommitSha::new("abc123"),
+                    timestamp: CommitTimestamp {
+                        push_event: None,
+                        commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
+                    },
+                }),
+            },
+        };
+
+        assert!(record.late_by().is_none());
     }
 }

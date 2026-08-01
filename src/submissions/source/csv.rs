@@ -2,16 +2,26 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::id::StudentId;
-use crate::submissions::{GitRepo, Submission};
+use crate::id::{StudentId, UniversityId};
 
-const KNOWN_COLUMNS: &[&str] = &["student_id", "repo_url", "ref"];
+const KNOWN_COLUMNS: &[&str] = &["student_id", "university_id"];
 
-/// A CSV roster: `student_id,repo_url,ref,email,section,...`. Columns
-/// beyond `student_id`/`repo_url`/`ref` are carried into
-/// `Submission::metadata`. `repo_url`/`ref` become the `GitRepo` to fetch
-/// (see `GitRepo::fetch`: an unset `ref` is resolved at fetch time via
-/// push-time deadline selection, a pinned one is checked out exactly).
+/// One roster row.
+#[derive(Debug, Clone)]
+pub struct RosterEntry {
+    /// The student's GitHub handle: what their fork is matched by, and the
+    /// name their checkout dir gets (see [`crate::id::StudentId`]).
+    pub student_id: StudentId,
+    pub university_id: UniversityId,
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// A CSV roster: `student_id,university_id,email,section,...`. Columns
+/// beyond the two required ones are carried into `RosterEntry::metadata`
+/// and land verbatim in the fetch record. No repo column -- submissions
+/// are found by listing the upstream repo's forks and matching
+/// `student_id` against each fork's owner (see
+/// [`crate::submissions::forks`]).
 pub struct CsvRoster {
     path: PathBuf,
 }
@@ -21,12 +31,12 @@ impl CsvRoster {
         Self { path: path.into() }
     }
 
-    pub fn submissions(&self) -> Result<Vec<Submission>> {
+    pub fn roster(&self) -> Result<Vec<RosterEntry>> {
         read_roster(&self.path)
     }
 }
 
-fn read_roster(path: &Path) -> Result<Vec<Submission>> {
+fn read_roster(path: &Path) -> Result<Vec<RosterEntry>> {
     let mut reader = csv::Reader::from_path(path).map_err(|source| Error::Csv {
         path: path.to_path_buf(),
         source: Box::new(source),
@@ -39,7 +49,7 @@ fn read_roster(path: &Path) -> Result<Vec<Submission>> {
         })?
         .clone();
 
-    let mut submissions = Vec::new();
+    let mut entries = Vec::new();
     for result in reader.records() {
         let record = result.map_err(|source| Error::Csv {
             path: path.to_path_buf(),
@@ -47,19 +57,13 @@ fn read_roster(path: &Path) -> Result<Vec<Submission>> {
         })?;
 
         let mut student_id = None;
-        let mut repo_url = None;
-        let mut r#ref = None;
+        let mut university_id = None;
         let mut metadata = BTreeMap::new();
 
         for (header, value) in headers.iter().zip(record.iter()) {
             match header {
-                "student_id" => student_id = Some(value.to_string()),
-                "repo_url" => repo_url = Some(value.to_string()),
-                "ref" => {
-                    if !value.is_empty() {
-                        r#ref = Some(value.to_string());
-                    }
-                }
+                "student_id" => student_id = non_empty(value),
+                "university_id" => university_id = non_empty(value),
                 other if !KNOWN_COLUMNS.contains(&other) => {
                     metadata.insert(other.to_string(), value.to_string());
                 }
@@ -67,25 +71,31 @@ fn read_roster(path: &Path) -> Result<Vec<Submission>> {
             }
         }
 
-        let student_id = student_id.ok_or_else(|| {
-            Error::InvalidSpec(format!("roster {path:?} missing student_id column"))
-        })?;
-        let student_id = StudentId::new(student_id);
-        let repo_url = repo_url.ok_or_else(|| {
-            Error::InvalidSpec(format!("roster {path:?} missing repo_url column"))
-        })?;
+        let student_id = student_id.ok_or_else(|| missing(path, "student_id", &record))?;
+        let university_id = university_id.ok_or_else(|| missing(path, "university_id", &record))?;
 
-        submissions.push(Submission {
-            student_id,
-            git: GitRepo {
-                url: repo_url,
-                r#ref,
-            },
+        entries.push(RosterEntry {
+            student_id: StudentId::new(student_id),
+            university_id: UniversityId::new(university_id),
             metadata,
         });
     }
 
-    Ok(submissions)
+    Ok(entries)
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// One message for both "no such column" and "the cell is blank" -- the
+/// fix is the same either way, and the row is quoted so it's findable.
+fn missing(path: &Path, column: &str, record: &csv::StringRecord) -> Error {
+    Error::InvalidSpec(format!(
+        "roster {path:?} is missing a {column} for row {:?}",
+        record.iter().collect::<Vec<_>>().join(",")
+    ))
 }
 
 #[cfg(test)]
@@ -94,39 +104,48 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn parses_sample_roster_with_extra_columns_as_metadata() {
-        let mut file = tempfile_with_contents(
-            "student_id,repo_url,ref,email,section\n\
-             alice,https://github.com/alice/cse130-hw3.git,,alice@x.edu,A\n\
-             bob,https://github.com/bob/cse130-hw3.git,main,bob@x.edu,B\n",
+    fn parses_a_roster_with_extra_columns_as_metadata() {
+        let file = tempfile_with_contents(
+            "student_id,university_id,email,section\n\
+             alice-gh,A12345678,alice@x.edu,A\n\
+             bob-gh,A87654321,bob@x.edu,B\n",
         );
-        let submissions = read_roster(file.path()).unwrap();
-        file.flush().unwrap();
+        let entries = read_roster(file.path()).unwrap();
 
-        assert_eq!(submissions.len(), 2);
+        assert_eq!(entries.len(), 2);
 
-        assert_eq!(submissions[0].student_id, "alice");
+        assert_eq!(entries[0].student_id, "alice-gh");
+        assert_eq!(entries[0].university_id, "A12345678");
         assert_eq!(
-            submissions[0].git.url,
-            "https://github.com/alice/cse130-hw3.git"
-        );
-        assert_eq!(submissions[0].git.r#ref, None);
-        assert_eq!(
-            submissions[0].metadata.get("email"),
+            entries[0].metadata.get("email"),
             Some(&"alice@x.edu".to_string())
         );
-        assert_eq!(
-            submissions[0].metadata.get("section"),
-            Some(&"A".to_string())
-        );
+        assert_eq!(entries[0].metadata.get("section"), Some(&"A".to_string()));
+        assert!(!entries[0].metadata.contains_key("university_id"));
 
-        assert_eq!(submissions[1].student_id, "bob");
-        assert_eq!(submissions[1].git.r#ref, Some("main".to_string()));
+        assert_eq!(entries[1].student_id, "bob-gh");
+        assert_eq!(entries[1].university_id, "A87654321");
+    }
+
+    #[test]
+    fn a_blank_university_id_is_an_error_naming_the_row() {
+        let file = tempfile_with_contents("student_id,university_id\nalice-gh,\n");
+        let err = read_roster(file.path()).unwrap_err().to_string();
+        assert!(err.contains("university_id"), "{err}");
+        assert!(err.contains("alice-gh"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_column_is_an_error() {
+        let file = tempfile_with_contents("student_id,email\nalice-gh,alice@x.edu\n");
+        let err = read_roster(file.path()).unwrap_err().to_string();
+        assert!(err.contains("university_id"), "{err}");
     }
 
     fn tempfile_with_contents(contents: &str) -> tempfile::NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(contents.as_bytes()).unwrap();
+        file.flush().unwrap();
         file
     }
 }

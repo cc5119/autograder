@@ -111,6 +111,8 @@ impl<'de, Tag> Deserialize<'de> for Id<Tag> {
 pub enum StudentTag {}
 pub enum AssignmentTag {}
 pub enum RunTag {}
+pub enum UniversityTag {}
+pub enum CommitTag {}
 
 /// A student's roster id, and also what identifies one submission
 /// directory under a submissions dir: `fetch` names each checkout after
@@ -121,6 +123,13 @@ pub enum RunTag {}
 pub type StudentId = Id<StudentTag>;
 pub type AssignmentId = Id<AssignmentTag>;
 pub type RunId = Id<RunTag>;
+
+/// A student's id in the university's grade system -- carried through
+/// fetch so exports can join on it, never used to name anything on disk.
+pub type UniversityId = Id<UniversityTag>;
+
+/// A full 40-char git commit sha.
+pub type CommitSha = Id<CommitTag>;
 
 #[cfg(test)]
 mod tests {

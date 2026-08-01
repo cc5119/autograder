@@ -54,36 +54,42 @@ pub enum Command {
         /// Path to the assignment repo.
         assignment: PathBuf,
     },
-    /// Run the Fetch stage alone: lands each submission at
-    /// `<out>/<student_id>/` and records the outcome at
-    /// `<out>/.fetch/<student_id>.json`, without running
-    /// Prepare/Evaluate/Grade.
+    /// Fetch submissions: every fork of the assignment repo a roster
+    /// student can push to.
     Fetch {
         /// Path to the (private) assignment repo.
+        #[arg(long)]
         assignment: PathBuf,
-        /// Roster CSV: `student_id,repo_url,ref,...`.
+        /// The public assignment repo students forked, as `owner/name`.
+        #[arg(long)]
+        repo: crate::submissions::forks::Upstream,
+        /// Roster CSV: `student_id,university_id,...`, where `student_id`
+        /// is the student's GitHub handle and any further columns are
+        /// carried into the fetch record.
         #[arg(long)]
         roster: PathBuf,
-        /// Destination directory for fetched submissions (flat: one
-        /// `<student_id>/` subdirectory per student, plus a `.fetch/`
-        /// directory of per-student fetch records).
+        /// Destination directory
         #[arg(long)]
         out: PathBuf,
         /// Override the deadline used for push-time commit selection
         /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long)]
         as_of: Option<jiff::Zoned>,
+        /// Skip the confirmation prompt. Required when stdout isn't a
+        /// terminal, since fetching overwrites existing checkouts.
+        #[arg(long)]
+        yes: bool,
+        /// How many submissions to fetch at once. Lower it if GitHub
+        /// starts refusing the concurrent requests.
+        #[arg(short = 'j', long, default_value = "8")]
+        jobs: std::num::NonZeroUsize,
     },
-    /// Run Prepare -> Evaluate and persist raw results, one submission
-    /// directory at a time, and never touching how (or whether) it was
-    /// fetched. Never fetches itself and never scores -- run `autograder
-    /// grade` afterwards for that.
+    /// Evaluate submissions
     Evaluate {
         /// Path to the (private) assignment repo.
+        #[arg(long)]
         assignment: PathBuf,
-        /// A directory containing one subdirectory per submission (e.g.
-        /// `autograder fetch --out`'s own output) -- any dot-prefixed
-        /// entries (`.fetch/`, `.eval/`, ...) are skipped.
+        /// Directory containing submissions
         #[arg(long)]
         submissions: PathBuf,
         /// Grade using the host-process "local sandbox" instead of podman

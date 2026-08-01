@@ -1,3 +1,3 @@
 pub mod csv;
 
-pub use csv::CsvRoster;
+pub use csv::{CsvRoster, RosterEntry};
