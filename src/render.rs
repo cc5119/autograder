@@ -1,7 +1,9 @@
-//! Human-facing formatting shared by the commands that print records --
-//! `fetch`'s confirmation manifest and `show`. Machine-readable output
-//! (the JSON records, `report`) keeps its own timestamps untouched.
+//! Human-facing formatting and progress indicators shared by the commands
+//! that print records -- `fetch`'s confirmation manifest, `register`'s, and
+//! `show`. Machine-readable output (the JSON records, `report`) keeps its
+//! own timestamps untouched.
 
+use indicatif::{ProgressBar, ProgressStyle};
 use jiff::{Timestamp, Zoned};
 
 /// "Sat 14 Feb 2026, 23:59 America/Santiago" -- the IANA zone rather than
@@ -47,4 +49,29 @@ fn duration_secs(seconds: u64) -> String {
 
 fn plural(n: u64, unit: &str) -> String {
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// A steady-ticking spinner on one rewritten line. `indicatif` draws to
+/// stderr and hides itself when that isn't a terminal, so piped output
+/// stays clean.
+pub(crate) fn spinner() -> ProgressBar {
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::with_template("{spinner} {msg}").expect("static template is valid"),
+    );
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+    progress
+}
+
+/// The same one line as [`spinner`], for work whose total is known up
+/// front so it can carry a count and an ETA.
+pub(crate) fn bar(total: u64) -> ProgressBar {
+    let progress = ProgressBar::new(total);
+    progress.set_style(
+        ProgressStyle::with_template("{spinner} [{bar:22}] {pos}/{len}  eta {eta}")
+            .expect("static template is valid")
+            .progress_chars("█░"),
+    );
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+    progress
 }

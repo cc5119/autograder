@@ -6,6 +6,7 @@ pub mod init;
 pub mod lock;
 pub mod publish;
 pub mod push;
+pub mod register;
 pub mod show;
 pub mod vendor;
 
@@ -49,6 +50,12 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             mode,
         } => publish::run(&assignment, &out, mode.into()),
         Command::Push { dir } => push::run(&dir),
+        Command::Register {
+            roster,
+            org,
+            team,
+            yes,
+        } => register::run(&roster, &org, &team, yes),
     }
 }
 

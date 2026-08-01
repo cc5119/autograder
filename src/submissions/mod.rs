@@ -24,7 +24,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use jiff::{Timestamp, Zoned};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -33,6 +32,7 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::{read_json, write_json};
 use crate::id::{CommitSha, GithubUser, StudentId};
+use crate::render::{bar, spinner};
 use crate::submissions::forks::{Fork, Upstream};
 use crate::submissions::github_events::PushEvent;
 use crate::submissions::source::{CsvRoster, RosterEntry};
@@ -616,31 +616,6 @@ fn fetch_row(row: &PlanRow, out_dir: &Path, deadline: &Zoned) -> Result<(GithubU
     };
     write_fetch_record(out_dir, &github_user, &record)?;
     Ok((github_user, record))
-}
-
-/// A steady-ticking spinner on one rewritten line. `indicatif` draws to
-/// stderr and hides itself when that isn't a terminal, so piped output
-/// stays clean.
-fn spinner() -> ProgressBar {
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(
-        ProgressStyle::with_template("{spinner} {msg}").expect("static template is valid"),
-    );
-    progress.enable_steady_tick(std::time::Duration::from_millis(100));
-    progress
-}
-
-/// The same one line as [`spinner`], for work whose total is known up
-/// front so it can carry a count and an ETA.
-fn bar(total: u64) -> ProgressBar {
-    let progress = ProgressBar::new(total);
-    progress.set_style(
-        ProgressStyle::with_template("{spinner} [{bar:22}] {pos}/{len}  eta {eta}")
-            .expect("static template is valid")
-            .progress_chars("█░"),
-    );
-    progress.enable_steady_tick(std::time::Duration::from_millis(100));
-    progress
 }
 
 fn shared_message(shared: &[&forks::SharedFork], student: &GithubUser) -> String {

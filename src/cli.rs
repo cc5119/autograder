@@ -54,6 +54,25 @@ pub enum Command {
         /// Path to the assignment repo.
         assignment: PathBuf,
     },
+    /// Invite every roster student to a GitHub org and add them to one of
+    /// its teams. Add-only: nobody is ever removed.
+    Register {
+        /// Roster CSV: `github_user,student_id,...`, where `github_user`
+        /// is the student's GitHub handle.
+        #[arg(long)]
+        roster: PathBuf,
+        /// The GitHub org to invite students into.
+        #[arg(long)]
+        org: String,
+        /// The team within `--org` to add them to, by slug or display
+        /// name. Must already exist.
+        #[arg(long)]
+        team: String,
+        /// Skip the confirmation prompt. Required when stdout isn't a
+        /// terminal, since registering emails real people.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Fetch submissions: every fork of the assignment repo a roster
     /// student can push to.
     Fetch {
