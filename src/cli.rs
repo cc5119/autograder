@@ -154,11 +154,12 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "starter")]
         mode: PublishModeArg,
     },
-    /// Create a private GitHub repo for a published starter tree and push
-    /// it there.
+    /// Create a private GitHub repo for a published tree and push it
+    /// there. Prompts for the semester and whether the tree is the starter
+    /// or the solution, which picks the repo's `-starter`/`-sol` suffix.
     Push {
-        /// Path to an already-published starter tree (`autograder
-        /// publish`'s `--out`).
+        /// Path to an already-published tree (`autograder publish`'s
+        /// `--out`), of either mode.
         dir: PathBuf,
     },
 }

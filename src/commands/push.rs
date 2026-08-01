@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use dialoguer::{Confirm, Input};
+use dialoguer::{Confirm, Input, Select};
 use jiff::Zoned;
 
 use crate::error::{Error, Result};
@@ -10,15 +10,35 @@ use crate::spec::Spec;
 const OWNER: &str = "cc5119";
 const BOOKMARK: &str = "main";
 
-/// Creates a private GitHub repo named `<year>-<semester>-<id>-starter` and pushes `dir` there.
-/// Initializes `dir` as a repo (preferring `jj` over `git` if it's on `PATH`) only if it isn't
-/// one already.
+/// Which published tree `dir` holds, and so which repo it's pushed to.
+/// Asked at the prompt rather than taken as a flag -- `push` is interactive
+/// either way (see [`prompt_semester`]), and nothing about a published tree
+/// says which view of the private package produced it.
+#[derive(Debug, Clone, Copy)]
+enum PushMode {
+    Starter,
+    Solution,
+}
+
+impl PushMode {
+    /// The repo-name suffix: `2026-01-hw3-starter` / `2026-01-hw3-sol`.
+    fn suffix(&self) -> &'static str {
+        match self {
+            PushMode::Starter => "starter",
+            PushMode::Solution => "sol",
+        }
+    }
+}
+
+/// Creates a private GitHub repo named `<year>-<semester>-<id>-<starter|sol>` and pushes `dir`
+/// there. Initializes `dir` as a repo (preferring `jj` over `git` if it's on `PATH`) only if it
+/// isn't one already.
 pub fn run(dir: &Path) -> Result<()> {
     let vcs = Vcs::detect();
     if vcs.already_has_a_local_bookmark(dir) {
         return Err(Error::Other(format!(
             "{} already has a {BOOKMARK:?} bookmark/branch -- `push` only initializes a fresh \
-             starter repo, it never updates an existing one",
+             repo, it never updates an existing one",
             dir.display()
         )));
     }
@@ -27,14 +47,15 @@ pub fn run(dir: &Path) -> Result<()> {
     let id = spec.assignment.id;
 
     let semester = prompt_semester()?;
+    let mode = prompt_mode()?;
     let year = Zoned::now().year();
-    let repo_name = format!("{year}-{semester:02}-{id}-starter");
+    let repo_name = format!("{year}-{semester:02}-{id}-{}", mode.suffix());
     let full_name = format!("{OWNER}/{repo_name}");
 
     if remote_repo_exists(&full_name)? {
         return Err(Error::Other(format!(
-            "{full_name} already exists on GitHub -- `push` only initializes a fresh starter \
-             repo, it never updates an existing one"
+            "{full_name} already exists on GitHub -- `push` only initializes a fresh repo, it \
+             never updates an existing one"
         )));
     }
 
@@ -72,6 +93,21 @@ fn prompt_semester() -> Result<u8> {
         })
         .interact_text()
         .map_err(|source| Error::Other(format!("failed to read semester: {source}")))
+}
+
+/// Defaults to `Starter`, the one pushed every term; a solution push is
+/// the deliberate exception.
+fn prompt_mode() -> Result<PushMode> {
+    let selected = Select::new()
+        .with_prompt("Push as")
+        .items(["starter", "solution"])
+        .default(0)
+        .interact()
+        .map_err(|source| Error::Other(format!("failed to read push mode: {source}")))?;
+    Ok(match selected {
+        0 => PushMode::Starter,
+        _ => PushMode::Solution,
+    })
 }
 
 fn remote_repo_exists(full_name: &str) -> Result<bool> {
