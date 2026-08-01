@@ -1,22 +1,25 @@
-use crate::model::{EvalStatus, EvaluationResult, Grade, TestOutcome, TestResult, TestStatus};
+use crate::model::{
+    EvalStatus, EvaluationResult, Grade, GradeOutcome, TestOutcome, TestResult, TestStatus,
+};
 use crate::spec::{Scoring, ScoringFormula};
 
 /// Pure scoring: `EvaluationResult` + policy -> per-student `Grade`. No
 /// untrusted code runs here, and no pre-declared test-name table is
 /// consulted -- every test `eval` reports feeds the sum, whatever its
-/// runtime name. `Grade.score` is `None` when the build failed or the run
-/// left no readable results -- neither leaves a trustworthy set of tests
-/// to score.
+/// runtime name. A result with no trustworthy tests to score comes back
+/// `GradeOutcome::Unscored` saying why.
 pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
     let tests: &[TestResult] = match &eval.status {
         EvalStatus::Ran {
             tests: TestOutcome::Tests(tests),
             ..
         } => tests,
-        _ => {
+        status => {
             return Grade {
                 student_id: eval.student_id,
-                score: None,
+                outcome: GradeOutcome::Unscored {
+                    reason: unscored_reason(status),
+                },
             };
         }
     };
@@ -37,7 +40,24 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
 
     Grade {
         student_id: eval.student_id,
-        score: Some(score),
+        outcome: GradeOutcome::Scored {
+            score,
+            passed: tests
+                .iter()
+                .filter(|t| t.status == TestStatus::Pass)
+                .count(),
+            total: tests.len(),
+        },
+    }
+}
+
+/// Why a result wasn't scorable, in the same words `evaluate` and `show`
+/// already use for it. The process status stays in: "timed out" and
+/// "exited (0) but produced nothing" are different problems.
+fn unscored_reason(status: &EvalStatus) -> String {
+    match status {
+        EvalStatus::BuildFailed(build) => format!("build failed: {}", build.label()),
+        EvalStatus::Ran { process, tests } => format!("{} ({})", process.describe(), tests.label()),
     }
 }
 

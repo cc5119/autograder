@@ -102,11 +102,12 @@ pub enum Command {
         #[arg(long)]
         local_sandbox: bool,
     },
-    /// Compute scores from persisted `evaluate` results (`<submissions>/.eval/`):
+    /// Compute scores from persisted `evaluate` results and writes
     /// applies the current scoring policy fresh every time, and writes a
     /// gradebook CSV to `<submissions>/.grades/grades.csv`.
     Grade {
         /// Path to the assignment repo (for the current scoring policy).
+        #[arg(long)]
         assignment: PathBuf,
         /// The same directory `autograder evaluate --submissions` was
         /// pointed at.
@@ -123,9 +124,7 @@ pub enum Command {
         /// as its siblings.
         submission: PathBuf,
     },
-    /// Publish either the starter/template repo (for distribution to
-    /// students) or the solution repo (real implementations, kept out of
-    /// the harness) from the private instructor workspace.
+    /// Publish either the starter or solution repo from the private instructor workspace.
     Publish {
         /// Path to the private instructor workspace.
         assignment: PathBuf,

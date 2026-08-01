@@ -17,7 +17,7 @@ pub fn render(grades: &[Grade]) -> Result<String> {
         writer
             .write_record([
                 grade.student_id.to_string(),
-                grade.score.map(|s| s.to_string()).unwrap_or_default(),
+                grade.score().map(|s| s.to_string()).unwrap_or_default(),
             ])
             .map_err(|source| Error::Csv {
                 path: PathBuf::from("<gradebook>"),
@@ -39,11 +39,17 @@ mod tests {
         let grades = vec![
             Grade {
                 student_id: "alice".into(),
-                score: Some(10.0),
+                outcome: crate::model::GradeOutcome::Scored {
+                    score: 10.0,
+                    passed: 3,
+                    total: 3,
+                },
             },
             Grade {
                 student_id: "bob".into(),
-                score: None,
+                outcome: crate::model::GradeOutcome::Unscored {
+                    reason: "build failed: exited (101)".to_string(),
+                },
             },
         ];
 

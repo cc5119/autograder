@@ -176,7 +176,30 @@ impl EvaluationResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grade {
     pub student_id: StudentId,
-    /// `None` when the build failed or the run left no readable results --
-    /// neither leaves a trustworthy set of tests to score.
-    pub score: Option<f64>,
+    pub outcome: GradeOutcome,
+}
+
+/// Whether there was anything to score, and the evidence either way. One
+/// enum rather than an `Option<f64>` beside a separate explanation: the
+/// same condition decides both, so this is the only place it's decided.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradeOutcome {
+    Scored {
+        score: f64,
+        passed: usize,
+        total: usize,
+    },
+    /// The build failed or the run left no readable results -- neither
+    /// leaves a trustworthy set of tests to score. `reason` says which.
+    Unscored { reason: String },
+}
+
+impl Grade {
+    pub fn score(&self) -> Option<f64> {
+        match self.outcome {
+            GradeOutcome::Scored { score, .. } => Some(score),
+            GradeOutcome::Unscored { .. } => None,
+        }
+    }
 }

@@ -5,7 +5,7 @@ use crate::exec::fs;
 use crate::exec::json::read_json;
 use crate::model::EvaluationResult;
 use crate::pipeline::grade;
-use crate::report::csv;
+use crate::report::{csv, summary};
 use crate::spec::Spec;
 
 /// Where `evaluate_batch` persisted results, and where this command writes
@@ -30,9 +30,11 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
         .collect();
 
     let grades_dir = submissions.join(GRADES_DIR);
+    let gradebook = grades_dir.join(GRADES_FILE);
     fs::create_dir_all(&grades_dir)?;
-    fs::write(&grades_dir.join(GRADES_FILE), csv::render(&grades)?)?;
+    fs::write(&gradebook, csv::render(&grades)?)?;
 
+    print!("{}", summary::render(&grades, &gradebook));
     Ok(())
 }
 
