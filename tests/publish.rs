@@ -4,9 +4,9 @@
 //! checking -- never a second, hand-written copy of the schema/template
 //! shape.
 
-use autograder::error::Error;
-use autograder::package::publish::{PublishMode, publish};
+use autograder::package::publish::publish;
 use autograder::spec::SPEC_FILE;
+use autograder::{error::Error, package::PublishMode};
 
 use crate::common::{library_package, write};
 

@@ -48,8 +48,8 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             assignment,
             out,
             mode,
-        } => publish::run(&assignment, &out, mode.into()),
-        Command::Push { dir } => push::run(&dir),
+        } => publish::run(&assignment, &out, mode.map(Into::into)),
+        Command::Push { assignment } => push::run(&assignment),
         Command::Register {
             roster,
             org,

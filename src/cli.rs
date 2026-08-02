@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::package::publish::PublishMode;
+use crate::{package::PublishMode, submissions};
 
 #[derive(Debug, Parser)]
 #[command(name = "autograder", about = "Rust assignment autograder")]
@@ -84,7 +84,7 @@ pub enum Command {
         assignment: PathBuf,
         /// The public assignment repo students forked, as `owner/name`.
         #[arg(long)]
-        repo: crate::submissions::forks::Upstream,
+        repo: submissions::forks::Upstream,
         /// Roster CSV: `github_user,student_id,...`, where `github_user`
         /// is the student's GitHub handle and any further columns are
         /// carried into the fetch record.
@@ -146,7 +146,8 @@ pub enum Command {
         /// as its siblings.
         submission: PathBuf,
     },
-    /// Publish either the starter or solution repo from the private instructor workspace.
+    /// Publish either the starter or solution repo from the private
+    /// instructor workspace. Asks which of the two unless `--mode` says.
     Publish {
         /// Path to the private instructor workspace. Defaults to the
         /// current directory.
@@ -155,17 +156,17 @@ pub enum Command {
         /// Output directory for the published tree.
         #[arg(long)]
         out: PathBuf,
-        /// Which view of the private workspace to publish.
-        #[arg(long, value_enum, default_value = "starter")]
-        mode: PublishModeArg,
+        /// Which view of the private workspace to publish. Asked at a
+        /// prompt when omitted.
+        #[arg(long, value_enum)]
+        mode: Option<PublishModeArg>,
     },
     /// Create a private GitHub repo for a published tree and push it
     /// there. Prompts for the semester and whether the tree is the starter
-    /// or the solution, which picks the repo's `-starter`/`-sol` suffix.
+    /// or the solution.
     Push {
-        /// Path to an already-published tree (`autograder publish`'s
-        /// `--out`), of either mode.
-        dir: PathBuf,
+        #[arg(default_value = ".")]
+        assignment: PathBuf,
     },
 }
 

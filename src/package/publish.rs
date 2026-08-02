@@ -28,27 +28,13 @@ use serde::Deserialize;
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::overlay::{self, Context, MatchedFile, Rule};
+use crate::package::PublishMode;
 use crate::spec::{self, Spec};
 use crate::{deps, package, str_map};
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
     pub out_dir: PathBuf,
-}
-
-/// Which view of the private instructor package `publish` produces.
-/// `{harness}/tests/**` is always resolved as the student view regardless
-/// of `mode` -- students (and anyone the solution is shared with) never see
-/// the adversarial judge tests -- only `{id}/src/**`'s resolution direction
-/// changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublishMode {
-    /// The starter/template repo: `todo!()`-style stubs, reference-only
-    /// helpers and adversarial tests stripped out.
-    Starter,
-    /// The reference solution: real implementations, reference-only
-    /// helpers kept; only the harness's adversarial tests are stripped.
-    Solution,
 }
 
 fn rules(mode: PublishMode) -> Vec<Rule> {

@@ -4,9 +4,16 @@ use dialoguer::Confirm;
 
 use crate::error::{Error, Result};
 use crate::exec::fs;
-use crate::package::publish::{self, PublishMode};
+use crate::package::PublishMode;
+use crate::package::publish;
 
-pub fn run(assignment: &Path, out: &Path, mode: PublishMode) -> Result<()> {
+/// `mode` is `None` when `--mode` wasn't given, which is the ordinary
+/// interactive case: it gets asked for rather than assumed.
+pub fn run(assignment: &Path, out: &Path, mode: Option<PublishMode>) -> Result<()> {
+    let mode = match mode {
+        Some(mode) => mode,
+        None => PublishMode::prompt("Publish as")?,
+    };
     if out.is_dir() && !fs::is_empty_dir(out)? && !confirm_overwrite(out)? {
         println!("aborted");
         return Ok(());

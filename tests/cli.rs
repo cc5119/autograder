@@ -25,7 +25,17 @@ fn init_then_publish_with_relative_paths_and_matching_dir_and_id_names() {
     assert!(init_status.success(), "autograder init failed");
 
     let publish_output = autograder_bin()
-        .args(["publish", "--assignment", "hw0", "--out", "hw0-starter"])
+        // `--mode` explicitly: without it `publish` asks, and this runs
+        // with no terminal to ask on.
+        .args([
+            "publish",
+            "--assignment",
+            "hw0",
+            "--out",
+            "hw0-starter",
+            "--mode",
+            "starter",
+        ])
         .current_dir(cwd.path())
         .output()
         .unwrap();
