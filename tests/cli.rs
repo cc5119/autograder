@@ -14,9 +14,9 @@ fn init_then_publish_with_relative_paths_and_matching_dir_and_id_names() {
     let cwd = tempfile::tempdir().unwrap();
 
     // Mirrors the exact reported regression: `autograder init --id hw0
-    // hw0` followed by `autograder publish --out hw0-starter hw0`, both
-    // with relative arguments from the shell's cwd, and the package dir's
-    // own name coinciding with `--id`.
+    // hw0` followed by `autograder publish --assignment hw0 --out
+    // hw0-starter`, both with relative arguments from the shell's cwd, and
+    // the package dir's own name coinciding with `--id`.
     let init_status = autograder_bin()
         .args(["init", "--id", "hw0", "hw0"])
         .current_dir(cwd.path())
@@ -25,7 +25,7 @@ fn init_then_publish_with_relative_paths_and_matching_dir_and_id_names() {
     assert!(init_status.success(), "autograder init failed");
 
     let publish_output = autograder_bin()
-        .args(["publish", "--out", "hw0-starter", "hw0"])
+        .args(["publish", "--assignment", "hw0", "--out", "hw0-starter"])
         .current_dir(cwd.path())
         .output()
         .unwrap();

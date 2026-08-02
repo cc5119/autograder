@@ -46,12 +46,15 @@ pub enum Command {
     /// (Re)resolve the workspace-root `Cargo.lock` and record its hash in
     /// `autograder.toml` as the "blessed" lock.
     Lock {
-        /// Path to the (private) assignment repo.
+        /// Path to the (private) assignment repo. Defaults to the current
+        /// directory.
+        #[arg(long, default_value = ".")]
         assignment: PathBuf,
     },
     /// Build the offline vendor dir + base image for an assignment.
     Vendor {
-        /// Path to the assignment repo.
+        /// Path to the assignment repo. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
         assignment: PathBuf,
     },
     /// Invite every roster student to a GitHub org and add them to one of
@@ -145,7 +148,9 @@ pub enum Command {
     },
     /// Publish either the starter or solution repo from the private instructor workspace.
     Publish {
-        /// Path to the private instructor workspace.
+        /// Path to the private instructor workspace. Defaults to the
+        /// current directory.
+        #[arg(long, default_value = ".")]
         assignment: PathBuf,
         /// Output directory for the published tree.
         #[arg(long)]
