@@ -8,7 +8,6 @@ pub mod publish;
 pub mod push;
 pub mod register;
 pub mod show;
-pub mod vendor;
 
 use std::path::Path;
 
@@ -23,7 +22,6 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
     match command {
         Command::Init { dir, id } => init::run(&dir, &id),
         Command::Lock { assignment } => lock::run(&assignment),
-        Command::Vendor { assignment } => vendor::run(&assignment),
         Command::Fetch {
             assignment,
             repo,
@@ -70,6 +68,7 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
 pub(crate) fn build_evaluator(
     spec: &Spec,
     assignment_dir: &Path,
+    vendor_dir: &Path,
     local_sandbox: bool,
 ) -> Result<Box<dyn Evaluator>> {
     if local_sandbox {
@@ -78,20 +77,26 @@ pub(crate) fn build_evaluator(
              host process with no container isolation -- for local development/ \
              testing only, never for grading real submissions"
         );
-        build_evaluator_for(spec, assignment_dir, LocalSandbox)
+        build_evaluator_for(spec, assignment_dir, vendor_dir, LocalSandbox)
     } else {
         let sandbox = ContainerSandbox::new(spec.sandbox.image.clone());
         sandbox.preflight()?;
-        build_evaluator_for(spec, assignment_dir, sandbox)
+        build_evaluator_for(spec, assignment_dir, vendor_dir, sandbox)
     }
 }
 
 fn build_evaluator_for(
     spec: &Spec,
     assignment_dir: &Path,
+    vendor_dir: &Path,
     sandbox: impl Sandbox + 'static,
 ) -> Result<Box<dyn Evaluator>> {
-    Ok(Box::new(Nextest::new(spec, assignment_dir, sandbox)?))
+    Ok(Box::new(Nextest::new(
+        spec,
+        assignment_dir,
+        vendor_dir,
+        sandbox,
+    )?))
 }
 
 #[cfg(test)]
@@ -181,7 +186,13 @@ base = 0.0
             run_id: "run-1".into(),
             workspace: harness_dir.path().to_path_buf(),
         };
-        let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
+        let evaluator = build_evaluator_for(
+            &spec,
+            harness_dir.path(),
+            &harness_dir.path().join(".vendor"),
+            LocalSandbox,
+        )
+        .unwrap();
         let eval = evaluator.evaluate(&ctx).unwrap();
 
         assert!(matches!(
@@ -211,7 +222,12 @@ base = 0.0
             &harness_dir.path().join("harness/Cargo.toml"),
             "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
         );
-        let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
+        let result = build_evaluator_for(
+            &spec,
+            harness_dir.path(),
+            &harness_dir.path().join(".vendor"),
+            LocalSandbox,
+        );
         assert!(result.is_ok());
     }
 
@@ -220,7 +236,12 @@ base = 0.0
         let spec: Spec = toml::from_str(&public_spec()).unwrap();
 
         let harness_dir = tempfile::tempdir().unwrap();
-        let result = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox);
+        let result = build_evaluator_for(
+            &spec,
+            harness_dir.path(),
+            &harness_dir.path().join(".vendor"),
+            LocalSandbox,
+        );
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
@@ -248,15 +269,14 @@ base = 0.0
             &assignment_dir.path().join("harness/src/bin/driver.rs"),
             "fn main() {}\n",
         );
-        // `evaluate_batch` hard-requires a vendored, up-to-date dependency
-        // set before it will run any submission -- this assignment has no
-        // real dependencies, so an empty vendor dir with a matching lock
-        // marker is enough (mirrors what `deps::vendor::vendor` itself
-        // would leave behind).
+        // `evaluate` vendors the whole workspace up front, so every member
+        // `Cargo.toml` the root lists has to be real and resolve to exactly
+        // the checked-in `LOCK_TOML` -- `cargo vendor` runs `--locked`.
         write(
-            &assignment_dir.path().join("vendor/.lock-sha256"),
-            &crate::deps::cargo_lock::sha256_hex(LOCK_TOML),
+            &assignment_dir.path().join("hw3/Cargo.toml"),
+            "[package]\nname = \"hw3\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         );
+        write(&assignment_dir.path().join("hw3/src/lib.rs"), "");
 
         // Just a submission checkout -- evaluate never looks for a fetch
         // record at all.

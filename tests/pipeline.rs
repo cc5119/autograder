@@ -58,19 +58,6 @@ base = 0.0
     )
 }
 
-/// `evaluate_batch` hard-requires a vendored, up-to-date dependency set
-/// (`deps::vendor::verify`) before it will touch any submission. None of
-/// these tests exercise real dependencies, so an empty vendor dir with a
-/// lock marker matching `LOCK_TOML` is enough -- exactly what
-/// `deps::vendor::vendor` itself would leave behind for a zero-dependency
-/// workspace.
-fn write_vendor_marker(assignment_dir: &std::path::Path) {
-    write(
-        &assignment_dir.join("vendor/.lock-sha256"),
-        &autograder::deps::cargo_lock::sha256_hex(LOCK_TOML),
-    );
-}
-
 fn passing_test(name: &str) -> TestResult {
     TestResult {
         name: name.into(),
@@ -105,7 +92,6 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
         "[workspace]\nmembers = [\"hw3\"]\n",
     );
     write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(assignment_dir.path());
     write(
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",
@@ -153,7 +139,6 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
         "// student code",
     );
     write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(assignment_dir.path());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
@@ -223,7 +208,6 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
         "[workspace]\nmembers = [\"harness\", \"wc\"]\n",
     );
     write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(assignment_dir.path());
     write(
         &assignment_dir.path().join("harness/Cargo.toml"),
         "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
@@ -275,7 +259,6 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
         "[workspace]\nmembers = [\"hw3\"]\n",
     );
     write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write_vendor_marker(assignment_dir.path());
     write(
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",

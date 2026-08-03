@@ -4,12 +4,6 @@ use std::process::Command;
 use crate::error::{Error, Result};
 use crate::spec::Spec;
 
-#[derive(Debug, Clone)]
-pub struct VendorOutcome {
-    pub vendor_dir: PathBuf,
-    pub cargo_config_path: PathBuf,
-}
-
 /// `vendor_dir/<VENDOR_CONFIG_FILE>`: the exact `.cargo/config.toml`
 /// snippet `cargo vendor` printed on stdout for this workspace, persisted
 /// verbatim -- crates-io *and* any git-dependency `[source."git+..."]`
@@ -19,14 +13,8 @@ pub struct VendorOutcome {
 /// used to do exactly that).
 pub const VENDOR_CONFIG_FILE: &str = "config.toml";
 
-/// `vendor_dir/<LOCK_MARKER_FILE>`: the sha256 of the `Cargo.lock` this
-/// vendor dir was built from, so `verify` can tell "vendored, and still
-/// fresh" from "vendored against a lock that's since changed" without
-/// re-running `cargo vendor`.
-const LOCK_MARKER_FILE: &str = ".lock-sha256";
-
-pub fn absolute_vendor_dir(assignment_dir: &Path) -> PathBuf {
-    absolutize(&assignment_dir.join("vendor"))
+pub fn batch_vendor_dir(submissions_dir: &Path) -> PathBuf {
+    absolutize(&submissions_dir.join(".vendor"))
 }
 
 /// Any path handed to Cargo through `--config`/a config file's
@@ -40,22 +28,24 @@ pub fn absolutize(path: &Path) -> PathBuf {
 
 /// Runs `cargo vendor --locked` directly against the workspace root at
 /// `assignment_dir` -- both `{id}` and `{harness}` at once, sourced straight
-/// from the checked-in `Cargo.lock` -- producing `<assignment_dir>/vendor/`
-/// (with its own `config.toml` and `.lock-sha256` marker, see
-/// `VENDOR_CONFIG_FILE`/`LOCK_MARKER_FILE`) plus `<assignment_dir>/.cargo/config.toml`
-/// for a plain local `cargo test`/`cargo build` run from `assignment_dir`.
-/// Trusted, online, one-time per assignment -- never runs on student code.
-/// Refuses up front if `Cargo.lock` doesn't match the blessed hash
-/// `autograder lock` recorded (`crate::deps::lock::verify`), so vendoring
-/// can never silently pull a different dependency graph than the one
-/// grading is meant to check submissions against.
-pub fn vendor(assignment_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
+/// from the checked-in `Cargo.lock` -- into `vendor_dir` (with its own
+/// `config.toml`, see `VENDOR_CONFIG_FILE`). Trusted, online, run once per
+/// `evaluate`/`ci` invocation before any submission is touched -- never on
+/// student code. Refuses up front if `Cargo.lock` doesn't match the blessed
+/// hash `autograder lock` recorded (`crate::deps::lock::verify`), so
+/// vendoring can never silently pull a different dependency graph than the
+/// one grading is meant to check submissions against.
+pub fn vendor(assignment_dir: &Path, vendor_dir: &Path, spec: &Spec) -> Result<()> {
     if let Some(message) = crate::deps::lock::verify(assignment_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
 
-    let vendor_dir = absolute_vendor_dir(assignment_dir);
+    let vendor_dir = absolutize(vendor_dir);
     let manifest_path = assignment_dir.join("Cargo.toml");
+
+    if vendor_dir.exists() {
+        crate::exec::fs::remove_dir_all(&vendor_dir)?;
+    }
 
     let output = Command::new("cargo")
         .arg("vendor")
@@ -86,64 +76,7 @@ pub fn vendor(assignment_dir: &Path, spec: &Spec) -> Result<VendorOutcome> {
     let vendor_config = String::from_utf8_lossy(&output.stdout).into_owned();
     crate::exec::fs::write(&vendor_dir.join(VENDOR_CONFIG_FILE), &vendor_config)?;
 
-    let lock_contents = crate::exec::fs::read_to_string(&assignment_dir.join("Cargo.lock"))?;
-    crate::exec::fs::write(
-        &vendor_dir.join(LOCK_MARKER_FILE),
-        crate::deps::cargo_lock::sha256_hex(&lock_contents),
-    )?;
-
-    let cargo_dir = assignment_dir.join(".cargo");
-    crate::exec::fs::create_dir_all(&cargo_dir)?;
-    let cargo_config_path = cargo_dir.join("config.toml");
-    crate::exec::fs::write(&cargo_config_path, &vendor_config)?;
-
-    Ok(VendorOutcome {
-        vendor_dir,
-        cargo_config_path,
-    })
-}
-
-/// Verifies `assignment_dir/vendor` is present and was built from the
-/// `Cargo.lock` currently checked in at `assignment_dir` (its sha256,
-/// recorded at `vendor` time in `LOCK_MARKER_FILE`) before `evaluate`
-/// trusts an `--offline` build against it. `None` means it's safe to
-/// proceed; `Some(message)` is a human-readable explanation meant for a
-/// hard, batch-wide failure raised before any submission is evaluated --
-/// unlike `crate::deps::lock::verify`, there's no per-submission
-/// diagnostic to fall back to here, since an unvendored/stale dependency
-/// set isn't something any individual submission did wrong.
-pub fn verify(assignment_dir: &Path, spec: &Spec) -> Option<String> {
-    let vendor_dir = assignment_dir.join("vendor");
-    if !vendor_dir.is_dir() {
-        return Some(format!(
-            "{} is missing -- this assignment has never been vendored; run `autograder vendor \
-             {}` before evaluating submissions",
-            vendor_dir.display(),
-            assignment_dir.display()
-        ));
-    }
-    let marker_path = vendor_dir.join(LOCK_MARKER_FILE);
-    let Ok(found) = crate::exec::fs::read_to_string(&marker_path) else {
-        return Some(format!(
-            "{} is missing -- {} predates vendor freshness tracking, or was assembled by hand \
-             rather than `autograder vendor`; re-run `autograder vendor {}`",
-            marker_path.display(),
-            vendor_dir.display(),
-            assignment_dir.display()
-        ));
-    };
-    if found.trim() == spec.assignment.cargo_lock_sha256 {
-        None
-    } else {
-        Some(format!(
-            "{} was vendored from a different Cargo.lock than the one currently checked in \
-             (expected sha256 {}, found {}) -- re-run `autograder vendor {}`",
-            vendor_dir.display(),
-            spec.assignment.cargo_lock_sha256,
-            found.trim(),
-            assignment_dir.display()
-        ))
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -214,12 +147,12 @@ base = 0.0
         spec
     }
 
-    /// Regression test: a relative `assignment_dir` must not produce a
+    /// Regression test: a relative `submissions_dir` must not produce a
     /// relative `vendor_dir` (see `absolutize`'s doc comment).
     #[test]
-    fn absolute_vendor_dir_absolutizes_a_relative_assignment_dir() {
-        let relative = Path::new("examples/hw3/instructor");
-        let absolutized = absolute_vendor_dir(relative);
+    fn batch_vendor_dir_absolutizes_a_relative_submissions_dir() {
+        let relative = Path::new("examples/hw3/submissions");
+        let absolutized = batch_vendor_dir(relative);
 
         assert!(absolutized.is_absolute());
         assert_eq!(
@@ -227,15 +160,15 @@ base = 0.0
             std::env::current_dir()
                 .unwrap()
                 .join(relative)
-                .join("vendor")
+                .join(".vendor")
         );
     }
 
     #[test]
-    fn absolute_vendor_dir_leaves_an_already_absolute_assignment_dir_alone() {
+    fn batch_vendor_dir_leaves_an_already_absolute_submissions_dir_alone() {
         assert_eq!(
-            absolute_vendor_dir(Path::new("/pkg")),
-            PathBuf::from("/pkg/vendor")
+            batch_vendor_dir(Path::new("/subs")),
+            PathBuf::from("/subs/.vendor")
         );
     }
 
@@ -243,16 +176,29 @@ base = 0.0
     fn vendor_with_no_workspace_dependencies_produces_an_empty_vendor_dir_and_config() {
         let package = tempfile::tempdir().unwrap();
         let spec = empty_workspace(package.path());
+        let vendor_dir = package.path().join(".vendor");
 
-        let outcome = vendor(package.path(), &spec).unwrap();
+        vendor(package.path(), &vendor_dir, &spec).unwrap();
 
         // Nothing to redirect, so `cargo vendor` prints no config -- but
-        // the directory, the (empty) config file, and the lock marker are
-        // still all in place, and `verify` is satisfied by them.
-        assert!(outcome.vendor_dir.is_dir());
-        assert!(outcome.cargo_config_path.is_file());
-        assert!(outcome.vendor_dir.join(VENDOR_CONFIG_FILE).is_file());
-        assert!(verify(package.path(), &spec).is_none());
+        // the directory and the (empty) config file are still both in place.
+        assert!(vendor_dir.is_dir());
+        assert!(vendor_dir.join(VENDOR_CONFIG_FILE).is_file());
+    }
+
+    /// A re-vendor must not leave the previous run's crates behind: a
+    /// version resolved from a since-changed `Cargo.lock` is exactly what
+    /// `manifest_check` would read back as "the vendored version".
+    #[test]
+    fn vendor_clears_a_previous_runs_vendor_dir() {
+        let package = tempfile::tempdir().unwrap();
+        let spec = empty_workspace(package.path());
+        let vendor_dir = package.path().join(".vendor");
+        write(&vendor_dir.join("serde/Cargo.toml"), "stale");
+
+        vendor(package.path(), &vendor_dir, &spec).unwrap();
+
+        assert!(!vendor_dir.join("serde").exists());
     }
 
     #[test]
@@ -261,39 +207,7 @@ base = 0.0
         let mut spec = empty_workspace(package.path());
         spec.assignment.cargo_lock_sha256 = "not-the-real-hash".repeat(4);
 
-        let err = vendor(package.path(), &spec).unwrap_err();
+        let err = vendor(package.path(), &package.path().join(".vendor"), &spec).unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
-    }
-
-    #[test]
-    fn verify_reports_a_missing_vendor_dir() {
-        let package = tempfile::tempdir().unwrap();
-        let spec = empty_workspace(package.path());
-
-        let message = verify(package.path(), &spec).unwrap();
-        assert!(message.contains("never been vendored"));
-    }
-
-    #[test]
-    fn verify_reports_a_vendor_dir_built_from_a_different_lock() {
-        let package = tempfile::tempdir().unwrap();
-        let spec = empty_workspace(package.path());
-        vendor(package.path(), &spec).unwrap();
-
-        let mut stale_spec = spec;
-        stale_spec.assignment.cargo_lock_sha256 = "0".repeat(64);
-
-        let message = verify(package.path(), &stale_spec).unwrap();
-        assert!(message.contains("different Cargo.lock"));
-    }
-
-    #[test]
-    fn verify_reports_a_vendor_dir_missing_its_lock_marker() {
-        let package = tempfile::tempdir().unwrap();
-        let spec = empty_workspace(package.path());
-        std::fs::create_dir_all(package.path().join("vendor")).unwrap();
-
-        let message = verify(package.path(), &spec).unwrap();
-        assert!(message.contains("predates vendor freshness tracking"));
     }
 }

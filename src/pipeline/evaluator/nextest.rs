@@ -60,13 +60,9 @@ use crate::spec::Spec;
 
 use super::{Evaluator, sandbox_limits, write_nextest_config};
 
-/// The relative path (from the assignment package dir) `cargo vendor`
-/// writes to; mirrors `vendor::vendor`'s output layout.
-const VENDOR_DIR_NAME: &str = "vendor";
-
 pub struct Nextest<S> {
     sandbox: S,
-    assignment_dir: PathBuf,
+    vendor_dir: PathBuf,
     limits: SandboxLimits,
     /// `[assignment].harness` -- names both the harness's sibling directory
     /// and its own `[package].name`, which must agree. Cloned once at
@@ -75,8 +71,12 @@ pub struct Nextest<S> {
 }
 
 impl<S: Sandbox> Nextest<S> {
-    pub fn new(spec: &Spec, assignment_dir: impl Into<PathBuf>, sandbox: S) -> Result<Self> {
-        let assignment_dir = assignment_dir.into();
+    pub fn new(
+        spec: &Spec,
+        assignment_dir: &Path,
+        vendor_dir: impl Into<PathBuf>,
+        sandbox: S,
+    ) -> Result<Self> {
         let harness_manifest = assignment_dir
             .join(&spec.assignment.harness)
             .join("Cargo.toml");
@@ -89,21 +89,17 @@ impl<S: Sandbox> Nextest<S> {
         }
         Ok(Self {
             sandbox,
-            assignment_dir,
+            vendor_dir: vendor::absolutize(&vendor_dir.into()),
             limits: sandbox_limits(&spec.build_limits),
             harness_package: spec.assignment.harness.clone(),
         })
-    }
-
-    fn vendor_dir(&self) -> PathBuf {
-        vendor::absolutize(&self.assignment_dir.join(VENDOR_DIR_NAME))
     }
 
     /// Env shared identically across all three cargo invocations, so they
     /// agree on where `target/` is (see this module's doc comment).
     fn cargo_env(&self, repo_root: &Path) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
-        if self.vendor_dir().is_dir() {
+        if self.vendor_dir.is_dir() {
             env.insert("CARGO_NET_OFFLINE".to_string(), "true".to_string());
         }
         env.insert(
@@ -123,7 +119,7 @@ impl<S: Sandbox> Nextest<S> {
             repo_root,
             submission_dir,
             &self.harness_dir(repo_root),
-            &self.vendor_dir(),
+            &self.vendor_dir,
         )
     }
 
@@ -133,7 +129,7 @@ impl<S: Sandbox> Nextest<S> {
             repo_root,
             submission_dir,
             &self.harness_dir(repo_root),
-            &self.vendor_dir(),
+            &self.vendor_dir,
         )
     }
 
@@ -144,12 +140,11 @@ impl<S: Sandbox> Nextest<S> {
     /// still produces an empty file, which Cargo treats as no override at
     /// all.
     fn write_repo_root_config(&self, repo_root: &Path) -> Result<()> {
-        let vendor_dir = self.vendor_dir();
-        if !vendor_dir.is_dir() {
+        if !self.vendor_dir.is_dir() {
             return Ok(());
         }
         let vendor_config =
-            crate::exec::fs::read_to_string(&vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
+            crate::exec::fs::read_to_string(&self.vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
                 .unwrap_or_default();
         let cargo_dir = repo_root.join(".cargo");
         crate::exec::fs::create_dir_all(&cargo_dir)?;
@@ -608,7 +603,12 @@ base = 0.0
     fn new_errors_clearly_when_the_harness_is_missing() {
         let assignment_dir = tempfile::tempdir().unwrap();
 
-        let result = Nextest::new(&spec(), assignment_dir.path(), ScriptedSandbox::new(vec![]));
+        let result = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            ScriptedSandbox::new(vec![]),
+        );
 
         assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
@@ -618,8 +618,13 @@ base = 0.0
         let assignment_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let evaluator =
-            Nextest::new(&spec(), assignment_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            ScriptedSandbox::new(vec![]),
+        )
+        .unwrap();
 
         evaluator.write_repo_root_config(repo_root.path()).unwrap();
 
@@ -630,9 +635,9 @@ base = 0.0
     fn write_repo_root_config_copies_the_vendor_dirs_config_verbatim() {
         let assignment_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(assignment_dir.path());
-        std::fs::create_dir_all(assignment_dir.path().join("vendor")).unwrap();
+        std::fs::create_dir_all(assignment_dir.path().join(".vendor")).unwrap();
         std::fs::write(
-            assignment_dir.path().join("vendor/config.toml"),
+            assignment_dir.path().join(".vendor/config.toml"),
             "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n\
              [source.\"git+https://example.com/x\"]\ngit = \"https://example.com/x\"\n\
              replace-with = \"vendored-sources\"\n\n\
@@ -640,8 +645,13 @@ base = 0.0
         )
         .unwrap();
         let repo_root = tempfile::tempdir().unwrap();
-        let evaluator =
-            Nextest::new(&spec(), assignment_dir.path(), ScriptedSandbox::new(vec![])).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            ScriptedSandbox::new(vec![]),
+        )
+        .unwrap();
 
         evaluator.write_repo_root_config(repo_root.path()).unwrap();
 
@@ -658,7 +668,13 @@ base = 0.0
         let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -680,7 +696,13 @@ base = 0.0
         let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -703,7 +725,13 @@ base = 0.0
         // build id, build harness, run -- all three stages succeed, but no
         // junit report is on disk afterwards.
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -731,7 +759,13 @@ base = 0.0
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -755,7 +789,13 @@ base = 0.0
         let (_workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();
@@ -785,7 +825,13 @@ base = 0.0
         let (_workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();
@@ -822,7 +868,13 @@ base = 0.0
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(&spec(), assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec(),
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();
@@ -891,7 +943,13 @@ base = 0.0
         // the custom harness package name) fails -- that's the one that
         // should reference "judge".
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(&spec, assignment_dir.path(), sandbox).unwrap();
+        let evaluator = Nextest::new(
+            &spec,
+            assignment_dir.path(),
+            assignment_dir.path().join(".vendor"),
+            sandbox,
+        )
+        .unwrap();
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();

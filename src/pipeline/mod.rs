@@ -153,6 +153,7 @@ pub(crate) fn evaluate_submission(
 fn manifest_diagnostics(
     checkout_dir: &Path,
     assignment_dir: &Path,
+    vendor_dir: &Path,
     spec: &Spec,
 ) -> Result<Vec<ManifestDiagnostic>> {
     let manifest_path = checkout_dir
@@ -167,11 +168,10 @@ fn manifest_diagnostics(
     let lock = CargoLock::parse(&lock_contents)?;
     let allowed_crates = lock.direct_dependencies(spec.assignment.id.as_str());
 
-    let vendor_dir = assignment_dir.join("vendor");
     manifest_check::check_manifest(
         &contents,
         &allowed_crates,
-        vendor_dir.is_dir().then_some(vendor_dir.as_path()),
+        vendor_dir.is_dir().then_some(vendor_dir),
     )
 }
 
@@ -193,12 +193,10 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 /// persisted at `submissions_dir/.eval/<github_user>/<run_id>.eval.json`.
 /// No scoring happens here -- run `autograder grade` afterwards for that.
 ///
-/// Refuses up front, before touching any submission, if `assignment_dir`
-/// hasn't been vendored or was vendored from a since-changed `Cargo.lock`
-/// (`crate::deps::vendor::verify`) -- every sandboxed build runs
-/// `--offline`, so an unvendored/stale dependency set would otherwise
-/// surface as an opaque per-submission `build_failed` for every single
-/// submission in the batch instead of one clear, actionable error.
+/// The dependency set every sandboxed `--offline` build resolves against is
+/// vendored by the caller before this runs (`autograder evaluate` does it in
+/// `commands::evaluate`), into `deps::vendor::batch_vendor_dir`'s path under
+/// `submissions_dir`.
 pub fn evaluate_batch(
     submissions_dir: &Path,
     evaluator: &dyn Evaluator,
@@ -208,9 +206,7 @@ pub fn evaluate_batch(
     if let Some(message) = lock::verify(assignment_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
-    if let Some(message) = crate::deps::vendor::verify(assignment_dir, spec) {
-        return Err(Error::InvalidSpec(message));
-    }
+    let vendor_dir = crate::deps::vendor::batch_vendor_dir(submissions_dir);
 
     let github_users = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
@@ -241,7 +237,7 @@ pub fn evaluate_batch(
             workspace: build_scratch.path().to_path_buf(),
         };
 
-        let diagnostics = manifest_diagnostics(&checkout_dir, assignment_dir, spec)?;
+        let diagnostics = manifest_diagnostics(&checkout_dir, assignment_dir, &vendor_dir, spec)?;
         let eval = if diagnostics.is_empty() {
             evaluate_submission(&ctx, &checkout_dir, assignment_dir, spec, evaluator)?
         } else {

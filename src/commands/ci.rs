@@ -32,14 +32,16 @@ pub fn run(local_sandbox: bool) -> Result<()> {
     // `vendor::vendor` checks `Cargo.lock` against the blessed hash itself
     // and refuses to run against a mismatch -- caught here and turned into
     // a same `LockfileMismatch` diagnostic.
-    let lockfile_mismatch = match vendor::vendor(assignment_dir, &spec) {
-        Ok(_) => None,
+    let vendor_scratch = fs::temp_dir()?;
+    let vendor_dir = vendor_scratch.path().join("vendor");
+    let lockfile_mismatch = match vendor::vendor(assignment_dir, &vendor_dir, &spec) {
+        Ok(()) => None,
         Err(Error::InvalidSpec(message)) => Some(message),
         Err(other) => return Err(other),
     };
 
     let eval = if lockfile_mismatch.is_none() {
-        let evaluator = super::build_evaluator(&spec, assignment_dir, local_sandbox)?;
+        let evaluator = super::build_evaluator(&spec, assignment_dir, &vendor_dir, local_sandbox)?;
 
         let build_scratch = fs::temp_dir()?;
         let ctx = JobContext {

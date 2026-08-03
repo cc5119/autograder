@@ -51,12 +51,6 @@ pub enum Command {
         #[arg(long, default_value = ".")]
         assignment: PathBuf,
     },
-    /// Build the offline vendor dir + base image for an assignment.
-    Vendor {
-        /// Path to the assignment repo.
-        #[arg(long, default_value = ".")]
-        assignment: PathBuf,
-    },
     /// Invite every roster student to a GitHub org and add them to one of
     /// its teams.
     Register {
