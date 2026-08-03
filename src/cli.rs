@@ -5,14 +5,19 @@ use clap::{Parser, Subcommand};
 use crate::{package::PublishMode, submissions};
 
 #[derive(Debug, Parser)]
-#[command(name = "autograder", about = "Rust assignment autograder")]
+// `max_term_width`, not `term_width`: help follows a narrow terminal but
+// stops widening past readability on a wide one. Needs clap's `wrap_help`
+// feature -- without it both settings are silently ignored.
+#[command(
+    name = "autograder",
+    about = "Rust assignment autograder",
+    max_term_width = 100
+)]
 pub struct Cli {
     /// Print the commit this binary was built from (and its date) and exit.
     #[arg(short = 'V', long)]
     pub version: bool,
-    /// With `--version`, show the full commit hash instead of the short
-    /// one; with `show`, print full diagnostics instead of a one-line
-    /// status/label.
+    /// Use verbose output
     #[arg(short, long, global = true)]
     pub verbose: bool,
     #[command(subcommand)]
@@ -97,10 +102,8 @@ pub enum Command {
         /// ("<datetime>[<IANA zone>]", e.g. "2026-02-14T23:59:59[America/Santiago]")
         #[arg(long)]
         as_of: Option<jiff::Zoned>,
-        /// Skip the confirmation prompt. Required when stdout isn't a
-        /// terminal, since fetching overwrites existing checkouts.
-        #[arg(long)]
-        yes: bool,
+        #[command(flatten)]
+        detach: DetachFlag,
         /// How many submissions to fetch at once. Lower it if GitHub
         /// starts refusing the concurrent requests.
         #[arg(short = 'j', long, default_value = "8")]
@@ -168,6 +171,31 @@ pub enum Command {
         #[arg(default_value = ".")]
         assignment: PathBuf,
     },
+}
+
+/// `--detach` / `--no-detach`, as one tri-state answer.
+#[derive(Debug, clap::Args)]
+pub struct DetachFlag {
+    /// Remove each submission's `.git` after checkout, leaving plain
+    /// directories.
+    #[arg(long, overrides_with = "no_detach")]
+    detach: bool,
+    /// Keep each submission's `.git`. Default when not fetching inside
+    /// a git repo.
+    #[arg(long, overrides_with = "detach")]
+    no_detach: bool,
+}
+
+impl DetachFlag {
+    /// `None` when neither flag was passed -- the state `fetch` resolves
+    /// by asking, or by deciding for itself when there's no terminal.
+    pub fn choice(&self) -> Option<bool> {
+        match (self.detach, self.no_detach) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// Mirrors `package::publish::PublishMode`, kept separate so `package`

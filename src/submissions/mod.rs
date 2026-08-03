@@ -147,7 +147,16 @@ impl FetchOutcome {
 /// Clones `fork` into `dest` and checks out the commit the deadline (or a
 /// bless tag) selects. Every failure degrades to `FetchOutcome::Failed`
 /// rather than a hard `Err`, so one bad repo doesn't abort the batch.
-pub fn fetch_fork(fork: &Fork, dest: &Path, deadline: &Zoned) -> Result<FetchOutcome> {
+///
+/// `detach` removes the checkout's `.git` once it's on the right commit,
+/// leaving a plain directory -- for landing submissions inside another git
+/// repo, where they'd otherwise be nested repos it can't track.
+pub fn fetch_fork(
+    fork: &Fork,
+    dest: &Path,
+    deadline: &Zoned,
+    detach: bool,
+) -> Result<FetchOutcome> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
     }
@@ -190,6 +199,18 @@ pub fn fetch_fork(fork: &Fork, dest: &Path, deadline: &Zoned) -> Result<FetchOut
         if let Err(e) = run_git(GIT_BIN, &checkout_argv(dest, sha.as_str())) {
             return Ok(FetchOutcome::failed(format!(
                 "failed to check out {sha} for {nwo}: {e}"
+            )));
+        }
+    }
+
+    // Last, and only here: the branch lookup, the deadline commit search
+    // and the bless tag above all need the history this throws away.
+    if detach {
+        let git_dir = dest.join(".git");
+        if let Err(e) = fs::remove_dir_all(&git_dir) {
+            return Ok(FetchOutcome::failed(format!(
+                "failed to detach {}: {e}",
+                git_dir.display()
             )));
         }
     }
@@ -520,6 +541,7 @@ pub fn fetch_batch(
     plan: &FetchPlan,
     out_dir: &Path,
     deadline: &Zoned,
+    detach: bool,
     jobs: usize,
     on_result: &(dyn Fn(&GithubUser, &FetchRecord) + Sync),
 ) -> Result<Vec<(GithubUser, FetchRecord)>> {
@@ -546,7 +568,7 @@ pub fn fetch_batch(
         plan.rows
             .par_iter()
             .map(|row| {
-                let fetched = fetch_row(row, out_dir, deadline);
+                let fetched = fetch_row(row, out_dir, deadline, detach);
                 if matches!(row.plan, Plan::Fetch { .. }) {
                     progress.inc(1);
                 }
@@ -583,11 +605,16 @@ pub fn fetch_batch(
 /// One roster row: its fetch (or the recorded reason there wasn't one)
 /// plus its record on disk. An `Err` is the machinery breaking -- a bad
 /// submission comes back `Ok` with a `Failed` record, see [`FetchOutcome`].
-fn fetch_row(row: &PlanRow, out_dir: &Path, deadline: &Zoned) -> Result<(GithubUser, FetchRecord)> {
+fn fetch_row(
+    row: &PlanRow,
+    out_dir: &Path,
+    deadline: &Zoned,
+    detach: bool,
+) -> Result<(GithubUser, FetchRecord)> {
     let github_user = row.entry.github_user;
     let (outcome, forks) = match &row.plan {
         Plan::Fetch { fork, also } => {
-            let outcome = fetch_fork(fork, &out_dir.join(github_user.as_str()), deadline)?;
+            let outcome = fetch_fork(fork, &out_dir.join(github_user.as_str()), deadline, detach)?;
             let mut forks = vec![fork.clone()];
             forks.extend(also.iter().cloned());
             (outcome, forks)

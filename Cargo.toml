@@ -24,7 +24,7 @@ required-features = ["container-tests"]
 container-tests = []
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

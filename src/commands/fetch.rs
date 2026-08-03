@@ -3,7 +3,8 @@
 //! so declining at the prompt costs nothing.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use console::{Term, style};
 use dialoguer::Confirm;
@@ -24,7 +25,7 @@ pub fn run(
     roster: &Path,
     out: &Path,
     as_of: Option<jiff::Zoned>,
-    yes: bool,
+    detach: Option<bool>,
     jobs: std::num::NonZeroUsize,
 ) -> Result<()> {
     let spec = Spec::load(assignment)?;
@@ -34,13 +35,80 @@ pub fn run(
     let plan = plan_fetch(repo, &roster)?;
 
     print!("{}", render_plan(&plan, repo, &deadline, out));
-    if !confirm(plan.to_fetch(), yes)? {
+    if plan.to_fetch() == 0 {
+        println!("Nothing to fetch.");
+        return Ok(());
+    }
+
+    // Before the fetch prompt: it changes what lands on disk, so it's part
+    // of what the user is about to say yes to.
+    let detach = resolve_detach(detach, out, plan.to_fetch())?;
+    if !confirm(plan.to_fetch())? {
         tracing::info!("nothing fetched");
         return Ok(());
     }
 
-    fetch_batch(&plan, out, &deadline, jobs.get(), &report)?;
+    fetch_batch(&plan, out, &deadline, detach, jobs.get(), &report)?;
     Ok(())
+}
+
+/// Settles `--detach`/`--no-detach` when neither was passed. Only the
+/// nested-checkout case is worth raising: outside a work tree there's no
+/// reason to throw away history nobody asked us to throw away.
+///
+/// With no terminal to ask on we detach rather than refuse -- the flags
+/// exist for anyone who wants to be explicit, and a scripted run inside a
+/// repo is precisely where a pile of nested `.git` dirs does its damage.
+fn resolve_detach(detach: Option<bool>, out: &Path, to_fetch: usize) -> Result<bool> {
+    if let Some(detach) = detach {
+        return Ok(detach);
+    }
+    let Some(worktree) = enclosing_worktree(out) else {
+        return Ok(false);
+    };
+
+    println!(
+        "  {} {} is inside the git repo at\n    {} -- {to_fetch} checkouts\n    would be nested repos git can't track.\n",
+        style("⚠").yellow(),
+        out.display(),
+        worktree.display(),
+    );
+
+    if !Term::stdout().is_term() {
+        tracing::info!(
+            "detaching checkouts (no terminal to ask on); pass --no-detach to keep .git"
+        );
+        return Ok(true);
+    }
+    Confirm::new()
+        .with_prompt("Detach checkouts (remove .git)?")
+        .default(true)
+        .interact()
+        .map_err(|source| Error::Other(format!("failed to read confirmation: {source}")))
+}
+
+/// The work tree `out` would land in, if any. Resolved from `out`'s
+/// nearest existing ancestor, since `out` itself usually doesn't exist
+/// until the fetch creates it. Any `git` failure means "not in a work
+/// tree" -- this only drives a warning, so it's not worth failing over.
+fn enclosing_worktree(out: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(out).ok()?;
+    let start = absolute.ancestors().find(|dir| dir.is_dir())?;
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &start.display().to_string(),
+            "rev-parse",
+            "--show-toplevel",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let root = root.trim();
+    (!root.is_empty()).then(|| PathBuf::from(root))
 }
 
 /// One line per submission, printed the moment that submission lands
@@ -202,22 +270,11 @@ fn relative_deadline(deadline: &jiff::Zoned, now: &jiff::Zoned) -> String {
     }
 }
 
-/// Refuses rather than assumes when there's no one to ask: fetching
-/// overwrites existing checkouts, so an unattended run has to say `--yes`
-/// out loud.
-fn confirm(to_fetch: usize, yes: bool) -> Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    if to_fetch == 0 {
-        println!("Nothing to fetch.");
-        return Ok(false);
-    }
+/// Nobody to ask means nobody to stop us: an unattended run fetches, and
+/// overwrites whatever checkouts were there before.
+fn confirm(to_fetch: usize) -> Result<bool> {
     if !Term::stdout().is_term() {
-        return Err(Error::Other(
-            "refusing to fetch without confirmation: not running on a terminal, pass --yes"
-                .to_string(),
-        ));
+        return Ok(true);
     }
 
     Confirm::new()
@@ -226,3 +283,4 @@ fn confirm(to_fetch: usize, yes: bool) -> Result<bool> {
         .interact()
         .map_err(|source| Error::Other(format!("failed to read confirmation: {source}")))
 }
+
