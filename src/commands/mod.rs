@@ -100,7 +100,6 @@ mod tests {
     use crate::error::Error;
     use crate::exec::sandbox::LocalSandbox;
     use crate::model::{self, JobContext};
-    use crate::pipeline::prepare;
     use crate::report::ci::CiReport;
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -182,9 +181,6 @@ base = 0.0
             run_id: "run-1".into(),
             workspace: harness_dir.path().to_path_buf(),
         };
-        let prepared = prepare::prepare(&ctx, harness_dir.path(), &spec).unwrap();
-        assert!(prepared.manifest_diagnostics.is_empty());
-
         let evaluator = build_evaluator_for(&spec, harness_dir.path(), LocalSandbox).unwrap();
         let eval = evaluator.evaluate(&ctx).unwrap();
 
@@ -198,7 +194,7 @@ base = 0.0
 
         let report = CiReport {
             eval: Some(&eval),
-            manifest_diagnostics: &prepared.manifest_diagnostics,
+            lockfile_mismatch: None,
         };
         assert!(!report.passed());
     }

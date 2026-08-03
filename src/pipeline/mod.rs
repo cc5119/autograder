@@ -1,7 +1,6 @@
 pub mod evaluator;
 pub mod grade;
 pub mod manifest_check;
-pub mod prepare;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -9,6 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
+use crate::deps::cargo_lock::CargoLock;
+use crate::deps::lock;
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::write_json;
@@ -17,6 +18,7 @@ use crate::exec::sandbox::ProcessStatus;
 use crate::id::{GithubUser, RunId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
+use crate::pipeline::manifest_check::ManifestDiagnostic;
 use crate::spec::Spec;
 use crate::str_map;
 
@@ -103,10 +105,9 @@ pub(crate) fn generate_run_id() -> RunId {
     ))
 }
 
-/// Runs Prepare -> Evaluate for a single submission checkout on disk, into
-/// `ctx.workspace` (see `JobContext`'s doc comment for the layout).
-/// Early-returns a `terminal_eval` at the first stage that didn't succeed
-/// (missing package, disallowed dependency).
+/// Evaluates a single submission checkout on disk, into `ctx.workspace`
+/// (see `JobContext`'s doc comment for the layout). Early-returns a
+/// `terminal_eval` when the checkout has no package to evaluate.
 pub(crate) fn evaluate_submission(
     ctx: &JobContext,
     checkout_dir: &Path,
@@ -146,21 +147,32 @@ pub(crate) fn evaluate_submission(
     perms.set_mode(perms.mode() | 0o002);
     crate::exec::fs::set_permissions(&ctx.workspace, perms)?;
 
-    let prepared = crate::pipeline::prepare::prepare(ctx, assignment_dir, spec)?;
-    if !prepared.manifest_diagnostics.is_empty() {
-        let message = prepared
-            .manifest_diagnostics
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Ok(terminal_eval(
-            ctx,
-            BuildStatus::DisallowedDependency,
-            Some(message),
-        ));
-    }
     evaluator.evaluate(ctx)
+}
+
+fn manifest_diagnostics(
+    checkout_dir: &Path,
+    assignment_dir: &Path,
+    spec: &Spec,
+) -> Result<Vec<ManifestDiagnostic>> {
+    let manifest_path = checkout_dir
+        .join(spec.assignment.id.as_str())
+        .join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let contents = fs::read_to_string(&manifest_path)?;
+
+    let lock_contents = fs::read_to_string(&assignment_dir.join("Cargo.lock"))?;
+    let lock = CargoLock::parse(&lock_contents)?;
+    let allowed_crates = lock.direct_dependencies(spec.assignment.id.as_str());
+
+    let vendor_dir = assignment_dir.join("vendor");
+    manifest_check::check_manifest(
+        &contents,
+        &allowed_crates,
+        vendor_dir.is_dir().then_some(vendor_dir.as_path()),
+    )
 }
 
 fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
@@ -193,6 +205,9 @@ pub fn evaluate_batch(
     assignment_dir: &Path,
     spec: &Spec,
 ) -> Result<Vec<EvaluationResult>> {
+    if let Some(message) = lock::verify(assignment_dir, spec) {
+        return Err(Error::InvalidSpec(message));
+    }
     if let Some(message) = crate::deps::vendor::verify(assignment_dir, spec) {
         return Err(Error::InvalidSpec(message));
     }
@@ -226,7 +241,17 @@ pub fn evaluate_batch(
             workspace: build_scratch.path().to_path_buf(),
         };
 
-        let eval = evaluate_submission(&ctx, &checkout_dir, assignment_dir, spec, evaluator)?;
+        let diagnostics = manifest_diagnostics(&checkout_dir, assignment_dir, spec)?;
+        let eval = if diagnostics.is_empty() {
+            evaluate_submission(&ctx, &checkout_dir, assignment_dir, spec, evaluator)?
+        } else {
+            let message = diagnostics
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            terminal_eval(&ctx, BuildStatus::DisallowedDependency, Some(message))
+        };
 
         save_eval(submissions_dir, &eval)?;
         progress.suspend(|| println!("{}", eval.describe()));

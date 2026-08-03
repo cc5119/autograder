@@ -24,8 +24,8 @@ use autograder::spec::Spec;
 use crate::common::write;
 
 /// Written to `assignment_dir/Cargo.lock` in every test that calls
-/// `evaluate_batch` -- `prepare` (via `Cargo.lock`'s hash) needs it there
-/// regardless of what a given test's `Cargo.toml` actually declares.
+/// `evaluate_batch` -- `lock::verify` runs before any submission is
+/// touched, regardless of what a given test's `Cargo.toml` declares.
 const LOCK_TOML: &str = "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\n";
 
 fn spec_toml() -> String {
@@ -152,6 +152,7 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
         &submissions_dir.path().join("alice/src/lib.rs"),
         "// student code",
     );
+    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
     write_vendor_marker(assignment_dir.path());
 
     let spec: Spec = toml::from_str(&spec_toml()).unwrap();

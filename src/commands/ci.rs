@@ -4,7 +4,7 @@ use crate::exec::fs;
 use crate::exec::overlay::{self, Context};
 use crate::id::GithubUser;
 use crate::model::JobContext;
-use crate::pipeline::{self, manifest_check::ManifestDiagnostic};
+use crate::pipeline;
 use crate::report::ci::CiReport;
 use crate::spec::Spec;
 use crate::str_map;
@@ -32,13 +32,13 @@ pub fn run(local_sandbox: bool) -> Result<()> {
     // `vendor::vendor` checks `Cargo.lock` against the blessed hash itself
     // and refuses to run against a mismatch -- caught here and turned into
     // a same `LockfileMismatch` diagnostic.
-    let manifest_diagnostics = match vendor::vendor(assignment_dir, &spec) {
-        Ok(_) => Vec::new(),
-        Err(Error::InvalidSpec(message)) => vec![ManifestDiagnostic::LockfileMismatch(message)],
+    let lockfile_mismatch = match vendor::vendor(assignment_dir, &spec) {
+        Ok(_) => None,
+        Err(Error::InvalidSpec(message)) => Some(message),
         Err(other) => return Err(other),
     };
 
-    let eval = if manifest_diagnostics.is_empty() {
+    let eval = if lockfile_mismatch.is_none() {
         let evaluator = super::build_evaluator(&spec, assignment_dir, local_sandbox)?;
 
         let build_scratch = fs::temp_dir()?;
@@ -62,7 +62,7 @@ pub fn run(local_sandbox: bool) -> Result<()> {
 
     let report = CiReport {
         eval: eval.as_ref(),
-        manifest_diagnostics: &manifest_diagnostics,
+        lockfile_mismatch: lockfile_mismatch.as_deref(),
     };
     print!("{}", report.render());
 

@@ -67,8 +67,7 @@ pub fn verify(assignment_dir: &Path, spec: &Spec) -> Option<String> {
     let lock_path = assignment_dir.join("Cargo.lock");
     if !lock_path.is_file() {
         return Some(format!(
-            "{} is missing -- it should be checked in alongside autograder.toml; run \
-             `autograder lock` and commit the result",
+            "{} is missing -- it should be checked in alongside autograder.toml",
             lock_path.display()
         ));
     }
@@ -81,9 +80,7 @@ pub fn verify(assignment_dir: &Path, spec: &Spec) -> Option<String> {
     } else {
         Some(format!(
             "Cargo.lock does not match the blessed lock recorded in autograder.toml \
-             (expected sha256 {}, found {found}) -- don't edit or regenerate Cargo.lock by \
-             hand; it pins the exact dependency versions grading uses. If you're the \
-             instructor and just changed dependencies, run `autograder lock`.",
+             (expected sha256 {}, found {found}).",
             spec.assignment.cargo_lock_sha256
         ))
     }
