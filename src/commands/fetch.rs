@@ -3,7 +3,7 @@
 //! so declining at the prompt costs nothing.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use console::{Term, style};
@@ -42,7 +42,7 @@ pub fn run(
 
     // Before the fetch prompt: it changes what lands on disk, so it's part
     // of what the user is about to say yes to.
-    let detach = resolve_detach(detach, out, plan.to_fetch())?;
+    let detach = resolve_detach(detach, out)?;
     if !confirm(plan.to_fetch())? {
         tracing::info!("nothing fetched");
         return Ok(());
@@ -56,30 +56,30 @@ pub fn run(
 /// nested-checkout case is worth raising: outside a work tree there's no
 /// reason to throw away history nobody asked us to throw away.
 ///
-/// With no terminal to ask on we detach rather than refuse -- the flags
-/// exist for anyone who wants to be explicit, and a scripted run inside a
-/// repo is precisely where a pile of nested `.git` dirs does its damage.
-fn resolve_detach(detach: Option<bool>, out: &Path, to_fetch: usize) -> Result<bool> {
+/// Refuses rather than assumes when there's no one to ask -- detaching
+/// discards history irreversibly and keeping it leaves repos git can't
+/// track, so an unattended run has to pick one out loud.
+fn resolve_detach(detach: Option<bool>, out: &Path) -> Result<bool> {
     if let Some(detach) = detach {
         return Ok(detach);
     }
-    let Some(worktree) = enclosing_worktree(out) else {
+    if !inside_worktree(out) {
         return Ok(false);
-    };
-
-    println!(
-        "  {} {} is inside the git repo at\n    {} -- {to_fetch} checkouts\n    would be nested repos git can't track.\n",
-        style("⚠").yellow(),
-        out.display(),
-        worktree.display(),
-    );
+    }
 
     if !Term::stdout().is_term() {
-        tracing::info!(
-            "detaching checkouts (no terminal to ask on); pass --no-detach to keep .git"
-        );
-        return Ok(true);
+        return Err(Error::Other(format!(
+            "{} is inside a git repo; the fetched repos will be nested and git can't track \
+            them. Pass --detach to remove each checkout's .git, or --no-detach to keep them",
+            out.display(),
+        )));
     }
+
+    println!(
+        "  {} {} is inside a git repo; the fetched repos will be nested and git can't track them.\n",
+        style("⚠").yellow(),
+        out.display(),
+    );
     Confirm::new()
         .with_prompt("Detach checkouts (remove .git)?")
         .default(true)
@@ -87,28 +87,27 @@ fn resolve_detach(detach: Option<bool>, out: &Path, to_fetch: usize) -> Result<b
         .map_err(|source| Error::Other(format!("failed to read confirmation: {source}")))
 }
 
-/// The work tree `out` would land in, if any. Resolved from `out`'s
+/// Whether `out` would land inside a git work tree. Asked of `out`'s
 /// nearest existing ancestor, since `out` itself usually doesn't exist
-/// until the fetch creates it. Any `git` failure means "not in a work
-/// tree" -- this only drives a warning, so it's not worth failing over.
-fn enclosing_worktree(out: &Path) -> Option<PathBuf> {
-    let absolute = std::path::absolute(out).ok()?;
-    let start = absolute.ancestors().find(|dir| dir.is_dir())?;
-    let output = Command::new("git")
+/// until the fetch creates it. Any `git` failure counts as "no" -- this
+/// only decides whether to raise the question, so it's not worth failing
+/// over.
+fn inside_worktree(out: &Path) -> bool {
+    let Ok(absolute) = std::path::absolute(out) else {
+        return false;
+    };
+    let Some(start) = absolute.ancestors().find(|dir| dir.is_dir()) else {
+        return false;
+    };
+    Command::new("git")
         .args([
             "-C",
             &start.display().to_string(),
             "rev-parse",
-            "--show-toplevel",
+            "--is-inside-work-tree",
         ])
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let root = String::from_utf8(output.stdout).ok()?;
-    let root = root.trim();
-    (!root.is_empty()).then(|| PathBuf::from(root))
+        .is_ok_and(|output| output.status.success())
 }
 
 /// One line per submission, printed the moment that submission lands
@@ -283,4 +282,3 @@ fn confirm(to_fetch: usize) -> Result<bool> {
         .interact()
         .map_err(|source| Error::Other(format!("failed to read confirmation: {source}")))
 }
-

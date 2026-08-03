@@ -1,12 +1,6 @@
 //! `autograder lock`: (re)resolves the workspace-root `Cargo.lock` shared by
 //! `{id}` and `{harness}` from their manifests, and records its SHA-256 as
-//! the "blessed" hash in `autograder.toml` -- the one value `prepare`
-//! checks a checkout's `Cargo.lock` against before any build runs (both
-//! `ci`, where it guards against a student editing or deleting the shipped
-//! lock, and `grade`/`publish`, where it guards against the instructor
-//! shipping a stale one). See `crate::deps::cargo_lock` for the lockfile parser
-//! itself, and `crate::pipeline::manifest_check` for how its resolved graph replaces
-//! a hand-typed `[allowed-crates]` table.
+//! the "blessed" hash in `autograder.toml`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,10 +18,8 @@ pub struct LockOutcome {
 
 /// Runs `cargo update` against the workspace root at `assignment_dir`
 /// (resolving/refreshing `Cargo.lock` for every member, `{id}` and
-/// `{harness}` alike, `[dependencies]` and `[dev-dependencies]` together --
-/// there's no way to lock just one member in isolation, nor any reason to,
-/// since they share one lockfile), then writes the resulting lock's hash
-/// into `autograder.toml`'s `cargo-lock-sha256`.
+/// `{harness}` alike, `[dependencies]` and `[dev-dependencies]` together,
+/// then writes the resulting lock's hash into `autograder.toml`'s `cargo-lock-sha256`.
 pub fn lock(assignment_dir: &Path) -> Result<LockOutcome> {
     let manifest_path = assignment_dir.join("Cargo.toml");
     let output = Command::new("cargo")
@@ -52,10 +44,6 @@ pub fn lock(assignment_dir: &Path) -> Result<LockOutcome> {
     Ok(LockOutcome { lock_path, sha256 })
 }
 
-/// Splices `cargo-lock-sha256 = "<sha256>"` into `[assignment]` in
-/// `autograder.toml`, in place -- via `toml_edit` rather than a full `Spec`
-/// round-trip, so every other line (including the instructor's own
-/// comments) survives untouched.
 fn write_sha_into_spec(assignment_dir: &Path, sha256: &str) -> Result<()> {
     let spec_path = assignment_dir.join(SPEC_FILE);
     let contents = exec::fs::read_to_string(&spec_path)?;

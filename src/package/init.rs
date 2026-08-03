@@ -1,15 +1,4 @@
-//! Scaffolds a brand-new **private instructor package** from nothing --
-//! `publish`'s inverse, which derives the public starter tree from an
-//! existing private package.
-//!
-//! The layout to generate *is* a real directory tree, `templates/library/`
-//! (rendered via [`crate::package::template`]), not a Rust table describing one.
-//! Adding or restructuring a generated file is an edit to that tree, never
-//! a change to this module's code.
-//!
-//! What's generated is a template to edit, not a finished package:
-//! `{deadline}` renders to "now + one week" and `[assignment].name` is a
-//! literal `"TODO: ..."` marker, both meant to be replaced.
+//! Scaffolds a **private instructor workspace** by copying a template.
 
 use std::path::{Path, PathBuf};
 
@@ -41,10 +30,8 @@ pub fn init(dir: &Path, id: &str) -> Result<InitOutcome> {
         )));
     }
 
-    // Truncated to whole seconds so it reads as an editable value, not
-    // generated cruft. Uses the host's own time zone (via `Zoned::now`), so
-    // the placeholder is meaningful as-is rather than needing a manual
-    // zone edit before it's even a plausible value.
+    // Truncated to whole seconds so it reads as an editable value. Uses
+    // the host's own time zone, so the placeholder is meaningful.
     let deadline = (&Zoned::now() + 1.week())
         .round(ZonedRound::new().smallest(Unit::Second))
         .expect("rounding to the nearest second never fails")
@@ -60,8 +47,7 @@ pub fn init(dir: &Path, id: &str) -> Result<InitOutcome> {
     }
 
     // Resolves and records `Cargo.lock`'s hash so the freshly scaffolded
-    // package is immediately loadable (`cargo-lock-sha256` has no default,
-    // like `id` and `harness` -- see `spec::Assignment`'s doc comment).
+    // workspace is immediately loadable
     crate::deps::lock::lock(dir)?;
 
     Ok(InitOutcome {

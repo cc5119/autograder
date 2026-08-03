@@ -24,10 +24,6 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-/// `env!()`, not `option_env!()` -- `build.rs` always sets these (falling
-/// back to `"unknown"` itself when `git` isn't available), so a missing var
-/// here would mean `build.rs` itself is broken, not a legitimate runtime
-/// case to handle gracefully.
 pub fn version_string(verbose: bool) -> String {
     let hash = if verbose {
         env!("AUTOGRADER_COMMIT_FULL")
@@ -51,19 +47,18 @@ pub enum Command {
     /// (Re)resolve the workspace-root `Cargo.lock` and record its hash in
     /// `autograder.toml` as the "blessed" lock.
     Lock {
-        /// Path to the (private) assignment repo. Defaults to the current
-        /// directory.
+        /// Path to the (private) assignment repo.
         #[arg(long, default_value = ".")]
         assignment: PathBuf,
     },
     /// Build the offline vendor dir + base image for an assignment.
     Vendor {
-        /// Path to the assignment repo. Defaults to the current directory.
+        /// Path to the assignment repo.
         #[arg(long, default_value = ".")]
         assignment: PathBuf,
     },
     /// Invite every roster student to a GitHub org and add them to one of
-    /// its teams. Add-only: nobody is ever removed.
+    /// its teams.
     Register {
         /// Roster CSV: `github_user,student_id,...`, where `github_user`
         /// is the student's GitHub handle.
@@ -127,8 +122,7 @@ pub enum Command {
         #[arg(long)]
         local_sandbox: bool,
     },
-    /// Compute scores from persisted `evaluate` results and writes
-    /// applies the current scoring policy fresh every time, and writes a
+    /// Compute scores from persisted `evaluate` results and write a
     /// gradebook CSV to `<submissions>/.grades/grades.csv`.
     Grade {
         /// Path to the assignment repo (for the current scoring policy).
@@ -139,21 +133,15 @@ pub enum Command {
         #[arg(long)]
         submissions: PathBuf,
     },
-    /// Print one submission's persisted fetch record (if any) and latest
-    /// evaluate run (if any). Read-only -- never re-runs Fetch or
-    /// Evaluate.
+    /// Print information about a submission.
     Show {
-        /// Path to a submission checkout dir, e.g. `<submissions>/alice`
-        /// (the same layout `autograder fetch --out`/`evaluate
-        /// --submissions` use) -- `.fetch/`/`.eval/` records are looked up
-        /// as its siblings.
+        /// Path to a submission checkout dir, e.g., `<submissions>/alice`
         submission: PathBuf,
     },
     /// Publish either the starter or solution repo from the private
-    /// instructor workspace. Asks which of the two unless `--mode` says.
+    /// workspace.
     Publish {
-        /// Path to the private instructor workspace. Defaults to the
-        /// current directory.
+        /// Path to the private instructor workspace.
         #[arg(long, default_value = ".")]
         assignment: PathBuf,
         /// Output directory for the published tree.
@@ -164,9 +152,7 @@ pub enum Command {
         #[arg(long, value_enum)]
         mode: Option<PublishModeArg>,
     },
-    /// Create a private GitHub repo for a published tree and push it
-    /// there. Prompts for the semester and whether the tree is the starter
-    /// or the solution.
+    /// Create a private GitHub repo for a published tree and push it there.
     Push {
         #[arg(default_value = ".")]
         assignment: PathBuf,
@@ -188,7 +174,7 @@ pub struct DetachFlag {
 
 impl DetachFlag {
     /// `None` when neither flag was passed -- the state `fetch` resolves
-    /// by asking, or by deciding for itself when there's no terminal.
+    /// by asking, and refuses to guess when there's no terminal.
     pub fn choice(&self) -> Option<bool> {
         match (self.detach, self.no_detach) {
             (true, false) => Some(true),
