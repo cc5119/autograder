@@ -1,20 +1,19 @@
 use std::path::Path;
 
-use crate::deps::vendor;
 use crate::error::Result;
 use crate::model::{EvalStatus, EvaluationResult, TestOutcome};
 use crate::pipeline;
 use crate::spec::Spec;
 
-pub fn run(assignment: &Path, submissions: &Path, local_sandbox: bool) -> Result<()> {
-    let spec = Spec::load(assignment)?;
+use super::build_evaluator;
 
-    let vendor_dir = vendor::batch_vendor_dir(submissions);
-    vendor::vendor(assignment, &vendor_dir, &spec)?;
+pub fn run(assignment_dir: &Path, submissions_dir: &Path, local_sandbox: bool) -> Result<()> {
+    let spec = Spec::load(assignment_dir)?;
 
-    let evaluator = super::build_evaluator(&spec, assignment, &vendor_dir, local_sandbox)?;
+    let evaluator = build_evaluator(&spec, local_sandbox)?;
 
-    let evals = pipeline::evaluate_batch(submissions, evaluator.as_ref(), assignment, &spec)?;
+    let evals =
+        pipeline::evaluate_batch(submissions_dir, evaluator.as_ref(), assignment_dir, &spec)?;
 
     print!("{}", render_summary(&evals));
 

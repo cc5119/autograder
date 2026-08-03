@@ -186,6 +186,7 @@ mod tests {
             github_user: "alice".into(),
             run_id: "run-1".into(),
             workspace: PathBuf::from("/tmp/does-not-matter"),
+            vendor_dir: PathBuf::from("/tmp/does-not-matter/.vendor"),
         };
 
         let eval = evaluator.evaluate(&ctx).unwrap();

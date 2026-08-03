@@ -23,22 +23,58 @@ use autograder::spec::Spec;
 
 use crate::common::write;
 
-/// Written to `assignment_dir/Cargo.lock` in every test that calls
-/// `evaluate_batch` -- `lock::verify` runs before any submission is
-/// touched, regardless of what a given test's `Cargo.toml` declares.
-const LOCK_TOML: &str = "version = 4\n\n[[package]]\nname = \"hw3\"\nversion = \"0.1.0\"\n";
+/// `evaluate_batch` vendors the assignment workspace before it touches any
+/// submission, so every test's `assignment_dir` has to be a workspace Cargo
+/// can actually resolve, locked to a `Cargo.lock` matching the spec's
+/// `cargo-lock-sha256`. Writes a dependency-free member package per name in
+/// `members` (skipping any the test wrote itself), resolves the lock with a
+/// real `cargo generate-lockfile`, and returns the `Spec` carrying its hash.
+fn workspace_spec(assignment_dir: &std::path::Path, id: &str, members: &[&str]) -> Spec {
+    write(
+        &assignment_dir.join("Cargo.toml"),
+        &format!(
+            "[workspace]\nresolver = \"3\"\nmembers = [{}]\n",
+            members
+                .iter()
+                .map(|m| format!("\"{m}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    );
+    for member in members {
+        let manifest = assignment_dir.join(member).join("Cargo.toml");
+        if !manifest.is_file() {
+            write(
+                &manifest,
+                &format!(
+                    "[package]\nname = \"{member}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+                ),
+            );
+            write(&assignment_dir.join(member).join("src/lib.rs"), "");
+        }
+    }
 
-fn spec_toml() -> String {
-    format!(
+    let output = std::process::Command::new("cargo")
+        .arg("generate-lockfile")
+        .arg("--manifest-path")
+        .arg(assignment_dir.join("Cargo.toml"))
+        .output()
+        .expect("cargo must be on PATH");
+    assert!(
+        output.status.success(),
+        "cargo generate-lockfile failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lock = std::fs::read_to_string(assignment_dir.join("Cargo.lock")).unwrap();
+
+    let toml = format!(
         r#"
 [assignment]
-id = "hw3"
+id = "{id}"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{}"
-
 
 [sandbox]
 image = "autograder-base:1.86.0"
@@ -54,8 +90,9 @@ max-output-bytes = "1MiB"
 formula = "sum"
 base = 0.0
 "#,
-        autograder::deps::cargo_lock::sha256_hex(LOCK_TOML)
-    )
+        autograder::deps::cargo_lock::sha256_hex(&lock)
+    );
+    toml::from_str(&toml).unwrap()
 }
 
 fn passing_test(name: &str) -> TestResult {
@@ -87,17 +124,12 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
     let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
-    write(
-        &assignment_dir.path().join("Cargo.toml"),
-        "[workspace]\nmembers = [\"hw3\"]\n",
-    );
-    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
+    let spec = workspace_spec(assignment_dir.path(), "hw3", &["hw3"]);
     write(
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",
     );
 
-    let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
         tests: vec![passing_test("insert_basic")],
     };
@@ -138,9 +170,8 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
         &submissions_dir.path().join("alice/src/lib.rs"),
         "// student code",
     );
-    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
+    let spec = workspace_spec(assignment_dir.path(), "hw3", &["hw3"]);
 
-    let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
         tests: vec![passing_test("insert_basic")],
     };
@@ -204,18 +235,15 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
     let submissions_dir = tempfile::tempdir().unwrap();
 
     write(
-        &assignment_dir.path().join("Cargo.toml"),
-        "[workspace]\nmembers = [\"harness\", \"wc\"]\n",
-    );
-    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
-    write(
         &assignment_dir.path().join("harness/Cargo.toml"),
         "[package]\nname = \"driver\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
     );
+    write(&assignment_dir.path().join("harness/src/lib.rs"), "");
     write(
         &assignment_dir.path().join("harness/tests/judge.rs"),
         "#[test]\nfn counts_words() {}\n",
     );
+    let spec = workspace_spec(assignment_dir.path(), "wc", &["harness", "wc"]);
 
     write(
         &submissions_dir.path().join("alice/wc/src/main.rs"),
@@ -228,10 +256,6 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
         "#[test]\nfn fake_pass() { assert!(true); }\n",
     );
 
-    let toml = spec_toml()
-        .replace("kind = \"library\"", "kind = \"binary\"")
-        .replace("id = \"hw3\"", "id = \"wc\"");
-    let spec: Spec = toml::from_str(&toml).unwrap();
     let seen = std::sync::Mutex::new(None);
     let evaluator = CapturingEvaluator { seen: &seen };
 
@@ -254,11 +278,7 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
     let assignment_dir = tempfile::tempdir().unwrap();
     let submissions_dir = tempfile::tempdir().unwrap();
 
-    write(
-        &assignment_dir.path().join("Cargo.toml"),
-        "[workspace]\nmembers = [\"hw3\"]\n",
-    );
-    write(&assignment_dir.path().join("Cargo.lock"), LOCK_TOML);
+    let spec = workspace_spec(assignment_dir.path(), "hw3", &["hw3"]);
     write(
         &submissions_dir.path().join("alice/hw3/src/lib.rs"),
         "// student code",
@@ -268,7 +288,6 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
         "[package]\nname = \"bst\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1\"\n",
     );
 
-    let spec: Spec = toml::from_str(&spec_toml()).unwrap();
     let evaluator = StubEvaluator {
         tests: vec![passing_test("insert_basic")],
     };

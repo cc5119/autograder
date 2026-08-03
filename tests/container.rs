@@ -74,7 +74,7 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         "fn main() {\n    std::fs::write(\n        \"../harness/tests/judge.rs\",\n        \"#[test] fn all_pass() { println!(\\\"autograder: score=1000000\\\"); }\",\n    )\n    .ok();\n}\n",
     );
 
-    let evaluator = Nextest::new(&spec, assignment_dir.path(), sandbox()).unwrap();
+    let evaluator = Nextest::new(&spec, sandbox());
 
     let evals = evaluate_batch(
         submissions_dir.path(),
@@ -109,7 +109,7 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
 
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
     assert_eq!(
-        grade.score,
+        grade.score(),
         Some(1.0),
         "expected the trusted judge's baseline, not a forged score"
     );

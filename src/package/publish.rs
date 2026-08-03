@@ -74,9 +74,7 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
     // hash `autograder lock` last recorded, publishing would ship students
     // an allowlist inconsistent with what grading actually checks against.
     if let Some(message) = deps::lock::verify(assignment_dir, &spec) {
-        return Err(Error::InvalidSpec(format!(
-            "refusing to publish: {message}"
-        )));
+        return Err(Error::StaleLock(format!("refusing to publish: {message}")));
     }
 
     // Checked ahead of the real compile below so these still get a clear

@@ -1,7 +1,6 @@
 [assignment]
 id = "fizzbuzz"
 name = "FizzBuzz (binary example)"
-kind = "binary"
 deadline = "2099-01-01T00:00:00[UTC]"
 harness = "harness"
 cargo-lock-sha256 = "1e6febe6eebbde0137b4730bab0af7872e2bc5939fda564e0dbc756c2406cf9c"

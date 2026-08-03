@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::deps;
 use crate::error::{Error, Result};
+use crate::exec::fs;
 use crate::spec::Spec;
 
 /// `vendor_dir/<VENDOR_CONFIG_FILE>`: the exact `.cargo/config.toml`
@@ -36,15 +38,15 @@ pub fn absolutize(path: &Path) -> PathBuf {
 /// vendoring can never silently pull a different dependency graph than the
 /// one grading is meant to check submissions against.
 pub fn vendor(assignment_dir: &Path, vendor_dir: &Path, spec: &Spec) -> Result<()> {
-    if let Some(message) = crate::deps::lock::verify(assignment_dir, spec) {
-        return Err(Error::InvalidSpec(message));
+    if let Some(message) = deps::lock::verify(assignment_dir, spec) {
+        return Err(Error::StaleLock(message));
     }
 
     let vendor_dir = absolutize(vendor_dir);
     let manifest_path = assignment_dir.join("Cargo.toml");
 
     if vendor_dir.exists() {
-        crate::exec::fs::remove_dir_all(&vendor_dir)?;
+        fs::remove_dir_all(&vendor_dir)?;
     }
 
     let output = Command::new("cargo")
@@ -66,7 +68,7 @@ pub fn vendor(assignment_dir: &Path, vendor_dir: &Path, spec: &Spec) -> Result<(
     // `cargo vendor` exits successfully for one -- it just never creates
     // the directory (or prints any config), since there's nothing to
     // vendor or redirect.
-    crate::exec::fs::create_dir_all(&vendor_dir)?;
+    fs::create_dir_all(&vendor_dir)?;
 
     // `cargo vendor`'s own stdout is the one place that already knows
     // about every source it redirected -- crates-io *and* each git
@@ -74,7 +76,7 @@ pub fn vendor(assignment_dir: &Path, vendor_dir: &Path, spec: &Spec) -> Result<(
     // absolute path above, the `directory = "..."` line it prints is
     // already absolute too.
     let vendor_config = String::from_utf8_lossy(&output.stdout).into_owned();
-    crate::exec::fs::write(&vendor_dir.join(VENDOR_CONFIG_FILE), &vendor_config)?;
+    fs::write(&vendor_dir.join(VENDOR_CONFIG_FILE), &vendor_config)?;
 
     Ok(())
 }
@@ -117,7 +119,6 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{}"
@@ -208,6 +209,6 @@ base = 0.0
         spec.assignment.cargo_lock_sha256 = "not-the-real-hash".repeat(4);
 
         let err = vendor(package.path(), &package.path().join(".vendor"), &spec).unwrap_err();
-        assert!(matches!(err, Error::InvalidSpec(_)));
+        assert!(matches!(err, Error::StaleLock(_)));
     }
 }

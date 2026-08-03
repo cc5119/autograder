@@ -45,10 +45,11 @@
 //! (`vendor::VENDOR_CONFIG_FILE`).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::deps::vendor;
 use crate::error::{Error, Result};
+use crate::exec::fs;
 use crate::exec::sandbox::{
     Mount, ProcessStatus, Profile, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec,
 };
@@ -62,74 +63,55 @@ use super::{Evaluator, sandbox_limits, write_nextest_config};
 
 pub struct Nextest<S> {
     sandbox: S,
-    vendor_dir: PathBuf,
     limits: SandboxLimits,
-    /// `[assignment].harness` -- names both the harness's sibling directory
-    /// and its own `[package].name`, which must agree. Cloned once at
-    /// construction so `evaluate` can pass `-p <harness_package>`.
+    /// Name of the harness package for which we run tests (`cargo test -p <harness>`)
     harness_package: String,
 }
 
 impl<S: Sandbox> Nextest<S> {
-    pub fn new(
-        spec: &Spec,
-        assignment_dir: &Path,
-        vendor_dir: impl Into<PathBuf>,
-        sandbox: S,
-    ) -> Result<Self> {
-        let harness_manifest = assignment_dir
-            .join(&spec.assignment.harness)
-            .join("Cargo.toml");
-        if !harness_manifest.is_file() {
-            return Err(Error::InvalidSpec(format!(
-                "assignment missing {} -- the harness must be a real, \
-                 instructor-authored crate (no default is generated)",
-                harness_manifest.display()
-            )));
-        }
-        Ok(Self {
+    pub fn new(spec: &Spec, sandbox: S) -> Self {
+        Self {
             sandbox,
-            vendor_dir: vendor::absolutize(&vendor_dir.into()),
             limits: sandbox_limits(&spec.build_limits),
             harness_package: spec.assignment.harness.clone(),
-        })
+        }
     }
 
     /// Env shared identically across all three cargo invocations, so they
     /// agree on where `target/` is (see this module's doc comment).
-    fn cargo_env(&self, repo_root: &Path) -> BTreeMap<String, String> {
+    fn cargo_env(&self, ctx: &JobContext) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
-        if self.vendor_dir.is_dir() {
+        if ctx.vendor_dir.is_dir() {
             env.insert("CARGO_NET_OFFLINE".to_string(), "true".to_string());
         }
         env.insert(
             "CARGO_TARGET_DIR".to_string(),
-            repo_root.join("target").display().to_string(),
+            ctx.workspace.join("target").display().to_string(),
         );
         env
     }
 
-    fn harness_dir(&self, repo_root: &Path) -> PathBuf {
-        repo_root.join(&self.harness_package)
+    fn harness_dir(&self, ctx: &JobContext) -> PathBuf {
+        ctx.workspace.join(&self.harness_package)
     }
 
     /// For the run stage (see this module's doc comment).
-    fn full_mounts(&self, repo_root: &Path, submission_dir: &Path) -> Vec<Mount> {
+    fn full_mounts(&self, ctx: &JobContext) -> Vec<Mount> {
         super::repo_root_mounts(
-            repo_root,
-            submission_dir,
-            &self.harness_dir(repo_root),
-            &self.vendor_dir,
+            &ctx.workspace,
+            &ctx.submission_package_dir(),
+            &self.harness_dir(ctx),
+            &ctx.vendor_dir,
         )
     }
 
     /// For the two build stages (see this module's doc comment).
-    fn hidden_tests_mounts(&self, repo_root: &Path, submission_dir: &Path) -> Result<Vec<Mount>> {
+    fn hidden_tests_mounts(&self, ctx: &JobContext) -> Result<Vec<Mount>> {
         super::hidden_tests_mounts(
-            repo_root,
-            submission_dir,
-            &self.harness_dir(repo_root),
-            &self.vendor_dir,
+            &ctx.workspace,
+            &ctx.submission_package_dir(),
+            &self.harness_dir(ctx),
+            &ctx.vendor_dir,
         )
     }
 
@@ -139,25 +121,23 @@ impl<S: Sandbox> Nextest<S> {
     /// dependencies redirected, see `deps::vendor::vendor`'s doc comment)
     /// still produces an empty file, which Cargo treats as no override at
     /// all.
-    fn write_repo_root_config(&self, repo_root: &Path) -> Result<()> {
-        if !self.vendor_dir.is_dir() {
+    fn write_repo_root_config(&self, ctx: &JobContext) -> Result<()> {
+        if !ctx.vendor_dir.is_dir() {
             return Ok(());
         }
-        let vendor_config =
-            crate::exec::fs::read_to_string(&self.vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
-                .unwrap_or_default();
-        let cargo_dir = repo_root.join(".cargo");
-        crate::exec::fs::create_dir_all(&cargo_dir)?;
-        crate::exec::fs::write(&cargo_dir.join("config.toml"), &vendor_config)
+        let vendor_config = fs::read_to_string(&ctx.vendor_dir.join(vendor::VENDOR_CONFIG_FILE))
+            .unwrap_or_default();
+        let cargo_dir = ctx.workspace.join(".cargo");
+        fs::create_dir_all(&cargo_dir)?;
+        fs::write(&cargo_dir.join("config.toml"), &vendor_config)
     }
 }
 
 impl<S: Sandbox> Evaluator for Nextest<S> {
     fn evaluate(&self, ctx: &JobContext) -> Result<EvaluationResult> {
         let repo_root = &ctx.workspace;
-        let submission_dir = ctx.submission_package_dir();
-        self.write_repo_root_config(repo_root)?;
-        let env = self.cargo_env(repo_root);
+        self.write_repo_root_config(ctx)?;
+        let env = self.cargo_env(ctx);
 
         // Stage 1 (see this module's doc comment).
         let build_id_spec = SandboxSpec {
@@ -171,7 +151,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             limits: Some(self.limits.clone()),
             workdir: repo_root.clone(),
             env: env.clone(),
-            mounts: self.hidden_tests_mounts(repo_root, &submission_dir)?,
+            mounts: self.hidden_tests_mounts(ctx)?,
             profile: Profile::Build,
         };
 
@@ -199,7 +179,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             limits: Some(self.limits.clone()),
             workdir: repo_root.clone(),
             env: env.clone(),
-            mounts: self.full_mounts(repo_root, &submission_dir),
+            mounts: self.full_mounts(ctx),
             profile: Profile::Build,
         };
 
@@ -238,7 +218,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
                 }
                 env
             },
-            mounts: self.full_mounts(repo_root, &submission_dir),
+            mounts: self.full_mounts(ctx),
             profile: Profile::IsolateRun,
         };
 
@@ -545,7 +525,6 @@ autograder: case=b score=0.25
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -580,11 +559,17 @@ base = 0.0
     }
 
     fn ctx(repo_root: PathBuf) -> JobContext {
+        let vendor_dir = repo_root.join(".vendor");
+        ctx_with_vendor(repo_root, vendor_dir)
+    }
+
+    fn ctx_with_vendor(repo_root: PathBuf, vendor_dir: PathBuf) -> JobContext {
         JobContext {
             assignment_id: "hw3".into(),
             github_user: "alice".into(),
             run_id: "run-1".into(),
             workspace: repo_root,
+            vendor_dir,
         }
     }
 
@@ -600,33 +585,18 @@ base = 0.0
     }
 
     #[test]
-    fn new_errors_clearly_when_the_harness_is_missing() {
-        let assignment_dir = tempfile::tempdir().unwrap();
-
-        let result = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            ScriptedSandbox::new(vec![]),
-        );
-
-        assert!(matches!(result, Err(Error::InvalidSpec(_))));
-    }
-
-    #[test]
     fn write_repo_root_config_is_a_no_op_without_a_vendored_vendor_dir() {
         let assignment_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            ScriptedSandbox::new(vec![]),
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), ScriptedSandbox::new(vec![]));
 
-        evaluator.write_repo_root_config(repo_root.path()).unwrap();
+        evaluator
+            .write_repo_root_config(&ctx_with_vendor(
+                repo_root.path().to_path_buf(),
+                assignment_dir.path().join(".vendor"),
+            ))
+            .unwrap();
 
         assert!(!repo_root.path().join(".cargo/config.toml").exists());
     }
@@ -645,15 +615,14 @@ base = 0.0
         )
         .unwrap();
         let repo_root = tempfile::tempdir().unwrap();
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            ScriptedSandbox::new(vec![]),
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), ScriptedSandbox::new(vec![]));
 
-        evaluator.write_repo_root_config(repo_root.path()).unwrap();
+        evaluator
+            .write_repo_root_config(&ctx_with_vendor(
+                repo_root.path().to_path_buf(),
+                assignment_dir.path().join(".vendor"),
+            ))
+            .unwrap();
 
         let config = std::fs::read_to_string(repo_root.path().join(".cargo/config.toml")).unwrap();
         assert!(config.contains("source.vendored-sources"));
@@ -668,13 +637,7 @@ base = 0.0
         let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -696,13 +659,7 @@ base = 0.0
         let (_workspace, _harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -725,13 +682,7 @@ base = 0.0
         // build id, build harness, run -- all three stages succeed, but no
         // junit report is on disk afterwards.
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -759,13 +710,7 @@ base = 0.0
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let sandbox = ScriptedSandbox::new(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
 
         let eval = evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
@@ -789,13 +734,7 @@ base = 0.0
         let (_workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![failed_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();
@@ -825,13 +764,7 @@ base = 0.0
         let (_workspace, harness_dir) = job_dirs(repo_root.path());
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();
@@ -868,13 +801,7 @@ base = 0.0
         std::fs::write(&junit_path, SAMPLE_JUNIT).unwrap();
 
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), ok_outcome(), ok_outcome()]);
-        let evaluator = Nextest::new(
-            &spec(),
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec(), sandbox);
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();
@@ -916,7 +843,6 @@ base = 0.0
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "judge"
 cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -943,13 +869,7 @@ base = 0.0
         // the custom harness package name) fails -- that's the one that
         // should reference "judge".
         let (sandbox, specs) = ScriptedSandbox::spy(vec![ok_outcome(), failed_outcome()]);
-        let evaluator = Nextest::new(
-            &spec,
-            assignment_dir.path(),
-            assignment_dir.path().join(".vendor"),
-            sandbox,
-        )
-        .unwrap();
+        let evaluator = Nextest::new(&spec, sandbox);
         evaluator
             .evaluate(&ctx(repo_root.path().to_path_buf()))
             .unwrap();

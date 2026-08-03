@@ -15,6 +15,11 @@ pub enum Error {
     #[error("invalid spec: {0}")]
     InvalidSpec(String),
 
+    /// `Cargo.lock` no longer matches `[assignment].cargo-lock-sha256` --
+    /// `deps::lock::verify`'s message is already self-describing.
+    #[error("{0}")]
+    StaleLock(String),
+
     #[error("failed to parse {path}: {source}")]
     Toml {
         path: PathBuf,

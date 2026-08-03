@@ -9,8 +9,6 @@ pub mod push;
 pub mod register;
 pub mod show;
 
-use std::path::Path;
-
 use crate::cli::Command;
 use crate::error::Result;
 use crate::exec::sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
@@ -65,44 +63,27 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
     }
 }
 
-pub(crate) fn build_evaluator(
-    spec: &Spec,
-    assignment_dir: &Path,
-    vendor_dir: &Path,
-    local_sandbox: bool,
-) -> Result<Box<dyn Evaluator>> {
+pub(crate) fn build_evaluator(spec: &Spec, local_sandbox: bool) -> Result<Box<dyn Evaluator>> {
     if local_sandbox {
         tracing::warn!(
-            "grading with --local-sandbox: skipping Podman entirely, running student code as a \
-             host process with no container isolation -- for local development/ \
-             testing only, never for grading real submissions"
+            "grading with --local-sandbox: skipping Podman entirely, running code as a \
+             host process with no container isolation"
         );
-        build_evaluator_for(spec, assignment_dir, vendor_dir, LocalSandbox)
+        Ok(build_evaluator_for(spec, LocalSandbox))
     } else {
         let sandbox = ContainerSandbox::new(spec.sandbox.image.clone());
         sandbox.preflight()?;
-        build_evaluator_for(spec, assignment_dir, vendor_dir, sandbox)
+        Ok(build_evaluator_for(spec, sandbox))
     }
 }
 
-fn build_evaluator_for(
-    spec: &Spec,
-    assignment_dir: &Path,
-    vendor_dir: &Path,
-    sandbox: impl Sandbox + 'static,
-) -> Result<Box<dyn Evaluator>> {
-    Ok(Box::new(Nextest::new(
-        spec,
-        assignment_dir,
-        vendor_dir,
-        sandbox,
-    )?))
+fn build_evaluator_for(spec: &Spec, sandbox: impl Sandbox + 'static) -> Box<dyn Evaluator> {
+    Box::new(Nextest::new(spec, sandbox))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
     use crate::exec::sandbox::LocalSandbox;
     use crate::model::{self, JobContext};
     use crate::report::ci::CiReport;
@@ -122,7 +103,6 @@ mod tests {
 [assignment]
 id = "hw3"
 name = "Binary search tree"
-kind = "library"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{}"
@@ -185,14 +165,9 @@ base = 0.0
             github_user: "local".into(),
             run_id: "run-1".into(),
             workspace: harness_dir.path().to_path_buf(),
+            vendor_dir: harness_dir.path().join(".vendor"),
         };
-        let evaluator = build_evaluator_for(
-            &spec,
-            harness_dir.path(),
-            &harness_dir.path().join(".vendor"),
-            LocalSandbox,
-        )
-        .unwrap();
+        let evaluator = build_evaluator_for(&spec, LocalSandbox);
         let eval = evaluator.evaluate(&ctx).unwrap();
 
         assert!(matches!(
@@ -208,41 +183,6 @@ base = 0.0
             lockfile_mismatch: None,
         };
         assert!(!report.passed());
-    }
-
-    /// Evaluator construction is kind-agnostic now (see
-    /// `pipeline::evaluator::nextest`'s module doc comment) -- it only
-    /// needs the harness manifest to exist, regardless of `kind`.
-    #[test]
-    fn ci_evaluator_selection_succeeds_when_the_harness_dir_exists() {
-        let spec: Spec = toml::from_str(&public_spec()).unwrap();
-
-        let harness_dir = tempfile::tempdir().unwrap();
-        write(
-            &harness_dir.path().join("harness/Cargo.toml"),
-            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
-        );
-        let result = build_evaluator_for(
-            &spec,
-            harness_dir.path(),
-            &harness_dir.path().join(".vendor"),
-            LocalSandbox,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn ci_evaluator_selection_errors_clearly_when_the_harness_dir_is_missing() {
-        let spec: Spec = toml::from_str(&public_spec()).unwrap();
-
-        let harness_dir = tempfile::tempdir().unwrap();
-        let result = build_evaluator_for(
-            &spec,
-            harness_dir.path(),
-            &harness_dir.path().join(".vendor"),
-            LocalSandbox,
-        );
-        assert!(matches!(result, Err(Error::InvalidSpec(_))));
     }
 
     /// `evaluate --local-sandbox` must never touch `ContainerSandbox` or

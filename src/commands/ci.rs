@@ -9,6 +9,8 @@ use crate::report::ci::CiReport;
 use crate::spec::Spec;
 use crate::str_map;
 
+use super::build_evaluator;
+
 /// Student-facing `ci` entrypoint: Prepare + Build + Evaluate against the public harness.
 pub fn run(local_sandbox: bool) -> Result<()> {
     let checkout_dir = fs::current_dir()?;
@@ -30,18 +32,18 @@ pub fn run(local_sandbox: bool) -> Result<()> {
     )?;
 
     // `vendor::vendor` checks `Cargo.lock` against the blessed hash itself
-    // and refuses to run against a mismatch -- caught here and turned into
-    // a same `LockfileMismatch` diagnostic.
+    // and refuses to run against a mismatch -- a student's own edited lock
+    // is a report diagnostic here, not a crash.
     let vendor_scratch = fs::temp_dir()?;
     let vendor_dir = vendor_scratch.path().join("vendor");
     let lockfile_mismatch = match vendor::vendor(assignment_dir, &vendor_dir, &spec) {
         Ok(()) => None,
-        Err(Error::InvalidSpec(message)) => Some(message),
+        Err(Error::StaleLock(message)) => Some(message),
         Err(other) => return Err(other),
     };
 
     let eval = if lockfile_mismatch.is_none() {
-        let evaluator = super::build_evaluator(&spec, assignment_dir, &vendor_dir, local_sandbox)?;
+        let evaluator = build_evaluator(&spec, local_sandbox)?;
 
         let build_scratch = fs::temp_dir()?;
         let ctx = JobContext {
@@ -49,6 +51,7 @@ pub fn run(local_sandbox: bool) -> Result<()> {
             github_user: GithubUser::new("local"),
             run_id: pipeline::generate_run_id(),
             workspace: build_scratch.path().to_path_buf(),
+            vendor_dir: vendor_dir.clone(),
         };
 
         Some(pipeline::evaluate_submission(

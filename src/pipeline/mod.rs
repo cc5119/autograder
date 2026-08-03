@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
+use crate::deps;
 use crate::deps::cargo_lock::CargoLock;
-use crate::deps::lock;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::exec::fs;
 use crate::exec::json::write_json;
 use crate::exec::overlay::{self, Context, Rule};
@@ -193,20 +193,19 @@ fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
 /// persisted at `submissions_dir/.eval/<github_user>/<run_id>.eval.json`.
 /// No scoring happens here -- run `autograder grade` afterwards for that.
 ///
-/// The dependency set every sandboxed `--offline` build resolves against is
-/// vendored by the caller before this runs (`autograder evaluate` does it in
-/// `commands::evaluate`), into `deps::vendor::batch_vendor_dir`'s path under
-/// `submissions_dir`.
+/// Vendors the assignment's dependency set once up front, into
+/// `deps::vendor::batch_vendor_dir`'s path under `submissions_dir`: every
+/// sandboxed build runs `--offline` against it, and it's the same
+/// (read-only) dir for every job. A stale `Cargo.lock` or an unresolvable
+/// workspace fails the whole batch here, before any submission is touched.
 pub fn evaluate_batch(
     submissions_dir: &Path,
     evaluator: &dyn Evaluator,
     assignment_dir: &Path,
     spec: &Spec,
 ) -> Result<Vec<EvaluationResult>> {
-    if let Some(message) = lock::verify(assignment_dir, spec) {
-        return Err(Error::InvalidSpec(message));
-    }
-    let vendor_dir = crate::deps::vendor::batch_vendor_dir(submissions_dir);
+    let vendor_dir = deps::vendor::batch_vendor_dir(submissions_dir);
+    deps::vendor::vendor(assignment_dir, &vendor_dir, spec)?;
 
     let github_users = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
@@ -235,6 +234,7 @@ pub fn evaluate_batch(
             github_user,
             run_id,
             workspace: build_scratch.path().to_path_buf(),
+            vendor_dir: vendor_dir.clone(),
         };
 
         let diagnostics = manifest_diagnostics(&checkout_dir, assignment_dir, &vendor_dir, spec)?;
@@ -257,7 +257,3 @@ pub fn evaluate_batch(
 
     Ok(evals)
 }
-
-// This module's private helpers have no dedicated tests of their own --
-// their behavior lives in `tests/pipeline.rs` as an integration test instead
-// (see that file's doc comment).

@@ -1,7 +1,6 @@
 [assignment]
 id = "library-stack"
 name = "Stack (library example)"
-kind = "library"
 deadline = "2099-01-01T00:00:00[UTC]"
 harness = "harness"
 cargo-lock-sha256 = "df010df7f6ca240b0fd5d292440e4665b16ef4ff761464701f866f801bcedce9"

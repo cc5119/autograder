@@ -119,7 +119,7 @@ fn publish_refuses_to_ship_a_stale_cargo_lock() {
     let out_dir = tempfile::tempdir().unwrap();
 
     let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
-    assert!(matches!(err, Error::InvalidSpec(_)));
+    assert!(matches!(err, Error::StaleLock(_)));
     assert!(!out_dir.path().join(SPEC_FILE).exists());
 }
 

@@ -26,6 +26,9 @@ pub struct JobContext {
     pub github_user: GithubUser,
     pub run_id: RunId,
     pub workspace: PathBuf,
+    /// The batch's vendored dependency set, mounted read-only into the
+    /// sandbox -- one dir shared by every job (`deps::vendor::vendor`).
+    pub vendor_dir: PathBuf,
 }
 
 impl JobContext {
