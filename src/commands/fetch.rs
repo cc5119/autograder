@@ -169,7 +169,6 @@ fn render_plan(
 
     for row in &plan.rows {
         let id = row.entry.github_user.as_str();
-        let student_id = row.entry.student_id.as_str();
         let (repo, note) = match &row.plan {
             Plan::Fetch { fork, also } if also.is_empty() => (fork.nwo(), String::new()),
             Plan::Fetch { fork, also } => (
@@ -192,7 +191,7 @@ fn render_plan(
             ),
             Plan::Missing { .. } => ("--".to_string(), style("no fork").red().to_string()),
         };
-        let _ = writeln!(s, "  {id:<width$}  {student_id:<12}  {repo:<40}  {note}");
+        let _ = writeln!(s, "  {id:<width$}  {repo:<40}  {note}");
     }
 
     let fetching = plan.to_fetch();

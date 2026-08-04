@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::id::{GithubUser, StudentId};
+use indexmap::IndexMap;
 
-const KNOWN_COLUMNS: &[&str] = &["github_user", "student_id"];
+use crate::error::{Error, Result};
+use crate::id::GithubUser;
+
+const KNOWN_COLUMNS: &[&str] = &["github_user"];
 
 /// One roster row.
 #[derive(Debug, Clone)]
@@ -12,14 +13,14 @@ pub struct RosterEntry {
     /// The student's GitHub handle: what their fork is matched by, and the
     /// name their checkout dir gets (see [`crate::id::GithubUser`]).
     pub github_user: GithubUser,
-    pub student_id: StudentId,
-    pub metadata: BTreeMap<String, String>,
+    /// Every other column, in the order it appeared in the roster CSV.
+    pub metadata: IndexMap<String, String>,
 }
 
 /// A CSV roster: `github_user,student_id,email,section,...`. Columns
-/// beyond the two required ones are carried into `RosterEntry::metadata`
-/// and land verbatim in the fetch record. No repo column -- submissions
-/// are found by listing the upstream repo's forks and matching
+/// beyond the required `github_user` are carried into `RosterEntry::metadata`,
+/// in header order, and land verbatim in the fetch record. No repo column --
+/// submissions are found by listing the upstream repo's forks and matching
 /// `github_user` against each fork's owner (see
 /// [`crate::submissions::forks`]).
 pub struct CsvRoster {
@@ -57,13 +58,11 @@ fn read_roster(path: &Path) -> Result<Vec<RosterEntry>> {
         })?;
 
         let mut github_user = None;
-        let mut student_id = None;
-        let mut metadata = BTreeMap::new();
+        let mut metadata = IndexMap::new();
 
         for (header, value) in headers.iter().zip(record.iter()) {
             match header {
                 "github_user" => github_user = non_empty(value),
-                "student_id" => student_id = non_empty(value),
                 other if !KNOWN_COLUMNS.contains(&other) => {
                     metadata.insert(other.to_string(), value.to_string());
                 }
@@ -72,11 +71,9 @@ fn read_roster(path: &Path) -> Result<Vec<RosterEntry>> {
         }
 
         let github_user = github_user.ok_or_else(|| missing(path, "github_user", &record))?;
-        let student_id = student_id.ok_or_else(|| missing(path, "student_id", &record))?;
 
         entries.push(RosterEntry {
             github_user: GithubUser::new(github_user),
-            student_id: StudentId::new(student_id),
             metadata,
         });
     }
@@ -115,31 +112,28 @@ mod tests {
         assert_eq!(entries.len(), 2);
 
         assert_eq!(entries[0].github_user, "alice-gh");
-        assert_eq!(entries[0].student_id, "A12345678");
+        assert_eq!(
+            entries[0].metadata.get("student_id"),
+            Some(&"A12345678".to_string())
+        );
         assert_eq!(
             entries[0].metadata.get("email"),
             Some(&"alice@x.edu".to_string())
         );
         assert_eq!(entries[0].metadata.get("section"), Some(&"A".to_string()));
-        assert!(!entries[0].metadata.contains_key("student_id"));
+        assert_eq!(
+            entries[0].metadata.keys().collect::<Vec<_>>(),
+            vec!["student_id", "email", "section"]
+        );
 
         assert_eq!(entries[1].github_user, "bob-gh");
-        assert_eq!(entries[1].student_id, "A87654321");
     }
 
     #[test]
-    fn a_blank_student_id_is_an_error_naming_the_row() {
-        let file = tempfile_with_contents("github_user,student_id\nalice-gh,\n");
+    fn a_missing_github_user_column_is_an_error() {
+        let file = tempfile_with_contents("student_id,email\nA12345678,alice@x.edu\n");
         let err = read_roster(file.path()).unwrap_err().to_string();
-        assert!(err.contains("student_id"), "{err}");
-        assert!(err.contains("alice-gh"), "{err}");
-    }
-
-    #[test]
-    fn a_missing_column_is_an_error() {
-        let file = tempfile_with_contents("github_user,email\nalice-gh,alice@x.edu\n");
-        let err = read_roster(file.path()).unwrap_err().to_string();
-        assert!(err.contains("student_id"), "{err}");
+        assert!(err.contains("github_user"), "{err}");
     }
 
     fn tempfile_with_contents(contents: &str) -> tempfile::NamedTempFile {

@@ -7,6 +7,7 @@ use crate::model::EvaluationResult;
 use crate::pipeline::grade;
 use crate::report::{csv, summary};
 use crate::spec::Spec;
+use crate::submissions::read_fetch_record;
 
 /// Where `evaluate_batch` persisted results, and where this command writes
 /// the gradebook -- both alongside the submission checkouts under
@@ -29,10 +30,22 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
         .map(|eval| grade::grade(eval, &spec.scoring))
         .collect();
 
+    // The roster's extra columns, if this student has a fetch record --
+    // blank otherwise (e.g. an eval persisted before a fetch ever ran).
+    let metadata: Vec<_> = grades
+        .iter()
+        .map(|grade| {
+            Ok(read_fetch_record(submissions, &grade.github_user)?
+                .map(|record| record.metadata)
+                .unwrap_or_default())
+        })
+        .collect::<Result<_>>()?;
+    let rows: Vec<_> = grades.iter().zip(metadata.iter()).collect();
+
     let grades_dir = submissions.join(GRADES_DIR);
     let gradebook = grades_dir.join(GRADES_FILE);
     fs::create_dir_all(&grades_dir)?;
-    fs::write(&gradebook, csv::render(&grades)?)?;
+    fs::write(&gradebook, csv::render(&rows)?)?;
 
     print!("{}", summary::render(&grades, &gradebook));
     Ok(())

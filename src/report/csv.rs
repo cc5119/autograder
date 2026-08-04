@@ -1,28 +1,47 @@
 use std::path::PathBuf;
 
+use indexmap::IndexMap;
+
 use crate::error::{Error, Result};
 use crate::model::Grade;
 
-/// Gradebook CSV: `github_user,score`. `score` is blank when the build
-/// failed or the run left no readable results.
-pub fn render(grades: &[Grade]) -> Result<String> {
+/// Gradebook CSV: `github_user,score,<roster metadata columns...>`. `score`
+/// is blank when the build failed or the run left no readable results.
+/// Metadata columns are the union of every row's keys, in the order each
+/// key first appears -- when every fetch record carries the same roster
+/// columns, that reproduces the roster's own column order. A row missing a
+/// column another row has gets a blank cell for it.
+pub fn render(rows: &[(&Grade, &IndexMap<String, String>)]) -> Result<String> {
+    let mut columns: Vec<&str> = Vec::new();
+    for (_, metadata) in rows {
+        for key in metadata.keys() {
+            if !columns.contains(&key.as_str()) {
+                columns.push(key.as_str());
+            }
+        }
+    }
+
     let mut writer = csv::Writer::from_writer(Vec::new());
-    writer
-        .write_record(["github_user", "score"])
-        .map_err(|source| Error::Csv {
+    let mut header = vec!["github_user".to_string(), "score".to_string()];
+    header.extend(columns.iter().map(|c| c.to_string()));
+    writer.write_record(&header).map_err(|source| Error::Csv {
+        path: PathBuf::from("<gradebook>"),
+        source: Box::new(source),
+    })?;
+    for (grade, metadata) in rows {
+        let mut record = vec![
+            grade.github_user.to_string(),
+            grade.score().map(|s| s.to_string()).unwrap_or_default(),
+        ];
+        record.extend(
+            columns
+                .iter()
+                .map(|c| metadata.get(*c).cloned().unwrap_or_default()),
+        );
+        writer.write_record(&record).map_err(|source| Error::Csv {
             path: PathBuf::from("<gradebook>"),
             source: Box::new(source),
         })?;
-    for grade in grades {
-        writer
-            .write_record([
-                grade.github_user.to_string(),
-                grade.score().map(|s| s.to_string()).unwrap_or_default(),
-            ])
-            .map_err(|source| Error::Csv {
-                path: PathBuf::from("<gradebook>"),
-                source: Box::new(source),
-            })?;
     }
     let bytes = writer
         .into_inner()
@@ -36,27 +55,65 @@ mod tests {
 
     #[test]
     fn renders_gradebook_header_and_rows() {
-        let grades = vec![
-            Grade {
-                github_user: "alice".into(),
-                outcome: crate::model::GradeOutcome::Scored {
-                    score: 10.0,
-                    passed: 3,
-                    total: 3,
-                },
+        let alice = Grade {
+            github_user: "alice".into(),
+            outcome: crate::model::GradeOutcome::Scored {
+                score: 10.0,
+                passed: 3,
+                total: 3,
             },
-            Grade {
-                github_user: "bob".into(),
-                outcome: crate::model::GradeOutcome::Unscored {
-                    reason: "build failed: exited (101)".to_string(),
-                },
+        };
+        let bob = Grade {
+            github_user: "bob".into(),
+            outcome: crate::model::GradeOutcome::Unscored {
+                reason: "build failed: exited (101)".to_string(),
             },
-        ];
+        };
+        let empty = IndexMap::new();
 
-        let csv = render(&grades).unwrap();
+        let csv = render(&[(&alice, &empty), (&bob, &empty)]).unwrap();
         let mut lines = csv.lines();
         assert_eq!(lines.next(), Some("github_user,score"));
         assert_eq!(lines.next(), Some("alice,10"));
         assert_eq!(lines.next(), Some("bob,"));
+    }
+
+    #[test]
+    fn metadata_columns_follow_first_seen_order_and_blank_when_missing() {
+        let alice = Grade {
+            github_user: "alice".into(),
+            outcome: crate::model::GradeOutcome::Scored {
+                score: 10.0,
+                passed: 3,
+                total: 3,
+            },
+        };
+        let bob = Grade {
+            github_user: "bob".into(),
+            outcome: crate::model::GradeOutcome::Scored {
+                score: 5.0,
+                passed: 1,
+                total: 3,
+            },
+        };
+        let alice_metadata: IndexMap<String, String> = [
+            ("student_id".to_string(), "A123".to_string()),
+            ("section".to_string(), "A".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        // bob is missing `section` but has an extra `email` field.
+        let bob_metadata: IndexMap<String, String> = [
+            ("student_id".to_string(), "A456".to_string()),
+            ("email".to_string(), "bob@x.edu".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let csv = render(&[(&alice, &alice_metadata), (&bob, &bob_metadata)]).unwrap();
+        let mut lines = csv.lines();
+        assert_eq!(lines.next(), Some("github_user,score,student_id,section,email"));
+        assert_eq!(lines.next(), Some("alice,10,A123,A,"));
+        assert_eq!(lines.next(), Some("bob,5,A456,,bob@x.edu"));
     }
 }

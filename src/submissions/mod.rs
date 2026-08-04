@@ -20,7 +20,7 @@ pub mod forks;
 pub mod github_events;
 pub mod source;
 
-use std::collections::BTreeMap;
+use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::{read_json, write_json};
-use crate::id::{CommitSha, GithubUser, StudentId};
+use crate::id::{CommitSha, GithubUser};
 use crate::render::{bar, spinner};
 use crate::submissions::forks::{Fork, Upstream};
 use crate::submissions::github_events::PushEvent;
@@ -331,16 +331,15 @@ pub struct FetchRecord {
     /// stays derivable from the record alone: how late a `Late` submission
     /// is, and which deadline a re-fetch applied.
     pub deadline: Zoned,
-    pub student_id: StudentId,
     /// Every fork matching this student, in GitHub's order. `[0]` is the
     /// one that was fetched; a longer list is an ambiguity that was
     /// resolved arbitrarily and is recorded here to be audited. Empty
     /// means no fork was found.
     #[serde(default)]
     pub forks: Vec<Fork>,
-    /// The roster row's remaining columns, verbatim.
+    /// The roster row's remaining columns, verbatim, in header order.
     #[serde(default)]
-    pub metadata: BTreeMap<String, String>,
+    pub metadata: IndexMap<String, String>,
     pub result: FetchResult,
 }
 
@@ -637,7 +636,6 @@ fn fetch_row(
         result,
         fetched_at: Timestamp::now(),
         deadline: deadline.clone(),
-        student_id: row.entry.student_id,
         forks,
         metadata: row.entry.metadata.clone(),
     };
@@ -1004,9 +1002,8 @@ mod tests {
         let record = FetchRecord {
             fetched_at: Timestamp::now(),
             deadline: deadline("2026-02-14T00:00:00Z"),
-            student_id: StudentId::new("A123"),
             forks: Vec::new(),
-            metadata: BTreeMap::new(),
+            metadata: IndexMap::new(),
             result: FetchResult::Ok {
                 submission_date: SubmissionDate::Late(Commit {
                     sha: CommitSha::new("abc123"),
@@ -1028,9 +1025,8 @@ mod tests {
         let record = FetchRecord {
             fetched_at: Timestamp::now(),
             deadline: deadline("2026-02-14T00:00:00Z"),
-            student_id: StudentId::new("A123"),
             forks: Vec::new(),
-            metadata: BTreeMap::new(),
+            metadata: IndexMap::new(),
             result: FetchResult::Ok {
                 submission_date: SubmissionDate::OnTime(Commit {
                     sha: CommitSha::new("abc123"),

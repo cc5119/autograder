@@ -111,7 +111,6 @@ impl<'de, Tag> Deserialize<'de> for Id<Tag> {
 pub enum GithubTag {}
 pub enum AssignmentTag {}
 pub enum RunTag {}
-pub enum StudentTag {}
 pub enum CommitTag {}
 
 /// A student's GitHub handle: what their fork is matched by, and also what
@@ -123,11 +122,6 @@ pub enum CommitTag {}
 pub type GithubUser = Id<GithubTag>;
 pub type AssignmentId = Id<AssignmentTag>;
 pub type RunId = Id<RunTag>;
-
-/// A student's id in the university's grade system -- carried through
-/// fetch so exports can join on it, never used to name anything on disk.
-/// Not to be confused with [`GithubUser`], which is what names things.
-pub type StudentId = Id<StudentTag>;
 
 /// A full 40-char git commit sha.
 pub type CommitSha = Id<CommitTag>;

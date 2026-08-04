@@ -54,8 +54,8 @@ pub enum Command {
     /// Invite every roster student to a GitHub org and add them to one of
     /// its teams.
     Register {
-        /// Roster CSV: `github_user,student_id,...`, where `github_user`
-        /// is the student's GitHub handle.
+        /// Roster CSV: `github_user,...`, where `github_user` is the
+        /// student's GitHub handle.
         #[arg(long)]
         roster: PathBuf,
         /// The GitHub org to invite students into.
@@ -79,9 +79,9 @@ pub enum Command {
         /// The public assignment repo students forked, as `owner/name`.
         #[arg(long)]
         repo: submissions::forks::Upstream,
-        /// Roster CSV: `github_user,student_id,...`, where `github_user`
-        /// is the student's GitHub handle and any further columns are
-        /// carried into the fetch record.
+        /// Roster CSV: `github_user,...`, where `github_user` is the
+        /// student's GitHub handle and any further columns are carried
+        /// into the fetch record.
         #[arg(long)]
         roster: PathBuf,
         /// Destination directory

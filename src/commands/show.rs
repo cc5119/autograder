@@ -60,9 +60,8 @@ fn github_user(submission: &Path) -> Result<GithubUser> {
 
 fn render_fetch(out: &mut String, record: &FetchRecord) {
     let _ = writeln!(out, "\n{}", style("Fetch").bold());
-    let _ = writeln!(out, "  student id     {}", record.student_id);
     // The roster's own extra columns, verbatim -- whatever the instructor
-    // put there (email, section, ...) is worth seeing next to the id.
+    // put there (student id, email, section, ...).
     for (key, value) in &record.metadata {
         let _ = writeln!(out, "  {key:<13}  {value}");
     }

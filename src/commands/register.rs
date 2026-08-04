@@ -69,7 +69,6 @@ fn render_plan(plan: &RegisterPlan) -> String {
     let now = jiff::Zoned::now();
     for row in &plan.rows {
         let id = row.entry.github_user.as_str();
-        let student_id = row.entry.student_id.as_str();
         let note = match &row.status {
             Status::Invite => "invite".to_string(),
             Status::InOrg => "org member, add to team".to_string(),
@@ -82,7 +81,7 @@ fn render_plan(plan: &RegisterPlan) -> String {
             Status::OnTeam => style("already on the team").dim().to_string(),
             Status::NoSuchUser => style("no such GitHub user").red().to_string(),
         };
-        let _ = writeln!(s, "  {id:<width$}  {student_id:<12}  {note}");
+        let _ = writeln!(s, "  {id:<width$}  {note}");
     }
 
     let registering = plan.to_register();
