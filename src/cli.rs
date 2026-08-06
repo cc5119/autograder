@@ -53,7 +53,7 @@ pub enum Command {
     },
     /// Invite every roster student to a GitHub org and add them to one of
     /// its teams.
-    Register {
+    Enroll {
         /// Roster CSV: `github_user,...`, where `github_user` is the
         /// student's GitHub handle.
         #[arg(long)]
@@ -66,7 +66,7 @@ pub enum Command {
         #[arg(long)]
         team: String,
         /// Skip the confirmation prompt. Required when stdout isn't a
-        /// terminal, since registering emails real people.
+        /// terminal, since enrolling emails real people.
         #[arg(long)]
         yes: bool,
     },

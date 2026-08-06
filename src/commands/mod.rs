@@ -1,4 +1,5 @@
 pub mod ci;
+pub mod enroll;
 pub mod evaluate;
 pub mod fetch;
 pub mod grade;
@@ -6,7 +7,6 @@ pub mod init;
 pub mod lock;
 pub mod publish;
 pub mod push;
-pub mod register;
 pub mod show;
 
 use crate::cli::Command;
@@ -54,12 +54,12 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             mode,
         } => publish::run(&assignment, &out, mode.map(Into::into)),
         Command::Push { assignment } => push::run(&assignment),
-        Command::Register {
+        Command::Enroll {
             roster,
             org,
             team,
             yes,
-        } => register::run(&roster, &org, &team, yes),
+        } => enroll::run(&roster, &org, &team, yes),
     }
 }
 

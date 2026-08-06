@@ -1,4 +1,4 @@
-//! The Register stage: puts every roster student in one GitHub team, so
+//! The Enroll stage: puts every roster student in one GitHub team, so
 //! the forks they'll later submit live somewhere the instructor
 //! administers. Add-only -- it invites and it adds, and it never removes
 //! anyone from anything. Team members with no roster row (staff, students
@@ -8,7 +8,7 @@
 //! GitHub sends the org invitation itself for a non-member and queues the
 //! team membership until it's accepted, so the two things this command
 //! promises are one request. Nothing is persisted -- GitHub is the record,
-//! and [`plan_register`] re-reads it from scratch every run.
+//! and [`plan_enroll`] re-reads it from scratch every run.
 //!
 //! Like [`crate::submissions::plan_fetch`], planning is entirely read-only:
 //! declining at the prompt costs nothing. `gh` is the only GitHub client
@@ -57,7 +57,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// Whether this row is one [`register_batch`] will write.
+    /// Whether this row is one [`enroll_batch`] will write.
     pub fn is_actionable(&self) -> bool {
         !matches!(self, Status::OnTeam | Status::NoSuchUser)
     }
@@ -69,9 +69,9 @@ pub struct PlanRow {
     pub status: Status,
 }
 
-/// Everything `register_batch` is about to do, in roster order.
+/// Everything `enroll_batch` is about to do, in roster order.
 #[derive(Debug)]
-pub struct RegisterPlan {
+pub struct EnrollPlan {
     pub org: String,
     pub team: Team,
     /// How many members the team already has, roster or not -- context for
@@ -83,8 +83,8 @@ pub struct RegisterPlan {
     pub extra: Vec<String>,
 }
 
-impl RegisterPlan {
-    pub fn to_register(&self) -> usize {
+impl EnrollPlan {
+    pub fn to_enroll(&self) -> usize {
         self.rows
             .iter()
             .filter(|row| row.status.is_actionable())
@@ -92,14 +92,14 @@ impl RegisterPlan {
     }
 }
 
-/// Works out what registering would do without writing anything: resolves
+/// Works out what enrolling would do without writing anything: resolves
 /// the team, reads who's already in it and in the org, and checks any
 /// remaining handle actually exists.
 ///
 /// A missing team is a hard error rather than something to create -- a
 /// typo'd `--team` would otherwise make a junk team and invite the whole
 /// class into it.
-pub fn plan_register(org: &str, team: &str, roster: &CsvRoster) -> Result<RegisterPlan> {
+pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster) -> Result<EnrollPlan> {
     let entries = roster.roster()?;
 
     let progress = spinner();
@@ -127,7 +127,7 @@ pub fn plan_register(org: &str, team: &str, roster: &CsvRoster) -> Result<Regist
         } else {
             // Only the handles nothing else accounted for: a login already
             // in the org demonstrably exists, so this stays one call per
-            // *unregistered* student rather than one per roster row.
+            // *unenrolled* student rather than one per roster row.
             progress.set_message(format!("checking {}...", entry.github_user));
             match user_exists(entry.github_user.as_str())? {
                 true => Status::Invite,
@@ -144,7 +144,7 @@ pub fn plan_register(org: &str, team: &str, roster: &CsvRoster) -> Result<Regist
         .cloned()
         .collect();
 
-    Ok(RegisterPlan {
+    Ok(EnrollPlan {
         org: org.to_string(),
         team_size: members.len(),
         team,
@@ -167,23 +167,23 @@ pub enum Outcome {
     },
 }
 
-/// Registers every actionable row of `plan`, in roster order, one at a
+/// Enrolls every actionable row of `plan`, in roster order, one at a
 /// time -- these are writes against a single org, and concurrent ones are
 /// what GitHub's secondary rate limits exist to refuse. A class-sized
 /// roster is a few seconds either way.
 ///
 /// `on_result` is called once per row as it lands. Rows the plan already
 /// settled ([`Status::OnTeam`], [`Status::NoSuchUser`]) are not visited.
-pub fn register_batch(
-    plan: &RegisterPlan,
+pub fn enroll_batch(
+    plan: &EnrollPlan,
     on_result: &dyn Fn(&GithubUser, &Outcome),
 ) -> Result<Vec<(GithubUser, Outcome)>> {
-    let progress = bar(plan.to_register() as u64);
+    let progress = bar(plan.to_enroll() as u64);
 
     let mut results = Vec::new();
     for row in plan.rows.iter().filter(|row| row.status.is_actionable()) {
         let user = row.entry.github_user;
-        progress.set_message(format!("registering {user}..."));
+        progress.set_message(format!("enrolling {user}..."));
         let outcome = match add_to_team(&plan.org, &plan.team.slug, user.as_str()) {
             Ok(outcome) => outcome,
             Err(e) => Outcome::Failed {
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn already_registered_and_unknown_rows_are_the_ones_not_written_to() {
+    fn already_enrolled_and_unknown_rows_are_the_ones_not_written_to() {
         assert!(!Status::OnTeam.is_actionable());
         assert!(!Status::NoSuchUser.is_actionable());
         assert!(Status::Invite.is_actionable());

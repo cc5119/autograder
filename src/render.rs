@@ -1,5 +1,5 @@
 //! Human-facing formatting and progress indicators shared by the commands
-//! that print records -- `fetch`'s confirmation manifest, `register`'s, and
+//! that print records -- `fetch`'s confirmation manifest, `enroll`'s, and
 //! `show`. Machine-readable output (the JSON records, `report`) keeps its
 //! own timestamps untouched.
 
