@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use jiff::{ToSpan, Unit, Zoned, ZonedRound};
+use jiff::{ToSpan, Zoned};
 
 use crate::error::{Error, Result};
 use crate::exec::fs;
@@ -30,11 +30,12 @@ pub fn init(dir: &Path, id: &str) -> Result<InitOutcome> {
         )));
     }
 
-    // Truncated to whole seconds so it reads as an editable value. Uses
-    // the host's own time zone, so the placeholder is meaningful.
+    // The host's own time zone, so the placeholder is meaningful. Whole
+    // seconds, so it reads as an editable value, and no offset -- jiff
+    // derives that from the zone, and one edited by hand can only ever
+    // contradict it (see `spec::Spec`).
     let deadline = (&Zoned::now() + 1.week())
-        .round(ZonedRound::new().smallest(Unit::Second))
-        .expect("rounding to the nearest second never fails")
+        .strftime("%Y-%m-%dT%H:%M:%S[%Q]")
         .to_string();
     let placeholders = str_map! {"id" => id, "deadline" => deadline};
 
