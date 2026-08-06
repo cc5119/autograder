@@ -1,3 +1,5 @@
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -38,10 +40,13 @@ impl CsvRoster {
 }
 
 fn read_roster(path: &Path) -> Result<Vec<RosterEntry>> {
-    let mut reader = csv::Reader::from_path(path).map_err(|source| Error::Csv {
-        path: path.to_path_buf(),
-        source: Box::new(source),
-    })?;
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(sniff_delimiter(path)?)
+        .from_path(path)
+        .map_err(|source| Error::Csv {
+            path: path.to_path_buf(),
+            source: Box::new(source),
+        })?;
     let headers = reader
         .headers()
         .map_err(|source| Error::Csv {
@@ -79,6 +84,30 @@ fn read_roster(path: &Path) -> Result<Vec<RosterEntry>> {
     }
 
     Ok(entries)
+}
+
+const DELIMITERS: &[u8] = b"\t;,";
+
+/// Excel exports outside the US locale use `;`, and sheet exports use `\t`.
+/// Guess from the header row: comma is last in `DELIMITERS`, so `max_by_key`
+/// (which keeps the last maximum) falls back to it when nothing else appears.
+fn sniff_delimiter(path: &Path) -> Result<u8> {
+    let file = fs::File::open(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut header = String::new();
+    BufReader::new(file)
+        .read_line(&mut header)
+        .map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    Ok(*DELIMITERS
+        .iter()
+        .max_by_key(|d| header.matches(**d as char).count())
+        .expect("DELIMITERS is not empty"))
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -127,6 +156,18 @@ mod tests {
         );
 
         assert_eq!(entries[1].github_user, "bob-gh");
+    }
+
+    #[test]
+    fn parses_a_semicolon_delimited_roster() {
+        let file = tempfile_with_contents("github_user;email\nalice-gh;alice@x.edu\n");
+        let entries = read_roster(file.path()).unwrap();
+
+        assert_eq!(entries[0].github_user, "alice-gh");
+        assert_eq!(
+            entries[0].metadata.get("email"),
+            Some(&"alice@x.edu".to_string())
+        );
     }
 
     #[test]
