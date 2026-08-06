@@ -14,10 +14,11 @@
 //! declining at the prompt costs nothing. `gh` is the only GitHub client
 //! (see [`crate::submissions::forks`]), so no token reaches this crate.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use jiff::Timestamp;
+use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -99,17 +100,42 @@ impl EnrollPlan {
 /// A missing team is a hard error rather than something to create -- a
 /// typo'd `--team` would otherwise make a junk team and invite the whole
 /// class into it.
-pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster) -> Result<EnrollPlan> {
+pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster, jobs: usize) -> Result<EnrollPlan> {
     let entries = roster.roster()?;
 
     let progress = spinner();
     progress.set_message(format!("looking up {team} in {org}..."));
     let team = find_team(org, team)?;
 
+    // Three independent reads, so they wait on each other for nothing.
     progress.set_message(format!("reading members of {org}/{}...", team.slug));
-    let members = logins(&format!("orgs/{org}/teams/{}/members", team.slug))?;
-    let org_members = logins(&format!("orgs/{org}/members"))?;
-    let pending = pending_invitations(org)?;
+    let (members, rest) = rayon::join(
+        || logins(&format!("orgs/{org}/teams/{}/members", team.slug)),
+        || {
+            rayon::join(
+                || logins(&format!("orgs/{org}/members")),
+                || pending_invitations(org),
+            )
+        },
+    );
+    let (members, org_members, pending) = (members?, rest.0?, rest.1?);
+
+    progress.finish_and_clear();
+
+    // The handles none of the three reads accounted for -- the only ones
+    // worth a lookup. Keyed by the lowercased handle, which dedupes a
+    // roster that lists someone twice; the value is the entry's own
+    // spelling, which is what gets asked about.
+    let unknown: BTreeMap<String, GithubUser> = entries
+        .iter()
+        .map(|entry| (entry.github_user.as_str().to_lowercase(), entry.github_user))
+        .filter(|(handle, _)| {
+            !members.contains(handle)
+                && !org_members.contains(handle)
+                && !pending.contains_key(handle)
+        })
+        .collect();
+    let exists = check_users(&unknown, jobs)?;
 
     // Logins are case-preserving but not case-sensitive, and a roster is
     // hand-typed -- same comparison `forks::match_forks` makes.
@@ -124,19 +150,15 @@ pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster) -> Result<EnrollPl
             Status::InOrg
         } else if let Some(since) = pending.get(&handle) {
             Status::InvitePending { since: *since }
+        } else if exists[&handle] {
+            // Indexing is sound: reaching here is exactly the condition
+            // `unknown` filtered on, so `check_users` looked this one up.
+            Status::Invite
         } else {
-            // Only the handles nothing else accounted for: a login already
-            // in the org demonstrably exists, so this stays one call per
-            // *unenrolled* student rather than one per roster row.
-            progress.set_message(format!("checking {}...", entry.github_user));
-            match user_exists(entry.github_user.as_str())? {
-                true => Status::Invite,
-                false => Status::NoSuchUser,
-            }
+            Status::NoSuchUser
         };
         rows.push(PlanRow { entry, status });
     }
-    progress.finish_and_clear();
 
     let extra = members
         .iter()
@@ -151,6 +173,44 @@ pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster) -> Result<EnrollPl
         rows,
         extra,
     })
+}
+
+/// Which of `unknown` are real GitHub logins, `jobs` lookups at a time,
+/// keyed the way it was handed in. A login already in the org demonstrably
+/// exists, so [`plan_enroll`] only ever asks about the rest: one call per
+/// *unenrolled* student rather than one per roster row.
+fn check_users(
+    unknown: &BTreeMap<String, GithubUser>,
+    jobs: usize,
+) -> Result<BTreeMap<String, bool>> {
+    if unknown.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let progress = bar(unknown.len() as u64);
+
+    // Our own pool, not rayon's global one, which sizes itself to the CPU
+    // count -- the wrong number entirely for work that spends its life
+    // blocked on `gh` (same reason as `submissions::fetch_batch`).
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .map_err(|source| {
+            Error::Other(format!("failed to start {jobs} lookup threads: {source}"))
+        })?;
+
+    let checked = pool.install(|| {
+        unknown
+            .par_iter()
+            .map(|(handle, user)| {
+                let exists = user_exists(user.as_str())?;
+                progress.inc(1);
+                Ok((handle.clone(), exists))
+            })
+            .collect()
+    });
+    progress.finish_and_clear();
+    checked
 }
 
 /// What one PUT did. `Failed` is per-row, like [`crate::submissions::FetchOutcome`]:

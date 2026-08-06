@@ -69,6 +69,10 @@ pub enum Command {
         /// terminal, since enrolling emails real people.
         #[arg(long)]
         yes: bool,
+        /// How many students to look up at once while planning. Lower it if
+        /// GitHub starts refusing the concurrent requests.
+        #[arg(short = 'j', long, default_value = "8")]
+        jobs: std::num::NonZeroUsize,
     },
     /// Fetch submissions: every fork of the assignment repo a roster
     /// student can push to.

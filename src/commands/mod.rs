@@ -59,7 +59,8 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             org,
             team,
             yes,
-        } => enroll::run(&roster, &org, &team, yes),
+            jobs,
+        } => enroll::run(&roster, &org, &team, yes, jobs),
     }
 }
 

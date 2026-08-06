@@ -14,9 +14,15 @@ use crate::id::GithubUser;
 use crate::render;
 use crate::submissions::source::CsvRoster;
 
-pub fn run(roster: &Path, org: &str, team: &str, yes: bool) -> Result<()> {
+pub fn run(
+    roster: &Path,
+    org: &str,
+    team: &str,
+    yes: bool,
+    jobs: std::num::NonZeroUsize,
+) -> Result<()> {
     let roster = CsvRoster::new(roster);
-    let plan = plan_enroll(org, team, &roster)?;
+    let plan = plan_enroll(org, team, &roster, jobs.get())?;
 
     print!("{}", render_plan(&plan));
     if !confirm(plan.to_enroll(), yes)? {
