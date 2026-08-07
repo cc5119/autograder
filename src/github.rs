@@ -31,6 +31,26 @@ pub(crate) fn logins(path: &str) -> Result<std::collections::BTreeSet<String>> {
         .collect())
 }
 
+/// `login` is null for an invitation sent to an email address, which no
+/// roster row can match -- those are dropped rather than guessed at.
+#[derive(Debug, Deserialize)]
+struct RawInvitation {
+    login: Option<String>,
+    created_at: jiff::Timestamp,
+}
+
+/// Who has an unaccepted invitation to `org`, and since when. Shared by
+/// [`crate::enroll`], which sends them, and [`crate::release`], which skips
+/// the people waiting on one.
+pub(crate) fn org_invitations(org: &str) -> Result<BTreeMap<String, jiff::Timestamp>> {
+    Ok(
+        paginated::<RawInvitation>(&format!("orgs/{org}/invitations"))?
+            .into_iter()
+            .filter_map(|raw| Some((raw.login?.to_lowercase(), raw.created_at)))
+            .collect(),
+    )
+}
+
 /// `false` on a 404 and only a 404 -- anything else (no network, a revoked
 /// token) is a real error, since reporting it as "no such user" would
 /// quietly drop a student who does exist.

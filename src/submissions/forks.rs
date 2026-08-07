@@ -122,11 +122,18 @@ fn parse_forks(stdout: &[u8]) -> Result<Vec<Fork>> {
 /// repo, which the instructor has by administering the org the forks live
 /// in -- a failure here is a real error, not a case to shrug off, since it
 /// would otherwise read as "no student owns this fork".
+///
+/// `affiliation=direct` and not the default `all`: a private fork inherits
+/// the upstream's *team* permissions, so if the assignment repo is ever
+/// shared with a class team, `all` returns every student for every fork and
+/// [`match_forks`] calls them all shared. Individual grants (see
+/// [`crate::release`]) aren't inherited, which is what keeps a fork
+/// attributable to the one student who made it.
 pub fn list_collaborators(fork: &Fork) -> Result<Vec<String>> {
     let output = Command::new(GH_BIN)
         .args([
             "api",
-            &format!("repos/{}/collaborators", fork.nwo()),
+            &format!("repos/{}/collaborators?affiliation=direct", fork.nwo()),
             "--paginate",
         ])
         .output()

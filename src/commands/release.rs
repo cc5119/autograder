@@ -72,7 +72,14 @@ fn render_plan(plan: &ReleasePlan) -> String {
             ))
             .yellow()
             .to_string(),
+            Status::RepoInvitePending { since } => style(format!(
+                "repo invite pending since {}",
+                render::relative(&since.to_zoned(jiff::tz::TimeZone::system()), &now)
+            ))
+            .yellow()
+            .to_string(),
             Status::HasAccess => style("already has access").dim().to_string(),
+            Status::NotInOrg => style("not in the org").red().to_string(),
             Status::NoSuchUser => style("no such GitHub user").red().to_string(),
         };
         let _ = writeln!(s, "  {id:<width$}  {note}");
@@ -80,14 +87,31 @@ fn render_plan(plan: &ReleasePlan) -> String {
 
     let granting = plan.to_grant();
     let has_access = count(plan, |st| matches!(st, Status::HasAccess));
+    let pending = count(plan, |st| matches!(st, Status::InvitePending { .. }));
+    let repo_pending = count(plan, |st| matches!(st, Status::RepoInvitePending { .. }));
+    let not_in_org = count(plan, |st| matches!(st, Status::NotInOrg));
     let unknown = count(plan, |st| matches!(st, Status::NoSuchUser));
 
     let _ = writeln!(s);
     let _ = writeln!(
         s,
-        "  {} on the roster: {granting} to grant, {has_access} already have access",
+        "  {} on the roster: {granting} to grant, {has_access} already have access, \
+         {pending} invited and waiting",
         plan.rows.len()
     );
+    if repo_pending > 0 {
+        let _ = writeln!(
+            s,
+            "  {repo_pending} invited to the repo itself -- accepting makes them an \
+             outside collaborator, revoke instead"
+        );
+    }
+    if not_in_org > 0 {
+        let _ = writeln!(
+            s,
+            "  {not_in_org} skipped: not in the org and not invited -- run `enroll` first"
+        );
+    }
     if unknown > 0 {
         let _ = writeln!(
             s,

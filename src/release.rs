@@ -12,10 +12,13 @@
 //! hands a whole roster write access to the assignment repo is not one
 //! worth being able to typo.
 //!
-//! One write per student, `PUT /repos/{owner}/{repo}/collaborators/{user}`.
-//! Org members are added outright (204); anyone else gets an invitation
-//! they have to accept (201). Nothing is persisted -- GitHub is the record,
-//! and [`plan_release`] re-reads it from scratch every run.
+//! One write per student, `PUT /repos/{owner}/{repo}/collaborators/{user}`,
+//! and only ever for org members. A non-member would be sent a repository
+//! invitation instead, and accepting it makes them an *outside*
+//! collaborator -- someone who can't join a team and can't fork into the
+//! org, which defeats the point. Those rows are reported and skipped until
+//! they accept their [`crate::enroll`] invitation. Nothing is persisted --
+//! GitHub is the record, and [`plan_release`] re-reads it every run.
 //!
 //! Add-only, like [`crate::enroll`]: it grants and it never revokes.
 //! Direct collaborators with no roster row (staff, students who dropped)
@@ -28,7 +31,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::github::{GH_BIN, check_users, paginated};
+use crate::github::{GH_BIN, check_users, logins, org_invitations, paginated};
 use crate::id::GithubUser;
 use crate::render::{bar, spinner};
 use crate::submissions::forks::Upstream;
@@ -45,13 +48,22 @@ pub enum Status {
     /// they hold, so a TA with `push` is never quietly downgraded to
     /// `pull`.
     HasAccess,
-    /// Invited to the repo and hasn't accepted. Not re-sent: unlike the
-    /// org invitation [`crate::enroll`] re-issues, this one *is* the grant,
-    /// so there is nothing a second PUT would add.
-    InvitePending { since: Timestamp },
-    /// Not a collaborator. The PUT grants read, or invites if they're
-    /// outside the org.
+    /// Holds an unaccepted invitation to *this repo*, which only a
+    /// non-member is ever sent. Reported rather than acted on: accepting it
+    /// makes them an outside collaborator, so it's a state to notice and
+    /// undo, not one to reinforce with a second PUT.
+    RepoInvitePending { since: Timestamp },
+    /// An org member without access. The PUT grants read outright.
     Grant,
+    /// Invited to the org by [`crate::enroll`] and hasn't accepted, so not
+    /// a member yet. Skipped: the PUT would make them an *outside*
+    /// collaborator, and one of those can neither join a team nor fork into
+    /// the org, which is the whole point. Re-run once they accept.
+    InvitePending { since: Timestamp },
+    /// A real GitHub user with no live org invitation at all -- never
+    /// enrolled, or invited more than the 7 days GitHub keeps one for.
+    /// `enroll` is what fixes this, not `release`.
+    NotInOrg,
     /// No such GitHub login. Skipped -- almost always a typo in the roster,
     /// and the PUT would only 404 halfway through the batch.
     NoSuchUser,
@@ -98,26 +110,45 @@ pub fn plan_release(repo: &Upstream, roster: &CsvRoster, jobs: usize) -> Result<
     let progress = spinner();
     progress.set_message(format!("reading who can already see {repo}..."));
 
-    // Two independent reads, so they wait on each other for nothing.
-    let (collaborators, invitations) = rayon::join(
-        // `affiliation=direct` and not the default `all`: team members and
-        // org owners see this repo too, and counting them as "already has
-        // access" would skip the very grant this command exists to make.
-        || direct_collaborators(repo),
-        || pending_invitations(repo),
+    // Four independent reads, so they wait on each other for nothing. The
+    // repo's owner is the org students were enrolled into, which is what
+    // makes the two org reads reachable from `--repo` alone.
+    let ((collaborators, repo_pending), (org_members, org_pending)) = rayon::join(
+        || {
+            rayon::join(
+                // `affiliation=direct` and not the default `all`: team
+                // members and org owners see this repo too, and counting
+                // them as "already has access" would skip the very grant
+                // this command exists to make.
+                || direct_collaborators(repo),
+                || repo_invitations(repo),
+            )
+        },
+        || {
+            rayon::join(
+                || logins(&format!("orgs/{}/members", repo.owner)),
+                || org_invitations(&repo.owner),
+            )
+        },
     );
-    let (collaborators, pending) = (collaborators?, invitations?);
+    let (collaborators, repo_pending) = (collaborators?, repo_pending?);
+    let (org_members, org_pending) = (org_members?, org_pending?);
 
     progress.finish_and_clear();
 
-    // The handles neither read accounted for -- the only ones worth a
-    // lookup. Keyed by the lowercased handle, which dedupes a roster that
-    // lists someone twice; the value is the entry's own spelling, which is
-    // what gets asked about.
+    // The handles none of the four reads accounted for -- the only ones
+    // worth a lookup, since an org member demonstrably exists. Keyed by the
+    // lowercased handle, which dedupes a roster that lists someone twice;
+    // the value is the entry's own spelling, which is what gets asked about.
     let unknown: BTreeMap<String, GithubUser> = entries
         .iter()
         .map(|entry| (entry.github_user.as_str().to_lowercase(), entry.github_user))
-        .filter(|(handle, _)| !collaborators.contains(handle) && !pending.contains_key(handle))
+        .filter(|(handle, _)| {
+            !collaborators.contains(handle)
+                && !repo_pending.contains_key(handle)
+                && !org_members.contains(handle)
+                && !org_pending.contains_key(handle)
+        })
         .collect();
     let exists = check_users(&unknown, jobs)?;
 
@@ -130,12 +161,18 @@ pub fn plan_release(repo: &Upstream, roster: &CsvRoster, jobs: usize) -> Result<
         let status = if collaborators.contains(&handle) {
             claimed.insert(handle);
             Status::HasAccess
-        } else if let Some(since) = pending.get(&handle) {
+        } else if let Some(since) = repo_pending.get(&handle) {
+            Status::RepoInvitePending { since: *since }
+        } else if org_members.contains(&handle) {
+            Status::Grant
+        } else if let Some(since) = org_pending.get(&handle) {
             Status::InvitePending { since: *since }
         } else if exists[&handle] {
             // Indexing is sound: reaching here is exactly the condition
             // `unknown` filtered on, so `check_users` looked this one up.
-            Status::Grant
+            // Checked *after* the lookup so a typo'd handle -- which is
+            // also "not in the org" -- still reads as one.
+            Status::NotInOrg
         } else {
             Status::NoSuchUser
         };
@@ -262,7 +299,7 @@ struct RawInvitation {
     created_at: Timestamp,
 }
 
-fn pending_invitations(repo: &Upstream) -> Result<BTreeMap<String, Timestamp>> {
+fn repo_invitations(repo: &Upstream) -> Result<BTreeMap<String, Timestamp>> {
     Ok(
         paginated::<RawInvitation>(&format!("repos/{repo}/invitations"))?
             .into_iter()
@@ -303,9 +340,10 @@ mod tests {
     }
 
     #[test]
-    fn only_rows_with_no_access_at_all_are_written_to() {
+    fn only_org_members_without_access_are_written_to() {
         assert!(Status::Grant.is_actionable());
         assert!(!Status::HasAccess.is_actionable());
+        assert!(!Status::NotInOrg.is_actionable());
         assert!(!Status::NoSuchUser.is_actionable());
         assert!(
             !Status::InvitePending {

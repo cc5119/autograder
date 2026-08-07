@@ -21,7 +21,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::github::{GH_BIN, check_users, logins, paginated};
+use crate::github::{GH_BIN, check_users, logins, org_invitations, paginated};
 use crate::id::GithubUser;
 use crate::render::{bar, spinner};
 use crate::submissions::source::{CsvRoster, RosterEntry};
@@ -115,7 +115,7 @@ pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster, jobs: usize) -> Re
         || {
             rayon::join(
                 || logins(&format!("orgs/{org}/members")),
-                || pending_invitations(org),
+                || org_invitations(org),
             )
         },
     );
@@ -286,23 +286,6 @@ fn find_team(org: &str, wanted: &str) -> Result<Team> {
                 }
             ))
         })
-}
-
-/// `login` is null for an invitation sent to an email address, which no
-/// roster row can match -- those are dropped rather than guessed at.
-#[derive(Debug, Deserialize)]
-struct RawInvitation {
-    login: Option<String>,
-    created_at: Timestamp,
-}
-
-fn pending_invitations(org: &str) -> Result<std::collections::BTreeMap<String, Timestamp>> {
-    Ok(
-        paginated::<RawInvitation>(&format!("orgs/{org}/invitations"))?
-            .into_iter()
-            .filter_map(|raw| Some((raw.login?.to_lowercase(), raw.created_at)))
-            .collect(),
-    )
 }
 
 /// The `gh`-shaped functions here need the network; what's tested is the
