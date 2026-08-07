@@ -18,15 +18,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use jiff::Timestamp;
-use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::github::{GH_BIN, check_users, logins, paginated};
 use crate::id::GithubUser;
 use crate::render::{bar, spinner};
 use crate::submissions::source::{CsvRoster, RosterEntry};
-
-const GH_BIN: &str = "gh";
 
 /// A team as the API needs it. `slug` is what every path takes; `name` is
 /// the display name, kept because that's what the instructor typed and
@@ -175,44 +173,6 @@ pub fn plan_enroll(org: &str, team: &str, roster: &CsvRoster, jobs: usize) -> Re
     })
 }
 
-/// Which of `unknown` are real GitHub logins, `jobs` lookups at a time,
-/// keyed the way it was handed in. A login already in the org demonstrably
-/// exists, so [`plan_enroll`] only ever asks about the rest: one call per
-/// *unenrolled* student rather than one per roster row.
-fn check_users(
-    unknown: &BTreeMap<String, GithubUser>,
-    jobs: usize,
-) -> Result<BTreeMap<String, bool>> {
-    if unknown.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    let progress = bar(unknown.len() as u64);
-
-    // Our own pool, not rayon's global one, which sizes itself to the CPU
-    // count -- the wrong number entirely for work that spends its life
-    // blocked on `gh` (same reason as `submissions::fetch_batch`).
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build()
-        .map_err(|source| {
-            Error::Other(format!("failed to start {jobs} lookup threads: {source}"))
-        })?;
-
-    let checked = pool.install(|| {
-        unknown
-            .par_iter()
-            .map(|(handle, user)| {
-                let exists = user_exists(user.as_str())?;
-                progress.inc(1);
-                Ok((handle.clone(), exists))
-            })
-            .collect()
-    });
-    progress.finish_and_clear();
-    checked
-}
-
 /// What one PUT did. `Failed` is per-row, like [`crate::submissions::FetchOutcome`]:
 /// one student GitHub refuses shouldn't cost the rest of the class their
 /// invitation.
@@ -325,20 +285,6 @@ fn find_team(org: &str, wanted: &str) -> Result<Team> {
         })
 }
 
-#[derive(Debug, Deserialize)]
-struct RawLogin {
-    login: String,
-}
-
-/// Lowercased, since every comparison against a hand-typed roster is
-/// case-insensitive.
-fn logins(path: &str) -> Result<BTreeSet<String>> {
-    Ok(paginated::<RawLogin>(path)?
-        .into_iter()
-        .map(|raw| raw.login.to_lowercase())
-        .collect())
-}
-
 /// `login` is null for an invitation sent to an email address, which no
 /// roster row can match -- those are dropped rather than guessed at.
 #[derive(Debug, Deserialize)]
@@ -356,67 +302,11 @@ fn pending_invitations(org: &str) -> Result<std::collections::BTreeMap<String, T
     )
 }
 
-/// `false` on a 404 and only a 404 -- anything else (no network, a revoked
-/// token) is a real error, since reporting it as "no such user" would
-/// quietly drop a student who does exist.
-fn user_exists(user: &str) -> Result<bool> {
-    let output = Command::new(GH_BIN)
-        .args(["api", &format!("users/{user}")])
-        .output()
-        .map_err(|source| Error::Other(format!("failed to run `{GH_BIN}`: {source}")))?;
-    if output.status.success() {
-        return Ok(true);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("HTTP 404") || stderr.contains("Not Found") {
-        return Ok(false);
-    }
-    Err(Error::Other(format!(
-        "failed to look up GitHub user {user}: {}",
-        stderr.trim()
-    )))
-}
-
-/// One `gh api --paginate` read. `--paginate` concatenates pages as
-/// `[...][...]` rather than one array, hence the streaming deserializer
-/// (same as [`crate::submissions::forks`]).
-fn paginated<T: serde::de::DeserializeOwned>(path: &str) -> Result<Vec<T>> {
-    let output = Command::new(GH_BIN)
-        .args(["api", path, "--paginate"])
-        .output()
-        .map_err(|source| Error::Other(format!("failed to run `{GH_BIN}`: {source}")))?;
-    if !output.status.success() {
-        return Err(Error::Other(format!(
-            "failed to read {path}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    parse_pages(&output.stdout)
-}
-
-fn parse_pages<T: serde::de::DeserializeOwned>(stdout: &[u8]) -> Result<Vec<T>> {
-    let mut items = Vec::new();
-    for page in serde_json::Deserializer::from_slice(stdout).into_iter::<Vec<T>>() {
-        let page = page
-            .map_err(|source| Error::Other(format!("failed to parse `gh api` output: {source}")))?;
-        items.extend(page);
-    }
-    Ok(items)
-}
-
 /// The `gh`-shaped functions here need the network; what's tested is the
 /// parsing and the classification that decides who gets written to.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_pages_concatenates_gh_paginate_output() {
-        let stdout = br#"[{"login":"alice"},{"login":"bob"}][{"login":"carol"}]"#;
-        let logins: Vec<RawLogin> = parse_pages(stdout).unwrap();
-        assert_eq!(logins.len(), 3);
-        assert_eq!(logins[2].login, "carol");
-    }
 
     #[test]
     fn parse_membership_maps_state_to_an_outcome() {

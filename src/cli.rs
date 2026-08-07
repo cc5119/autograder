@@ -74,6 +74,27 @@ pub enum Command {
         #[arg(short = 'j', long, default_value = "8")]
         jobs: std::num::NonZeroUsize,
     },
+    /// Give every roster student read access to a repo as a direct
+    /// collaborator, so they can fork it. Private forks inherit the
+    /// upstream's team permissions but not its individual ones, so
+    /// granting this way is what keeps students out of each other's forks.
+    Release {
+        /// The repo to release, as `owner/name`.
+        #[arg(long)]
+        repo: submissions::forks::Upstream,
+        /// Roster CSV: `github_user,...`, where `github_user` is the
+        /// student's GitHub handle.
+        #[arg(long)]
+        roster: PathBuf,
+        /// Skip the confirmation prompt. Required when stdout isn't a
+        /// terminal, since releasing grants real people access.
+        #[arg(long)]
+        yes: bool,
+        /// How many students to look up at once while planning. Lower it if
+        /// GitHub starts refusing the concurrent requests.
+        #[arg(short = 'j', long, default_value = "8")]
+        jobs: std::num::NonZeroUsize,
+    },
     /// Fetch submissions: every fork of the assignment repo a roster
     /// student can push to.
     Fetch {

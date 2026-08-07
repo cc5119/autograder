@@ -7,6 +7,7 @@ pub mod init;
 pub mod lock;
 pub mod publish;
 pub mod push;
+pub mod release;
 pub mod show;
 
 use crate::cli::Command;
@@ -61,6 +62,12 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             yes,
             jobs,
         } => enroll::run(&roster, &org, &team, yes, jobs),
+        Command::Release {
+            repo,
+            roster,
+            yes,
+            jobs,
+        } => release::run(&repo, &roster, yes, jobs),
     }
 }
 

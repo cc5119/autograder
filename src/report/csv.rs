@@ -112,7 +112,10 @@ mod tests {
 
         let csv = render(&[(&alice, &alice_metadata), (&bob, &bob_metadata)]).unwrap();
         let mut lines = csv.lines();
-        assert_eq!(lines.next(), Some("github_user,score,student_id,section,email"));
+        assert_eq!(
+            lines.next(),
+            Some("github_user,score,student_id,section,email")
+        );
         assert_eq!(lines.next(), Some("alice,10,A123,A,"));
         assert_eq!(lines.next(), Some("bob,5,A456,,bob@x.edu"));
     }
