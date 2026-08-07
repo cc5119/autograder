@@ -44,9 +44,9 @@ pub enum Status {
     /// In the org but not this team -- the PUT adds them outright, no
     /// invitation involved.
     InOrg,
-    /// Invited to the org and hasn't accepted. Still re-sent: the pending
-    /// invitation says nothing about *this* team, and only the PUT queues
-    /// the team membership for when they accept.
+    /// Invited to the org and hasn't accepted. Left alone: the invitation
+    /// this command sent already queued the team membership, so a second
+    /// PUT attaches nothing and may re-email them.
     InvitePending { since: Timestamp },
     /// Not in the org at all. The PUT invites them.
     Invite,
@@ -58,7 +58,10 @@ pub enum Status {
 impl Status {
     /// Whether this row is one [`enroll_batch`] will write.
     pub fn is_actionable(&self) -> bool {
-        !matches!(self, Status::OnTeam | Status::NoSuchUser)
+        !matches!(
+            self,
+            Status::OnTeam | Status::NoSuchUser | Status::InvitePending { .. }
+        )
     }
 }
 
@@ -323,16 +326,16 @@ mod tests {
     }
 
     #[test]
-    fn already_enrolled_and_unknown_rows_are_the_ones_not_written_to() {
+    fn already_enrolled_pending_and_unknown_rows_are_the_ones_not_written_to() {
         assert!(!Status::OnTeam.is_actionable());
         assert!(!Status::NoSuchUser.is_actionable());
-        assert!(Status::Invite.is_actionable());
-        assert!(Status::InOrg.is_actionable());
         assert!(
-            Status::InvitePending {
+            !Status::InvitePending {
                 since: Timestamp::now()
             }
             .is_actionable()
         );
+        assert!(Status::Invite.is_actionable());
+        assert!(Status::InOrg.is_actionable());
     }
 }

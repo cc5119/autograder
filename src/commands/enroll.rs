@@ -82,7 +82,7 @@ fn render_plan(plan: &EnrollPlan) -> String {
                 "invite pending since {}",
                 render::relative(&since.to_zoned(jiff::tz::TimeZone::system()), &now)
             ))
-            .yellow()
+            .dim()
             .to_string(),
             Status::OnTeam => style("already on the team").dim().to_string(),
             Status::NoSuchUser => style("no such GitHub user").red().to_string(),
@@ -92,14 +92,15 @@ fn render_plan(plan: &EnrollPlan) -> String {
 
     let enrolling = plan.to_enroll();
     let on_team = count(plan, |st| matches!(st, Status::OnTeam));
+    let pending = count(plan, |st| matches!(st, Status::InvitePending { .. }));
     let unknown = count(plan, |st| matches!(st, Status::NoSuchUser));
 
     let _ = writeln!(s);
     let _ = writeln!(
         s,
-        "  {} on the roster: {enrolling} to enroll, {} already on the team",
-        plan.rows.len(),
-        on_team
+        "  {} on the roster: {enrolling} to enroll, {on_team} already on the team, \
+         {pending} invited and waiting",
+        plan.rows.len()
     );
     if unknown > 0 {
         let _ = writeln!(
