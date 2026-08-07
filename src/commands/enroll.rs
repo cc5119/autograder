@@ -82,7 +82,7 @@ fn render_plan(plan: &EnrollPlan) -> String {
                 "invite pending since {}",
                 render::relative(&since.to_zoned(jiff::tz::TimeZone::system()), &now)
             ))
-            .dim()
+            .yellow()
             .to_string(),
             Status::OnTeam => style("already on the team").dim().to_string(),
             Status::NoSuchUser => style("no such GitHub user").red().to_string(),
