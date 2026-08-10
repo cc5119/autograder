@@ -8,7 +8,7 @@ use std::time::Duration;
 #[macro_export]
 macro_rules! score {
     ($score:expr) => {
-        let score: u32 = $score;
+        let score: f64 = $score;
         println!("autograder: score={score}");
     };
 }
