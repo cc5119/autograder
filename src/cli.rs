@@ -79,9 +79,10 @@ pub enum Command {
     /// upstream's team permissions but not its individual ones, so
     /// granting this way is what keeps students out of each other's forks.
     Release {
-        /// The repo to release, as `owner/name`.
+        /// Path to a local checkout of the repo to release. The repo it
+        /// names on GitHub is read off its `origin` remote.
         #[arg(long)]
-        repo: submissions::forks::Upstream,
+        repo: PathBuf,
         /// Roster CSV: `github_user,...`, where `github_user` is the
         /// student's GitHub handle.
         #[arg(long)]

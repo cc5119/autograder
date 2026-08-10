@@ -15,9 +15,10 @@ use crate::render;
 use crate::submissions::forks::Upstream;
 use crate::submissions::source::CsvRoster;
 
-pub fn run(repo: &Upstream, roster: &Path, yes: bool, jobs: std::num::NonZeroUsize) -> Result<()> {
+pub fn run(repo: &Path, roster: &Path, yes: bool, jobs: std::num::NonZeroUsize) -> Result<()> {
+    let repo = Upstream::from_repo_path(repo)?;
     let roster = CsvRoster::new(roster);
-    let plan = plan_release(repo, &roster, jobs.get())?;
+    let plan = plan_release(&repo, &roster, jobs.get())?;
 
     print!("{}", render_plan(&plan));
     if !confirm(plan.to_grant(), yes)? {

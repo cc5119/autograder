@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
 
@@ -49,6 +50,70 @@ impl FromStr for Upstream {
             name: name.to_string(),
         })
     }
+}
+
+impl Upstream {
+    /// The repo a local checkout pushes to, read off its `origin` remote.
+    ///
+    /// Both VCSes [`crate::commands::push`] can create a repo with are
+    /// asked, since neither alone covers the other: `git` reads a plain git
+    /// repo and a `jj` one whose git store sits at `.git` (colocated, and
+    /// what `jj git init` leaves behind today), while `jj` covers the
+    /// layouts that keep the store inside `.jj` where `git` can't see it.
+    /// Whichever answers first wins -- they agree when both do.
+    pub fn from_repo_path(dir: &Path) -> Result<Self> {
+        let url = remote_url(dir, "git", &["remote", "get-url", "origin"])
+            .or_else(|| {
+                remote_url(dir, "jj", &["git", "remote", "list"]).and_then(|out| {
+                    out.lines()
+                        .find_map(|line| line.strip_prefix("origin "))
+                        .map(str::to_string)
+                })
+            })
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "failed to read the `origin` remote of {} -- is it a git or jj repo with a \
+                     GitHub remote?",
+                    dir.display()
+                ))
+            })?;
+
+        parse_remote_url(&url).ok_or_else(|| {
+            Error::Other(format!(
+                "the `origin` remote of {} is {url:?}, which is not a GitHub `owner/name` URL",
+                dir.display()
+            ))
+        })
+    }
+}
+
+/// `stdout`, trimmed, if the command ran and succeeded. A missing binary
+/// and a non-repo are the same answer here: ask the next candidate.
+fn remote_url(dir: &Path, bin: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(bin)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = stdout.trim();
+    (!stdout.is_empty()).then(|| stdout.to_string())
+}
+
+/// Both remote forms `gh` and `git clone` hand out: `git@github.com:o/n.git`
+/// and `https://github.com/o/n`. Anything else -- another host, a path --
+/// is `None`, since releasing to the wrong repo is worse than failing.
+fn parse_remote_url(url: &str) -> Option<Upstream> {
+    let rest = url
+        .strip_prefix("git@github.com:")
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| url.strip_prefix("https://github.com/"))
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("github.com/"))?;
+    rest.parse().ok()
 }
 
 /// One entry from `GET /repos/{owner}/{repo}/forks`. `owner` is an org
@@ -252,6 +317,98 @@ mod tests {
         for bad in ["repo", "https://github.com/org/repo", "/repo", "org/"] {
             assert!(bad.parse::<Upstream>().is_err(), "{bad:?} should not parse");
         }
+    }
+
+    #[test]
+    fn remote_urls_in_every_form_github_hands_out_name_the_same_repo() {
+        let expected: Upstream = "org/repo".parse().unwrap();
+        for url in [
+            "git@github.com:org/repo.git",
+            "ssh://git@github.com/org/repo.git",
+            "https://github.com/org/repo.git",
+            "https://github.com/org/repo",
+        ] {
+            assert_eq!(parse_remote_url(url), Some(expected.clone()), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn a_remote_that_is_not_a_github_repo_is_not_guessed_at() {
+        for url in [
+            "git@gitlab.com:org/repo.git",
+            "https://github.com/org",
+            "/srv/git/repo.git",
+        ] {
+            assert_eq!(parse_remote_url(url), None, "{url:?}");
+        }
+    }
+
+    /// Runs `bin` in `dir`, or `None` when it isn't installed -- the jj
+    /// tests skip themselves rather than fail on a machine without it.
+    fn try_run(dir: &Path, bin: &str, args: &[&str]) -> Option<()> {
+        let output = Command::new(bin)
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .ok()?;
+        assert!(
+            output.status.success(),
+            "{bin} {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Some(())
+    }
+
+    #[test]
+    fn a_git_repos_origin_names_the_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        try_run(dir.path(), "git", &["init", "-q"]).unwrap();
+        try_run(
+            dir.path(),
+            "git",
+            &["remote", "add", "origin", "https://github.com/org/repo.git"],
+        )
+        .unwrap();
+
+        assert_eq!(
+            Upstream::from_repo_path(dir.path()).unwrap(),
+            "org/repo".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_jj_repos_origin_names_the_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(()) = try_run(dir.path(), "jj", &["git", "init"]) else {
+            return;
+        };
+        try_run(
+            dir.path(),
+            "jj",
+            &[
+                "git",
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:org/repo.git",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            Upstream::from_repo_path(dir.path()).unwrap(),
+            "org/repo".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_repo_is_an_error_not_a_guess() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = Upstream::from_repo_path(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("origin"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
