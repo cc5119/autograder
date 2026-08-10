@@ -1,8 +1,13 @@
 mod isolate;
 mod local;
+mod reader;
+
+pub use reader::{Reader, Scope};
 
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[macro_export]
@@ -32,6 +37,61 @@ macro_rules! cmd {
     ($target:expr) => {
         $crate::Command::new($target)
     };
+}
+
+/// The process's command-line arguments, parsed on demand -- for a
+/// `library`-kind driver that takes its inputs positionally:
+///
+/// ```ignore
+/// let mut args = autograder_test::Args::new();
+/// let n: usize = args.read();
+/// let [lo, hi]: [u32; 2] = args.take_arr();
+/// let rest: Vec<String> = args.rest();
+/// ```
+///
+/// Every method panics on a missing or unparsable argument, which is the
+/// right shape for a harness: bad arguments are a bug in the test, not a
+/// student failure to report.
+pub struct Args {
+    inner: std::env::Args,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Args {
+    pub fn new() -> Self {
+        let mut inner = std::env::args();
+        // consume the command
+        let _ = inner.next();
+        Self { inner }
+    }
+
+    /// The next argument.
+    pub fn read<T: FromStr<Err: Debug>>(&mut self) -> T {
+        let arg = self.inner.next().expect("no more arguments");
+        arg.parse().unwrap()
+    }
+
+    /// Every remaining argument.
+    pub fn rest<T: FromStr<Err: Debug>>(self) -> Vec<T> {
+        self.inner.map(|s| s.parse().unwrap()).collect()
+    }
+
+    /// Exactly `n` arguments, leaving any later ones for the caller.
+    pub fn take<T: FromStr<Err: Debug>>(&mut self, n: usize) -> Vec<T> {
+        (0..n).map(|_| self.read()).collect()
+    }
+
+    /// Exactly `N` arguments, leaving any later ones for the caller.
+    pub fn take_arr<const N: usize, T: FromStr<Err: Debug>>(&mut self) -> [T; N] {
+        // `from_fn` calls in order of increasing index, so the arguments
+        // land in the array in the order they were given.
+        std::array::from_fn(|_| self.read())
+    }
 }
 
 pub struct Command {
@@ -73,18 +133,18 @@ impl Command {
         self
     }
 
-    pub fn arg(mut self, a: impl Into<String>) -> Self {
-        self.args.push(a.into());
+    pub fn arg(mut self, a: impl ToString) -> Self {
+        self.args.push(a.to_string());
         self
     }
 
     pub fn args<I, S>(mut self, it: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: Into<String>,
+        S: ToString,
     {
         for a in it {
-            self.args.push(a.into());
+            self.args.push(a.to_string());
         }
         self
     }
@@ -195,6 +255,38 @@ impl Outcome {
 
     pub fn oom(&self) -> bool {
         matches!(self.status, Status::MemoryExceeded)
+    }
+
+    /// A cursor over stdout, tokenized on whitespace and parsed on demand.
+    pub fn stdout_reader(&self) -> Reader {
+        Reader::new(self.stdout_str())
+    }
+
+    /// A cursor over stderr, tokenized on whitespace and parsed on demand.
+    pub fn stderr_reader(&self) -> Reader {
+        Reader::new(self.stderr_str())
+    }
+
+    /// Asserts stdout matches `expected`, ignoring trailing whitespace on
+    /// each line and any trailing blank lines. Panics naming the first
+    /// line that differs. Returns `self` so the outcome can still be used.
+    pub fn assert_stdout(self, expected: impl AsRef<str>) -> Self {
+        reader::assert_matches("stdout", &self.stdout_str(), expected.as_ref());
+        self
+    }
+
+    /// Asserts stderr matches `expected`, with the same leniency as
+    /// [`Outcome::assert_stdout`].
+    pub fn assert_stderr(self, expected: impl AsRef<str>) -> Self {
+        reader::assert_matches("stderr", &self.stderr_str(), expected.as_ref());
+        self
+    }
+
+    /// Asserts stdout matches `expected` byte for byte -- for a task that
+    /// really does grade formatting, trailing newline included.
+    pub fn assert_stdout_exact(self, expected: impl AsRef<str>) -> Self {
+        reader::assert_matches_exactly("stdout", &self.stdout_str(), expected.as_ref());
+        self
     }
 
     /// Asserts the command succeeded, panicking with the status and stderr
