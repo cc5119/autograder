@@ -251,13 +251,14 @@ fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
             source,
         })?;
 
-    let problems: Vec<String> = String::from_utf8_lossy(&output.stdout)
+    let problems: Vec<Problem> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|msg| msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message"))
         .filter_map(|msg| {
             let message = msg.get("message")?;
-            let allowed = match message.get("level")?.as_str()? {
+            let level = message.get("level")?.as_str()?;
+            let allowed = match level {
                 "warning" => &config.allowed_warnings,
                 "error" => &config.allowed_errors,
                 _ => return None,
@@ -269,7 +270,11 @@ fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
             if code.is_some_and(|code| allowed.iter().any(|a| a == code)) {
                 return None;
             }
-            message.get("rendered")?.as_str().map(str::to_string)
+            Some(Problem {
+                is_warning: level == "warning",
+                code: code.map(str::to_string),
+                rendered: message.get("rendered")?.as_str()?.to_string(),
+            })
         })
         .collect();
 
@@ -282,17 +287,80 @@ fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
     }
 
     if !problems.is_empty() {
+        let rendered: Vec<&str> = problems.iter().map(|p| p.rendered.as_str()).collect();
         return Err(Error::Other(format!(
             "refusing to publish: `cargo check --features student` reported {} problem(s) in {} \
              -- fix them before publishing, since they'd ship to students exactly as they \
-             are:\n\n{}",
+             are:\n\n{}\n{}",
             problems.len(),
             assignment_dir.display(),
-            problems.join("\n")
+            rendered.join("\n"),
+            how_to_fix(assignment_dir, &problems)
         )));
     }
 
     Ok(())
+}
+
+struct Problem {
+    is_warning: bool,
+    /// `None` for messages rustc emits without a lint name or error code.
+    code: Option<String>,
+    rendered: String,
+}
+
+/// Spells out the two ways forward, and pre-writes the `publish.toml` the
+/// second one needs so it doesn't have to be reconstructed from
+/// [`PublishConfig`]'s field names by hand.
+fn how_to_fix(assignment_dir: &Path, problems: &[Problem]) -> String {
+    let codes = |warnings: bool| {
+        let mut codes: Vec<&str> = problems
+            .iter()
+            .filter(|p| p.is_warning == warnings)
+            .filter_map(|p| p.code.as_deref())
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        codes
+    };
+    let toml_list = |codes: &[&str]| {
+        codes
+            .iter()
+            .map(|code| format!("{code:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let mut how = format!(
+        "\nhow to fix: edit the sources under {} so the student view compiles cleanly -- \
+         a stub that's `todo!()` in the student view usually needs `#[allow(...)]`, or the \
+         helper it leaves unused stripped alongside it.",
+        assignment_dir.display()
+    );
+
+    let (warnings, errors) = (codes(true), codes(false));
+    if warnings.is_empty() && errors.is_empty() {
+        how.push_str(
+            "\n\nnone of these carry a lint name or error code, so they can't be allowlisted \
+             in publish.toml -- they have to be fixed at the source.",
+        );
+        return how;
+    }
+
+    how.push_str(&format!(
+        "\n\nif a problem is expected in the starter instead, allow it by code in {}:\n\n",
+        assignment_dir.join(PUBLISH_CONFIG_FILE).display()
+    ));
+    if !warnings.is_empty() {
+        how.push_str(&format!(
+            "    allowed-warnings = [{}]\n",
+            toml_list(&warnings)
+        ));
+    }
+    if !errors.is_empty() {
+        how.push_str(&format!("    allowed-errors = [{}]\n", toml_list(&errors)));
+    }
+    how
 }
 
 /// Everything else about `publish` -- the actual end-to-end tree it
@@ -381,3 +449,4 @@ mod tests {
         assert_eq!(toml.content, "[package]\nname = \"hw3\"\n");
     }
 }
+
