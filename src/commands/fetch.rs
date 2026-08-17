@@ -32,7 +32,7 @@ pub fn run(
     let deadline = as_of.unwrap_or_else(|| spec.assignment.deadline.clone());
 
     let roster = CsvRoster::new(roster);
-    let plan = plan_fetch(repo, &roster)?;
+    let plan = plan_fetch(repo, &roster, jobs.get())?;
 
     print!("{}", render_plan(&plan, repo, &deadline, out));
     if plan.to_fetch() == 0 {

@@ -72,6 +72,16 @@ pub(crate) fn user_exists(user: &str) -> Result<bool> {
     )))
 }
 
+/// A pool of `jobs` threads, and not rayon's global one: that sizes itself
+/// to the CPU count, the wrong number entirely for work that spends its
+/// life blocked on `gh`. `what` names the work in the failure message.
+pub(crate) fn pool(jobs: usize, what: &str) -> Result<rayon::ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .map_err(|source| Error::Other(format!("failed to start {jobs} {what} threads: {source}")))
+}
+
 /// Which of `unknown` are real GitHub logins, `jobs` lookups at a time,
 /// keyed the way it was handed in. A login a cheaper read already
 /// accounted for demonstrably exists, so callers only ask about the rest.
@@ -85,15 +95,7 @@ pub(crate) fn check_users(
 
     let progress = bar(unknown.len() as u64);
 
-    // Our own pool, not rayon's global one, which sizes itself to the CPU
-    // count -- the wrong number entirely for work that spends its life
-    // blocked on `gh` (same reason as `submissions::fetch_batch`).
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build()
-        .map_err(|source| {
-            Error::Other(format!("failed to start {jobs} lookup threads: {source}"))
-        })?;
+    let pool = pool(jobs, "lookup")?;
 
     let checked = pool.install(|| {
         unknown

@@ -119,8 +119,8 @@ pub enum Command {
         as_of: Option<jiff::Zoned>,
         #[command(flatten)]
         detach: DetachFlag,
-        /// How many submissions to fetch at once. Lower it if GitHub
-        /// starts refusing the concurrent requests.
+        /// How many forks to look up while planning, and then to fetch, at
+        /// once. Lower it if GitHub starts refusing the concurrent requests.
         #[arg(short = 'j', long, default_value = "8")]
         jobs: std::num::NonZeroUsize,
     },

@@ -446,7 +446,7 @@ impl FetchPlan {
 /// and attributes each to a roster student by its collaborators. Read-only
 /// -- nothing on disk is touched, so a plan can be shown and declined for
 /// free.
-pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> {
+pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster, jobs: usize) -> Result<FetchPlan> {
     let entries = roster.roster()?;
 
     // Rejected here rather than tolerated: two rows sharing a github_user
@@ -458,22 +458,22 @@ pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster) -> Result<FetchPlan> 
         )));
     }
 
-    // Discovery is one API call for the fork list plus one per fork, and
-    // the per-fork half is the slow part -- worth a live count so a class
-    // -sized wait doesn't look like a hang.
     let progress = spinner();
     progress.set_message(format!("listing forks of {upstream}..."));
     let forks = forks::list_forks(upstream)?;
+    progress.finish_and_clear();
 
-    let total = forks.len();
-    let mut done = 0;
-    let mut matches = forks::match_forks(entries.iter().map(|e| e.github_user), forks, |fork| {
-        done += 1;
-        progress.set_message(format!(
-            "checking access to {} ({done}/{total})",
-            fork.nwo()
-        ));
-        forks::list_collaborators(fork)
+    // Discovery is one API call for the fork list plus one per fork, and
+    // the per-fork half is the slow part -- `jobs` at a time, or a
+    // class-sized roster spends minutes here before the plan is even shown.
+    let progress = bar(forks.len() as u64);
+    let pool = crate::github::pool(jobs, "lookup")?;
+    let mut matches = pool.install(|| {
+        forks::match_forks(entries.iter().map(|e| e.github_user), forks, |fork| {
+            let logins = forks::list_collaborators(fork);
+            progress.inc(1);
+            logins
+        })
     })?;
     progress.finish_and_clear();
 
@@ -549,15 +549,7 @@ pub fn fetch_batch(
     // the early ETA nonsense.
     let progress = bar(plan.to_fetch() as u64);
 
-    // Our own pool, not rayon's global one, which sizes itself to the CPU
-    // count -- the wrong number entirely for work that spends its life
-    // blocked on `gh` and `git`.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .build()
-        .map_err(|source| {
-            Error::Other(format!("failed to start {jobs} fetch threads: {source}"))
-        })?;
+    let pool = crate::github::pool(jobs, "fetch")?;
 
     // `Vec<Result<_>>` and not `Result<Vec<_>>`: collecting into the
     // latter short-circuits, and one repo breaking shouldn't cost every

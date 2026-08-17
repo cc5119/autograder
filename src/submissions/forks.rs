@@ -11,6 +11,7 @@ use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -262,19 +263,28 @@ impl Matches {
 /// case-insensitively: GitHub logins are case-preserving but not
 /// case-sensitive, and a roster is hand-typed. Collaborators who aren't on
 /// the roster -- instructors, TAs, org admins -- are ignored.
+///
+/// The lookups run on whatever rayon pool the caller installed; the
+/// bucketing afterwards is serial, which is what keeps `by_student` in
+/// GitHub's order no matter what finished when.
 pub fn match_forks(
     students: impl IntoIterator<Item = GithubUser>,
     forks: Vec<Fork>,
-    mut collaborators: impl FnMut(&Fork) -> Result<Vec<String>>,
+    collaborators: impl Fn(&Fork) -> Result<Vec<String>> + Sync,
 ) -> Result<Matches> {
     let by_handle: BTreeMap<String, GithubUser> = students
         .into_iter()
         .map(|id| (id.as_str().to_lowercase(), id))
         .collect();
 
+    // Short-circuiting on the first failure is the point: a collaborator
+    // lookup that breaks makes every attribution unreliable, and planning
+    // has nothing on disk to salvage (unlike `fetch_batch`).
+    let logins: Vec<Vec<String>> = forks.par_iter().map(&collaborators).collect::<Result<_>>()?;
+
     let mut matches = Matches::default();
-    for fork in forks {
-        let mut owners: Vec<GithubUser> = collaborators(&fork)?
+    for (fork, logins) in forks.into_iter().zip(logins) {
+        let mut owners: Vec<GithubUser> = logins
             .iter()
             .filter_map(|login| by_handle.get(&login.to_lowercase()).copied())
             .collect();
