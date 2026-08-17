@@ -224,6 +224,8 @@ const PUBLISH_CONFIG_FILE: &str = "publish.toml";
 struct PublishConfig {
     #[serde(default)]
     allowed_warnings: Vec<String>,
+    /// Listing an error code here also accepts cargo's non-zero exit: a
+    /// starter that's meant not to compile is a legitimate assignment.
     #[serde(default)]
     allowed_errors: Vec<String>,
 }
@@ -251,36 +253,53 @@ fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
             source,
         })?;
 
-    let problems: Vec<Problem> = String::from_utf8_lossy(&output.stdout)
+    let diagnostics: Vec<Problem> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|msg| msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message"))
         .filter_map(|msg| {
             let message = msg.get("message")?;
-            let level = message.get("level")?.as_str()?;
-            let allowed = match level {
-                "warning" => &config.allowed_warnings,
-                "error" => &config.allowed_errors,
+            let is_warning = match message.get("level")?.as_str()? {
+                "warning" => true,
+                "error" => false,
                 _ => return None,
             };
-            let code = message
-                .get("code")
-                .and_then(|c| c.get("code"))
-                .and_then(|c| c.as_str());
-            if code.is_some_and(|code| allowed.iter().any(|a| a == code)) {
-                return None;
-            }
             Some(Problem {
-                is_warning: level == "warning",
-                code: code.map(str::to_string),
+                is_warning,
+                code: message
+                    .get("code")
+                    .and_then(|c| c.get("code"))
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string),
                 rendered: message.get("rendered")?.as_str()?.to_string(),
             })
         })
         .collect();
 
-    if !output.status.success() && problems.is_empty() {
+    let saw_errors = diagnostics.iter().any(|d| !d.is_warning);
+    let problems: Vec<Problem> = diagnostics
+        .into_iter()
+        .filter(|d| {
+            let allowed = if d.is_warning {
+                &config.allowed_warnings
+            } else {
+                &config.allowed_errors
+            };
+            !d.code
+                .as_deref()
+                .is_some_and(|code| allowed.iter().any(|a| a == code))
+        })
+        .collect();
+
+    // A non-zero exit with every error allowlisted is the expected shape of
+    // an assignment whose starter is *meant* not to compile -- fixing the
+    // errors is the exercise. Only a failure rustc reported no errors for is
+    // a real one: cargo couldn't run the check at all.
+    if !output.status.success() && !saw_errors {
         return Err(Error::Other(format!(
-            "cargo check --features student failed at {}:\n{}",
+            "`cargo check --features student` failed in {} without reporting any diagnostics -- \
+             this is a cargo/manifest problem, not student-view code. Is there a `student` \
+             feature in Cargo.toml?\n\n{}",
             assignment_dir.display(),
             String::from_utf8_lossy(&output.stderr)
         )));
