@@ -70,6 +70,9 @@ pub struct TestResult {
 pub enum BuildStatus {
     Failed(ProcessStatus),
     DisallowedDependency,
+    /// The checkout had no directory named after `[assignment].id`, so
+    /// there was no package to build and no process ever ran.
+    NoPackage(AssignmentId),
 }
 
 impl BuildStatus {
@@ -77,6 +80,7 @@ impl BuildStatus {
         match self {
             BuildStatus::Failed(status) => status.describe(),
             BuildStatus::DisallowedDependency => "disallowed dependency".to_string(),
+            BuildStatus::NoPackage(id) => format!("no {:?} package in submission", id.as_str()),
         }
     }
 }

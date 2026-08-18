@@ -21,14 +21,16 @@ pub struct ExecOutcome {
 
 fn process_status(status: Option<ExitStatus>) -> ProcessStatus {
     let Some(status) = status else {
-        return ProcessStatus::Unknown;
+        return ProcessStatus::NotReaped;
     };
     if let Some(code) = status.code() {
         ProcessStatus::Exited(code as i32)
     } else if let Some(signal) = status.signal() {
         ProcessStatus::Signaled(signal)
     } else {
-        ProcessStatus::Unknown
+        // `ExitStatus::Other`/`Undetermined`: no waitpid path produces
+        // these, so there is nothing more specific to say.
+        ProcessStatus::NotReaped
     }
 }
 

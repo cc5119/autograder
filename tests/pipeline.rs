@@ -187,7 +187,7 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
     assert_eq!(evals.len(), 1);
     assert!(matches!(
         evals[0].status,
-        EvalStatus::BuildFailed(BuildStatus::Failed(_))
+        EvalStatus::BuildFailed(BuildStatus::NoPackage(id)) if id == "hw3"
     ));
 }
 

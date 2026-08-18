@@ -14,7 +14,6 @@ use crate::error::Result;
 use crate::exec::fs;
 use crate::exec::json::write_json;
 use crate::exec::overlay::{self, Context, Rule};
-use crate::exec::sandbox::ProcessStatus;
 use crate::id::{GithubUser, RunId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
 use crate::pipeline::evaluator::Evaluator;
@@ -119,7 +118,7 @@ pub(crate) fn evaluate_submission(
     if !submitted_package.is_dir() {
         return Ok(terminal_eval(
             ctx,
-            BuildStatus::Failed(ProcessStatus::Unknown),
+            BuildStatus::NoPackage(spec.assignment.id),
             Some(format!(
                 "submission has no {:?} directory -- expected the student's own package \
                  there, matching [assignment].id",

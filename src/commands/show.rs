@@ -187,8 +187,16 @@ fn render_eval(out: &mut String, eval: &EvaluationResult, run_count: usize, verb
                 "  status         {}",
                 style(format!("build failed ({})", status.label())).red()
             );
-            if verbose && let Some(errors) = &eval.diagnostics.compiler_errors {
-                let _ = writeln!(out, "\n{errors}");
+            // Failures that never reached the compiler put their
+            // explanation in `stderr_excerpt` instead.
+            if verbose
+                && let Some(detail) = eval
+                    .diagnostics
+                    .compiler_errors
+                    .as_ref()
+                    .or(eval.diagnostics.stderr_excerpt.as_ref())
+            {
+                let _ = writeln!(out, "\n{detail}");
             }
             return;
         }

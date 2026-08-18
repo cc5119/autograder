@@ -112,8 +112,10 @@ pub enum ProcessStatus {
     Signaled(i32),
     /// The wall-clock limit was hit before the process finished.
     TimedOut,
-    /// Couldn't be determined (the process was never successfully reaped).
-    Unknown,
+    /// Closed its output but had not exited within the reap grace period,
+    /// so its real status was never observed. Distinct from `TimedOut`:
+    /// the workload's own budget was never exceeded.
+    NotReaped,
 }
 
 impl ProcessStatus {
@@ -123,7 +125,7 @@ impl ProcessStatus {
             ProcessStatus::Exited(code) => format!("exited ({code})"),
             ProcessStatus::Signaled(signal) => format!("signaled ({signal})"),
             ProcessStatus::TimedOut => "timed out".to_string(),
-            ProcessStatus::Unknown => "unknown".to_string(),
+            ProcessStatus::NotReaped => "did not exit after closing output".to_string(),
         }
     }
 }
