@@ -8,7 +8,7 @@ use std::path::Path;
 
 use console::style;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::exec::fs;
 use crate::exec::json::read_json;
 use crate::id::GithubUser;
@@ -21,13 +21,7 @@ use crate::submissions::{FetchRecord, FetchResult, SubmissionDate, read_fetch_re
 const EVAL_DIR: &str = ".eval";
 
 pub fn run(submission: &Path, verbose: bool, assignment: Option<&Path>) -> Result<()> {
-    let id = github_user(submission)?;
-    let submissions_dir = submission.parent().ok_or_else(|| {
-        Error::Other(format!(
-            "{} has no parent directory to look for .fetch/.eval records in",
-            submission.display()
-        ))
-    })?;
+    let (id, submissions_dir) = super::submission_parts(submission)?;
 
     let mut out = String::new();
     let _ = writeln!(out, "{id}  ({})", submission.display());
@@ -62,19 +56,6 @@ pub fn run(submission: &Path, verbose: bool, assignment: Option<&Path>) -> Resul
 
     print!("{out}");
     Ok(())
-}
-
-fn github_user(submission: &Path) -> Result<GithubUser> {
-    submission
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(GithubUser::new)
-        .ok_or_else(|| {
-            Error::Other(format!(
-                "{} is not a valid submission path",
-                submission.display()
-            ))
-        })
 }
 
 fn render_fetch(out: &mut String, record: &FetchRecord) {

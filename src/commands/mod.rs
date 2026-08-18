@@ -5,14 +5,18 @@ pub mod fetch;
 pub mod grade;
 pub mod init;
 pub mod lock;
+pub mod open;
 pub mod overrides;
 pub mod publish;
 pub mod push;
 pub mod release;
 pub mod show;
 
+use std::path::Path;
+
 use crate::cli::Command;
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::id::GithubUser;
 use crate::exec::sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
 use crate::pipeline::evaluator::Evaluator;
 use crate::pipeline::evaluator::nextest::Nextest;
@@ -56,6 +60,7 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             reason,
             submissions,
         } => overrides::run(&submissions, &github_user, &commit, reason),
+        Command::Open { submission } => open::run(&submission),
         Command::Show {
             submission,
             assignment,
@@ -80,6 +85,29 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             jobs,
         } => release::run(&repo, &roster, yes, jobs),
     }
+}
+
+/// Splits a submission checkout path into the student it belongs to and
+/// the submissions dir holding the `.fetch`/`.eval` records beside it --
+/// the single argument both `show` and `open` take.
+pub(crate) fn submission_parts(submission: &Path) -> Result<(GithubUser, &Path)> {
+    let github_user = submission
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(GithubUser::new)
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "{} is not a valid submission path",
+                submission.display()
+            ))
+        })?;
+    let submissions_dir = submission.parent().ok_or_else(|| {
+        Error::Other(format!(
+            "{} has no parent directory to look for .fetch/.eval records in",
+            submission.display()
+        ))
+    })?;
+    Ok((github_user, submissions_dir))
 }
 
 pub(crate) fn build_evaluator(spec: &Spec, local_sandbox: bool) -> Result<Box<dyn Evaluator>> {

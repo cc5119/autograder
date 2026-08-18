@@ -173,6 +173,11 @@ pub enum Command {
         #[arg(long)]
         submissions: PathBuf,
     },
+    /// Open a submission's fork on GitHub in the browser.
+    Open {
+        /// Path to a submission checkout dir, e.g., `<submissions>/alice`
+        submission: PathBuf,
+    },
     /// Print information about a submission.
     Show {
         /// Path to a submission checkout dir, e.g., `<submissions>/alice`
