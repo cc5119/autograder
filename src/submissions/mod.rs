@@ -488,13 +488,54 @@ pub fn read_fetch_record(out_dir: &Path, github_user: &GithubUser) -> Result<Opt
     read_json(&path)
 }
 
+/// Why a student who already has a fetch record is being fetched again.
+/// Every case here is one where re-fetching costs nothing that was worth
+/// keeping -- see [`Plan::Skip`] for why that matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refetch {
+    /// The recorded fetch failed -- nothing was preserved to protect.
+    PreviousFailure,
+    /// The record says `Ok`, but the checkout is gone.
+    MissingCheckout,
+    /// An override in `overrides.toml` that this record doesn't reflect.
+    Override,
+    /// `--force`.
+    Forced,
+}
+
+impl Refetch {
+    pub fn label(self) -> &'static str {
+        match self {
+            Refetch::PreviousFailure => "previous fetch failed",
+            Refetch::MissingCheckout => "checkout is missing",
+            Refetch::Override => "override recorded",
+            Refetch::Forced => "--force",
+        }
+    }
+}
+
 /// What one roster row's fetch will do. Decided before anything is
 /// cloned, so `autograder fetch` can show it and ask.
 #[derive(Debug, Clone)]
 pub enum Plan {
     /// `fork` is the one to clone; `also` is the rest of the candidates,
     /// kept for the record so an arbitrary pick stays auditable.
-    Fetch { fork: Fork, also: Vec<Fork> },
+    /// `refetch` is `None` for a student never fetched before.
+    Fetch {
+        fork: Fork,
+        also: Vec<Fork>,
+        refetch: Option<Refetch>,
+    },
+    /// Already fetched successfully -- left exactly as it is, record
+    /// included. Re-fetching would re-derive the submission date from
+    /// `GET /repos/{owner}/{repo}/events`, which GitHub only retains for
+    /// 90 days, so a settled submission can lose its server-verified push
+    /// time -- and with it, possibly the choice of graded commit, since
+    /// the fallback is the student's own forgeable commit date.
+    Skip {
+        fork: Fork,
+        record: Box<FetchRecord>,
+    },
     /// Every fork this student can push to is shared with another student,
     /// so none of them can be attributed -- see [`forks::SharedFork`].
     Shared { forks: Vec<Fork>, message: String },
@@ -524,13 +565,96 @@ impl FetchPlan {
             .filter(|row| matches!(row.plan, Plan::Fetch { .. }))
             .count()
     }
+
+    pub fn skipped(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.plan, Plan::Skip { .. }))
+            .count()
+    }
 }
 
-/// Works out what to fetch without fetching it: lists `upstream`'s forks
-/// and attributes each to a roster student by its collaborators. Read-only
-/// -- nothing on disk is touched, so a plan can be shown and declined for
-/// free.
-pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster, jobs: usize) -> Result<FetchPlan> {
+/// Decides between fetching `fork` and leaving an existing fetch alone.
+/// Fetching is only skipped when there's something worth preserving: a
+/// successful record whose checkout is still on disk, with every recorded
+/// override already applied.
+fn plan_for_fork(
+    out_dir: &Path,
+    github_user: &GithubUser,
+    fork: Fork,
+    also: Vec<Fork>,
+    r#override: Option<&Override>,
+    force: bool,
+) -> Result<Plan> {
+    match decide(out_dir, github_user, r#override, force)? {
+        Decision::Skip(record) => Ok(Plan::Skip { fork, record }),
+        Decision::Run(refetch) => Ok(Plan::Fetch {
+            fork,
+            also,
+            refetch,
+        }),
+    }
+}
+
+/// Either a reason to run (`None` for a student never fetched at all) or
+/// the record that's worth keeping.
+enum Decision {
+    Run(Option<Refetch>),
+    Skip(Box<FetchRecord>),
+}
+
+fn decide(
+    out_dir: &Path,
+    github_user: &GithubUser,
+    r#override: Option<&Override>,
+    force: bool,
+) -> Result<Decision> {
+    let Some(record) = read_fetch_record(out_dir, github_user)? else {
+        // Never fetched: not a re-fetch at all, whatever `--force` says.
+        return Ok(Decision::Run(None));
+    };
+    if force {
+        return Ok(Decision::Run(Some(Refetch::Forced)));
+    }
+    // `None` means the recorded fetch failed: nothing to protect.
+    if record.submission_date().is_none() {
+        return Ok(Decision::Run(Some(Refetch::PreviousFailure)));
+    }
+    if !out_dir.join(github_user.as_str()).is_dir() {
+        return Ok(Decision::Run(Some(Refetch::MissingCheckout)));
+    }
+    if !override_applied(&record, r#override) {
+        return Ok(Decision::Run(Some(Refetch::Override)));
+    }
+    Ok(Decision::Skip(Box::new(record)))
+}
+
+/// Whether `record` already reflects `override`. `overridden_at` is the
+/// version stamp: editing an override moves it, so the exception is
+/// applied exactly once and then settles.
+fn override_applied(record: &FetchRecord, r#override: Option<&Override>) -> bool {
+    let Some(r#override) = r#override else {
+        return true;
+    };
+    matches!(
+        record.submission_date(),
+        Some(SubmissionDate::Override { overridden_at, .. })
+            if *overridden_at == r#override.recorded_at
+    )
+}
+
+/// Works out what to fetch without fetching it: lists `upstream`'s forks,
+/// attributes each to a roster student by its collaborators, and settles
+/// each row against what `out_dir` already holds (see [`Plan::Skip`]).
+/// Read-only -- nothing on disk is written, so a plan can be shown and
+/// declined for free.
+pub fn plan_fetch(
+    upstream: &Upstream,
+    roster: &CsvRoster,
+    jobs: usize,
+    out_dir: &Path,
+    force: bool,
+) -> Result<FetchPlan> {
     let entries = roster.roster()?;
 
     // Rejected here rather than tolerated: two rows sharing a github_user
@@ -561,6 +685,8 @@ pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster, jobs: usize) -> Resul
     })?;
     progress.finish_and_clear();
 
+    let overrides = overrides::load(out_dir)?;
+
     let rows = entries
         .into_iter()
         .map(|entry| {
@@ -585,14 +711,19 @@ pub fn plan_fetch(upstream: &Upstream, roster: &CsvRoster, jobs: usize) -> Resul
                     }
                 }
             } else {
-                Plan::Fetch {
-                    fork: candidates.remove(0),
-                    also: candidates,
-                }
+                let fork = candidates.remove(0);
+                plan_for_fork(
+                    out_dir,
+                    &entry.github_user,
+                    fork,
+                    candidates,
+                    overrides::find(&overrides, &entry.github_user).as_ref(),
+                    force,
+                )?
             };
-            PlanRow { entry, plan }
+            Ok(PlanRow { entry, plan })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(FetchPlan {
         rows,
@@ -610,16 +741,20 @@ fn first_duplicate(entries: &[RosterEntry]) -> Option<GithubUser> {
 
 /// Runs the Fetch stage alone: lands each submission `plan` resolved at
 /// `out_dir/<github_user>/` (flat -- no `checkout/` nesting) and records the
-/// outcome at `out_dir/.fetch/<github_user>.json`. Safe to run again --
-/// always overwrites both.
+/// outcome at `out_dir/.fetch/<github_user>.json`.
+///
+/// Safe to run again: a [`Plan::Skip`] row's checkout and record are left
+/// untouched, so re-running never costs a settled submission its
+/// server-verified timestamps. Its existing record is still returned, so
+/// the result describes the whole roster and not just what moved.
 ///
 /// A roster row with no usable fork still gets a `Failed` record rather
 /// than being skipped, so it shows up downstream instead of vanishing.
 ///
 /// Rows are fetched `jobs` at a time. Every row is attempted even if some
 /// fail, and the returned records stay in roster order no matter what
-/// order they finished in; `on_result` is called once per row as it lands,
-/// in completion order.
+/// order they finished in; `on_result` is called once per row that actually
+/// fetched, in completion order.
 pub fn fetch_batch(
     plan: &FetchPlan,
     out_dir: &Path,
@@ -647,6 +782,12 @@ pub fn fetch_batch(
         plan.rows
             .par_iter()
             .map(|row| {
+                // A skipped row is reported by the plan listing before the
+                // prompt, not again here -- nothing happened to announce.
+                if let Plan::Skip { record, .. } = &row.plan {
+                    return Ok((row.entry.github_user, (**record).clone()));
+                }
+
                 let fetched = fetch_row(row, out_dir, deadline, detach, &overrides);
                 if matches!(row.plan, Plan::Fetch { .. }) {
                     progress.inc(1);
@@ -694,7 +835,7 @@ fn fetch_row(
     let github_user = row.entry.github_user;
     let r#override = overrides::find(overrides, &github_user);
     let (outcome, forks) = match &row.plan {
-        Plan::Fetch { fork, also } => {
+        Plan::Fetch { fork, also, .. } => {
             let outcome = fetch_fork(
                 fork,
                 &out_dir.join(github_user.as_str()),
@@ -706,6 +847,8 @@ fn fetch_row(
             forks.extend(also.iter().cloned());
             (outcome, forks)
         }
+        // Handled by `fetch_batch` before it ever gets here.
+        Plan::Skip { record, .. } => return Ok((github_user, (**record).clone())),
         // A shared fork is fetched for nobody, but still goes in the
         // record, so the failure names what was found rather than
         // reading like a missing submission.
@@ -1257,5 +1400,195 @@ mod tests {
         };
 
         assert!(record.late_by().is_none());
+    }
+
+    /// `decide` is what keeps a re-run from costing a settled submission
+    /// its server-verified timestamps, so each branch is pinned here.
+    mod skipping {
+        use super::*;
+
+        fn ok_record() -> FetchRecord {
+            FetchRecord {
+                fetched_at: Timestamp::now(),
+                deadline: deadline("2026-02-14T00:00:00Z"),
+                forks: Vec::new(),
+                metadata: IndexMap::new(),
+                result: FetchResult::Ok {
+                    submission_date: SubmissionDate::OnTime(Commit {
+                        sha: CommitSha::new("abc123"),
+                        timestamp: CommitTimestamp {
+                            push_event: Some("2026-02-10T00:00:00Z".parse().unwrap()),
+                            commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
+                        },
+                    }),
+                },
+            }
+        }
+
+        /// A record plus the checkout it describes -- both halves have to
+        /// be present for a skip.
+        fn fetched(out_dir: &Path, github_user: &GithubUser, record: &FetchRecord) {
+            std::fs::create_dir_all(out_dir.join(github_user.as_str())).unwrap();
+            write_fetch_record(out_dir, github_user, record).unwrap();
+        }
+
+        fn alice() -> GithubUser {
+            GithubUser::new("alice")
+        }
+
+        fn an_override(recorded_at: &str) -> Override {
+            Override {
+                github_user: alice(),
+                commit: "9f3c1ab".to_string(),
+                reason: None,
+                recorded_at: recorded_at.parse().unwrap(),
+            }
+        }
+
+        #[test]
+        fn a_student_never_fetched_is_not_a_refetch() {
+            let out = tempfile::tempdir().unwrap();
+
+            let decision = decide(out.path(), &alice(), None, false).unwrap();
+
+            assert!(matches!(decision, Decision::Run(None)));
+        }
+
+        #[test]
+        fn a_settled_submission_is_left_alone() {
+            let out = tempfile::tempdir().unwrap();
+            fetched(out.path(), &alice(), &ok_record());
+
+            let decision = decide(out.path(), &alice(), None, false).unwrap();
+
+            assert!(matches!(decision, Decision::Skip(_)));
+        }
+
+        #[test]
+        fn force_refetches_a_settled_submission() {
+            let out = tempfile::tempdir().unwrap();
+            fetched(out.path(), &alice(), &ok_record());
+
+            let decision = decide(out.path(), &alice(), None, true).unwrap();
+
+            assert!(matches!(decision, Decision::Run(Some(Refetch::Forced))));
+        }
+
+        /// Nothing was preserved by a failed fetch, so retrying is free --
+        /// and the cause is often gone by the next run.
+        #[test]
+        fn a_failed_record_is_retried() {
+            let out = tempfile::tempdir().unwrap();
+            let record = FetchRecord {
+                result: FetchResult::Failed {
+                    message: "no fork".to_string(),
+                },
+                ..ok_record()
+            };
+            fetched(out.path(), &alice(), &record);
+
+            let decision = decide(out.path(), &alice(), None, false).unwrap();
+
+            assert!(matches!(
+                decision,
+                Decision::Run(Some(Refetch::PreviousFailure))
+            ));
+        }
+
+        /// Skipping on the record alone would leave `evaluate` with no
+        /// submission to find.
+        #[test]
+        fn a_record_without_its_checkout_is_refetched() {
+            let out = tempfile::tempdir().unwrap();
+            write_fetch_record(out.path(), &alice(), &ok_record()).unwrap();
+
+            let decision = decide(out.path(), &alice(), None, false).unwrap();
+
+            assert!(matches!(
+                decision,
+                Decision::Run(Some(Refetch::MissingCheckout))
+            ));
+        }
+
+        #[test]
+        fn an_unapplied_override_forces_a_refetch() {
+            let out = tempfile::tempdir().unwrap();
+            fetched(out.path(), &alice(), &ok_record());
+
+            let decision = decide(
+                out.path(),
+                &alice(),
+                Some(&an_override("2026-02-16T00:00:00Z")),
+                false,
+            )
+            .unwrap();
+
+            assert!(matches!(decision, Decision::Run(Some(Refetch::Override))));
+        }
+
+        /// `overridden_at` is the version stamp: once the exception is in
+        /// the record, the student settles like any other.
+        #[test]
+        fn an_applied_override_settles() {
+            let out = tempfile::tempdir().unwrap();
+            let recorded_at = "2026-02-16T00:00:00Z";
+            let record = FetchRecord {
+                result: FetchResult::Ok {
+                    submission_date: SubmissionDate::Override {
+                        commit: Commit {
+                            sha: CommitSha::new("9f3c1ab"),
+                            timestamp: CommitTimestamp {
+                                push_event: None,
+                                commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
+                            },
+                        },
+                        reason: None,
+                        overridden_at: recorded_at.parse().unwrap(),
+                        late_by: None,
+                    },
+                },
+                ..ok_record()
+            };
+            fetched(out.path(), &alice(), &record);
+
+            let decision =
+                decide(out.path(), &alice(), Some(&an_override(recorded_at)), false).unwrap();
+
+            assert!(matches!(decision, Decision::Skip(_)));
+        }
+
+        /// Editing an override moves its stamp, so it applies once more.
+        #[test]
+        fn an_edited_override_refetches_again() {
+            let out = tempfile::tempdir().unwrap();
+            let record = FetchRecord {
+                result: FetchResult::Ok {
+                    submission_date: SubmissionDate::Override {
+                        commit: Commit {
+                            sha: CommitSha::new("9f3c1ab"),
+                            timestamp: CommitTimestamp {
+                                push_event: None,
+                                commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
+                            },
+                        },
+                        reason: None,
+                        overridden_at: "2026-02-16T00:00:00Z".parse().unwrap(),
+                        late_by: None,
+                    },
+                },
+                ..ok_record()
+            };
+            fetched(out.path(), &alice(), &record);
+
+            let decision = decide(
+                out.path(),
+                &alice(),
+                Some(&an_override("2026-02-17T00:00:00Z")),
+                false,
+            )
+            .unwrap();
+
+            assert!(matches!(decision, Decision::Run(Some(Refetch::Override))));
+        }
     }
 }

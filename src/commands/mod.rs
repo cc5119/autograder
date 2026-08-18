@@ -16,8 +16,8 @@ use std::path::Path;
 
 use crate::cli::Command;
 use crate::error::{Error, Result};
-use crate::id::GithubUser;
 use crate::exec::sandbox::{ContainerSandbox, LocalSandbox, Sandbox};
+use crate::id::GithubUser;
 use crate::pipeline::evaluator::Evaluator;
 use crate::pipeline::evaluator::nextest::Nextest;
 use crate::spec::Spec;
@@ -34,6 +34,7 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             as_of,
             detach,
             jobs,
+            force,
         } => fetch::run(
             &assignment,
             &repo,
@@ -42,6 +43,7 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             as_of,
             detach.choice(),
             jobs,
+            force,
         ),
         Command::Evaluate {
             assignment,
@@ -55,11 +57,10 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             submissions,
         } => grade::run(&assignment, &submissions),
         Command::Override {
-            github_user,
+            submission,
             commit,
             reason,
-            submissions,
-        } => overrides::run(&submissions, &github_user, &commit, reason),
+        } => overrides::run(&submission, &commit, reason),
         Command::Open { submission } => open::run(&submission),
         Command::Show {
             submission,

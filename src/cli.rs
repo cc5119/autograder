@@ -123,6 +123,12 @@ pub enum Command {
         /// once. Lower it if GitHub starts refusing the concurrent requests.
         #[arg(short = 'j', long, default_value = "8")]
         jobs: std::num::NonZeroUsize,
+        /// Re-fetch students who already have a successful fetch record.
+        /// Their server-verified push timestamps are re-derived from
+        /// GitHub's events API, which only retains 90 days -- so this can
+        /// downgrade a settled submission to its forgeable commit date.
+        #[arg(long)]
+        force: bool,
     },
     /// Evaluate submissions
     Evaluate {
@@ -160,8 +166,8 @@ pub enum Command {
     /// Record which commit to grade for one student, overriding the
     /// deadline and any bless tag. Applied by every later `fetch`.
     Override {
-        /// The student's GitHub handle.
-        github_user: String,
+        /// Path to a submission checkout dir, e.g., `<submissions>/alice`
+        submission: PathBuf,
         /// The commit to grade: a sha, or anything `git rev-parse`
         /// resolves in the student's own fork.
         #[arg(long)]
@@ -169,9 +175,6 @@ pub enum Command {
         /// Why the exception was granted, kept on the fetch record.
         #[arg(long)]
         reason: Option<String>,
-        /// The same directory `autograder fetch --out` was pointed at.
-        #[arg(long)]
-        submissions: PathBuf,
     },
     /// Open a submission's fork on GitHub in the browser.
     Open {

@@ -9,16 +9,13 @@ use console::style;
 use jiff::Timestamp;
 
 use crate::error::Result;
-use crate::id::GithubUser;
 use crate::submissions::overrides::{self, Override};
 
-pub fn run(
-    submissions: &Path,
-    github_user: &str,
-    commit: &str,
-    reason: Option<String>,
-) -> Result<()> {
-    let github_user = GithubUser::new(github_user);
+use super::submission_parts;
+
+pub fn run(submission: &Path, commit: &str, reason: Option<String>) -> Result<()> {
+    let (github_user, submissions) = submission_parts(submission)?;
+
     let entry = Override {
         github_user,
         commit: commit.to_string(),

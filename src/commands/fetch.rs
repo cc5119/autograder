@@ -19,6 +19,9 @@ use crate::submissions::{
     FetchPlan, FetchRecord, FetchResult, Plan, SubmissionDate, fetch_batch, plan_fetch,
 };
 
+// One parameter per `Command::Fetch` flag: this is the CLI's shape, and
+// bundling them into a struct here would only move the same list.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     assignment: &Path,
     repo: &Upstream,
@@ -27,12 +30,13 @@ pub fn run(
     as_of: Option<jiff::Zoned>,
     detach: Option<bool>,
     jobs: std::num::NonZeroUsize,
+    force: bool,
 ) -> Result<()> {
     let spec = Spec::load(assignment)?;
     let deadline = as_of.unwrap_or_else(|| spec.assignment.deadline.clone());
 
     let roster = CsvRoster::new(roster);
-    let plan = plan_fetch(repo, &roster, jobs.get())?;
+    let plan = plan_fetch(repo, &roster, jobs.get(), out, force)?;
 
     print!("{}", render_plan(&plan, repo, &deadline, out));
     if plan.to_fetch() == 0 {
@@ -171,16 +175,32 @@ fn render_plan(
     for row in &plan.rows {
         let id = row.entry.github_user.as_str();
         let (repo, note) = match &row.plan {
-            Plan::Fetch { fork, also } if also.is_empty() => (fork.nwo(), String::new()),
-            Plan::Fetch { fork, also } => (
-                fork.nwo(),
-                style(format!(
-                    "ambiguous, also {}",
-                    also.iter().map(|f| f.nwo()).collect::<Vec<_>>().join(", ")
-                ))
-                .yellow()
-                .to_string(),
-            ),
+            Plan::Skip { fork, .. } => (fork.nwo(), style("already fetched").dim().to_string()),
+            Plan::Fetch {
+                fork,
+                also,
+                refetch,
+            } => {
+                let mut notes = Vec::new();
+                if let Some(refetch) = refetch {
+                    notes.push(
+                        style(format!("re-fetch: {}", refetch.label()))
+                            .yellow()
+                            .to_string(),
+                    );
+                }
+                if !also.is_empty() {
+                    notes.push(
+                        style(format!(
+                            "ambiguous, also {}",
+                            also.iter().map(|f| f.nwo()).collect::<Vec<_>>().join(", ")
+                        ))
+                        .yellow()
+                        .to_string(),
+                    );
+                }
+                (fork.nwo(), notes.join("; "))
+            }
             Plan::Shared { forks, .. } => (
                 "--".to_string(),
                 style(format!(
@@ -203,6 +223,17 @@ fn render_plan(
         |p| matches!(p, Plan::Fetch { also, .. } if !also.is_empty()),
     );
 
+    let skipped = plan.skipped();
+    let refetching = count(plan, |p| {
+        matches!(
+            p,
+            Plan::Fetch {
+                refetch: Some(_),
+                ..
+            }
+        )
+    });
+
     let _ = writeln!(s);
     let _ = writeln!(
         s,
@@ -210,6 +241,19 @@ fn render_plan(
         plan.rows.len(),
         shared + missing
     );
+    if skipped > 0 {
+        let _ = writeln!(
+            s,
+            "  {skipped} already fetched -- left untouched (pass {} to fetch them again)",
+            style("--force").bold()
+        );
+    }
+    if refetching > 0 {
+        let _ = writeln!(
+            s,
+            "  {refetching} re-fetched -- see the reason beside each row above"
+        );
+    }
     if missing > 0 {
         let _ = writeln!(s, "  {missing} with no fork");
     }
@@ -230,21 +274,6 @@ fn render_plan(
             s,
             "  {} forks skipped, no roster student can push to them",
             plan.unmatched.len()
-        );
-    }
-    let overwritten = plan
-        .rows
-        .iter()
-        .filter(|row| matches!(row.plan, Plan::Fetch { .. }))
-        .filter(|row| out.join(row.entry.github_user.as_str()).exists())
-        .count();
-    if overwritten > 0 {
-        let _ = writeln!(
-            s,
-            "  {} existing checkouts under {} will be {}",
-            overwritten,
-            out.display(),
-            style("overwritten").yellow()
         );
     }
     let _ = writeln!(s);
