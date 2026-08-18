@@ -126,6 +126,7 @@ mod tests {
     use crate::exec::sandbox::ProcessStatus;
     use crate::model::BuildStatus;
     use crate::model::Diagnostics;
+    use crate::model::InputHash;
     use crate::model::TestResult;
 
     fn eval_with_tests(tests: Vec<TestResult>) -> EvaluationResult {
@@ -133,8 +134,7 @@ mod tests {
             assignment_id: "hw3".into(),
             github_user: "local".into(),
             run_id: "run-1".into(),
-            graded_commit: None,
-            instructor_commit: None,
+            input_hash: InputHash::new("test"),
             status: EvalStatus::Ran {
                 process: ProcessStatus::Exited(0),
                 tests: TestOutcome::Tests(tests),

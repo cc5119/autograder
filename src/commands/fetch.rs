@@ -123,6 +123,7 @@ fn report(github_user: &GithubUser, record: &FetchRecord) {
             let note = match submission_date {
                 SubmissionDate::Late(_) => "late",
                 SubmissionDate::Empty => "no commits",
+                SubmissionDate::Override { .. } => "override",
                 _ => "",
             };
             tracing::info!(

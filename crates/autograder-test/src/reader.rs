@@ -221,7 +221,9 @@ pub(crate) fn assert_matches(stream: &str, actual: &str, expected: &str) {
         return;
     }
 
-    let at = (0..a.len().max(e.len())).find(|&i| a.get(i) != e.get(i)).unwrap();
+    let at = (0..a.len().max(e.len()))
+        .find(|&i| a.get(i) != e.get(i))
+        .unwrap();
     let show = |lines: &[&str], i: usize| match lines.get(i) {
         Some(l) => format!("{:?}", truncate(l)),
         None => "<no more output>".to_string(),

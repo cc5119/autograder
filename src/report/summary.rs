@@ -8,12 +8,17 @@ use std::path::Path;
 
 use console::style;
 
+use crate::id::GithubUser;
 use crate::model::{Grade, GradeOutcome};
 
 /// Highest score first, so the scores worth a second look -- and the
 /// unscored rows after them -- land next to the summary at the bottom,
 /// which is what stays on screen after a class-sized listing scrolls.
-pub fn render(grades: &[Grade], gradebook: &Path) -> String {
+///
+/// `stale` names the submissions whose inputs changed since the run they
+/// were graded from: the score is still what that run produced, it just
+/// isn't a score for what's on disk now.
+pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> String {
     let mut s = String::new();
 
     if grades.is_empty() {
@@ -53,6 +58,11 @@ pub fn render(grades: &[Grade], gradebook: &Path) -> String {
 
     for grade in &rows {
         let id = grade.github_user.as_str();
+        let note = if stale.contains(&grade.github_user) {
+            style("    stale").yellow().to_string()
+        } else {
+            String::new()
+        };
         match &grade.outcome {
             GradeOutcome::Scored {
                 score,
@@ -65,14 +75,14 @@ pub fn render(grades: &[Grade], gradebook: &Path) -> String {
                 } else {
                     style(tests).yellow().to_string()
                 };
-                let _ = writeln!(s, "  {id:<width$}  {score:>6.1}    {tests}");
+                let _ = writeln!(s, "  {id:<width$}  {score:>6.1}    {tests}{note}");
             }
             GradeOutcome::Unscored { reason } => {
                 // Padded before it's styled: the escape codes count toward
                 // a format width and would eat the alignment.
                 let _ = writeln!(
                     s,
-                    "  {id:<width$}  {}    {}",
+                    "  {id:<width$}  {}    {}{note}",
                     style(format!("{:>6}", "--")).red(),
                     style(reason).red()
                 );
@@ -96,6 +106,17 @@ pub fn render(grades: &[Grade], gradebook: &Path) -> String {
     }
     if let Some(stats) = distribution(&scores) {
         let _ = writeln!(s, "  {stats}");
+    }
+    if !stale.is_empty() {
+        let _ = writeln!(
+            s,
+            "  {}",
+            style(format!(
+                "{} graded from an evaluation older than the current content -- re-run autograder evaluate",
+                stale.len()
+            ))
+            .yellow()
+        );
     }
     let _ = writeln!(s);
     s

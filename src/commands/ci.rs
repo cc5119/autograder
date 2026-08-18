@@ -52,6 +52,7 @@ pub fn run(local_sandbox: bool) -> Result<()> {
             run_id: pipeline::generate_run_id(),
             workspace: build_scratch.path().to_path_buf(),
             vendor_dir: vendor_dir.clone(),
+            input_hash: pipeline::hash::input_hash(&checkout_dir, assignment_dir, &spec)?,
         };
 
         Some(pipeline::evaluate_submission(

@@ -255,8 +255,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             assignment_id: ctx.assignment_id,
             github_user: ctx.github_user,
             run_id: ctx.run_id,
-            graded_commit: None,
-            instructor_commit: None,
+            input_hash: ctx.input_hash,
             status: EvalStatus::Ran {
                 process: run_outcome.status,
                 tests: TestOutcome::Tests(tests),
@@ -276,8 +275,7 @@ fn build_failed_result(
         assignment_id: ctx.assignment_id,
         github_user: ctx.github_user,
         run_id: ctx.run_id,
-        graded_commit: None,
-        instructor_commit: None,
+        input_hash: ctx.input_hash,
         status: EvalStatus::BuildFailed(status),
         wall_clock_ms: None,
         diagnostics,
@@ -294,8 +292,7 @@ fn run_failed_result(
         assignment_id: ctx.assignment_id,
         github_user: ctx.github_user,
         run_id: ctx.run_id,
-        graded_commit: None,
-        instructor_commit: None,
+        input_hash: ctx.input_hash,
         status: EvalStatus::Ran { process, tests },
         wall_clock_ms: None,
         diagnostics,
@@ -417,6 +414,7 @@ fn sum_reported_scores(text: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::exec::sandbox::SandboxOutcome;
+    use crate::model::InputHash;
     use std::sync::Mutex;
 
     const SAMPLE_JUNIT: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -570,6 +568,7 @@ base = 0.0
             run_id: "run-1".into(),
             workspace: repo_root,
             vendor_dir,
+            input_hash: InputHash::new("test"),
         }
     }
 

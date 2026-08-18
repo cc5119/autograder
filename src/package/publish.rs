@@ -468,4 +468,3 @@ mod tests {
         assert_eq!(toml.content, "[package]\nname = \"hw3\"\n");
     }
 }
-

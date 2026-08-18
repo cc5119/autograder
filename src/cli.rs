@@ -135,6 +135,10 @@ pub enum Command {
         /// Grade using the host-process "local sandbox" instead of podman
         #[arg(long)]
         local_sandbox: bool,
+        /// Re-evaluate every submission, including those whose content and
+        /// assignment inputs are unchanged since their last result.
+        #[arg(long)]
+        force: bool,
     },
     /// Student-facing: run public tests only, advisory.
     Ci {
@@ -153,10 +157,32 @@ pub enum Command {
         #[arg(long)]
         submissions: PathBuf,
     },
+    /// Record which commit to grade for one student, overriding the
+    /// deadline and any bless tag. Applied by every later `fetch`.
+    Override {
+        /// The student's GitHub handle.
+        github_user: String,
+        /// The commit to grade: a sha, or anything `git rev-parse`
+        /// resolves in the student's own fork.
+        #[arg(long)]
+        commit: String,
+        /// Why the exception was granted, kept on the fetch record.
+        #[arg(long)]
+        reason: Option<String>,
+        /// The same directory `autograder fetch --out` was pointed at.
+        #[arg(long)]
+        submissions: PathBuf,
+    },
     /// Print information about a submission.
     Show {
         /// Path to a submission checkout dir, e.g., `<submissions>/alice`
         submission: PathBuf,
+        /// Path to the (private) assignment repo. Only needed to report
+        /// whether the evaluation is stale -- that compares against the
+        /// assignment material too, which a submission path alone can't
+        /// reach.
+        #[arg(long)]
+        assignment: Option<PathBuf>,
     },
     /// Publish either the starter or solution repo from the private
     /// workspace.

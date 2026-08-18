@@ -152,8 +152,7 @@ impl Evaluator for StubEvaluator {
             assignment_id: ctx.assignment_id,
             github_user: ctx.github_user,
             run_id: ctx.run_id,
-            graded_commit: None,
-            instructor_commit: None,
+            input_hash: ctx.input_hash,
             status: EvalStatus::Ran {
                 process: ProcessStatus::Exited(0),
                 tests: TestOutcome::Tests(tests),
@@ -167,7 +166,7 @@ impl Evaluator for StubEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TestStatus;
+    use crate::model::{InputHash, TestStatus};
     use std::path::PathBuf;
 
     #[test]
@@ -187,6 +186,7 @@ mod tests {
             run_id: "run-1".into(),
             workspace: PathBuf::from("/tmp/does-not-matter"),
             vendor_dir: PathBuf::from("/tmp/does-not-matter/.vendor"),
+            input_hash: InputHash::new("test"),
         };
 
         let eval = evaluator.evaluate(&ctx).unwrap();

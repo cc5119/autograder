@@ -5,6 +5,7 @@ pub mod fetch;
 pub mod grade;
 pub mod init;
 pub mod lock;
+pub mod overrides;
 pub mod publish;
 pub mod push;
 pub mod release;
@@ -42,13 +43,23 @@ pub fn dispatch(command: Command, verbose: bool) -> Result<()> {
             assignment,
             submissions,
             local_sandbox,
-        } => evaluate::run(&assignment, &submissions, local_sandbox),
+            force,
+        } => evaluate::run(&assignment, &submissions, local_sandbox, force),
         Command::Ci { local_sandbox } => ci::run(local_sandbox),
         Command::Grade {
             assignment,
             submissions,
         } => grade::run(&assignment, &submissions),
-        Command::Show { submission } => show::run(&submission, verbose),
+        Command::Override {
+            github_user,
+            commit,
+            reason,
+            submissions,
+        } => overrides::run(&submissions, &github_user, &commit, reason),
+        Command::Show {
+            submission,
+            assignment,
+        } => show::run(&submission, verbose, assignment.as_deref()),
         Command::Publish {
             assignment,
             out,
@@ -93,7 +104,7 @@ fn build_evaluator_for(spec: &Spec, sandbox: impl Sandbox + 'static) -> Box<dyn 
 mod tests {
     use super::*;
     use crate::exec::sandbox::LocalSandbox;
-    use crate::model::{self, JobContext};
+    use crate::model::{self, InputHash, JobContext};
     use crate::report::ci::CiReport;
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -174,6 +185,7 @@ base = 0.0
             run_id: "run-1".into(),
             workspace: harness_dir.path().to_path_buf(),
             vendor_dir: harness_dir.path().join(".vendor"),
+            input_hash: InputHash::new("test"),
         };
         let evaluator = build_evaluator_for(&spec, LocalSandbox);
         let eval = evaluator.evaluate(&ctx).unwrap();
@@ -238,7 +250,7 @@ base = 0.0
             "pub fn noop() {}\n",
         );
 
-        evaluate::run(assignment_dir.path(), submissions_dir.path(), true).unwrap();
+        evaluate::run(assignment_dir.path(), submissions_dir.path(), true, false).unwrap();
         grade::run(assignment_dir.path(), submissions_dir.path()).unwrap();
 
         let gradebook =

@@ -1,9 +1,59 @@
+use std::fmt;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::exec::sandbox::ProcessStatus;
-use crate::id::{AssignmentId, CommitSha, GithubUser, RunId};
+use crate::id::{AssignmentId, GithubUser, RunId};
+
+/// Digest of everything one evaluation was computed from: the submission
+/// checkout (minus `.git`) and the instructor side judging it. Equality is
+/// the whole point -- it's what lets `evaluate` skip a job and
+/// `grade`/`show` call a run stale -- so it's a type of its own, not a
+/// `String` that could be compared against a run id or a commit sha by
+/// accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputHash(&'static str);
+
+impl InputHash {
+    /// Leaks `hex`'s storage, so the value is `Copy` and threads through
+    /// the pipeline without a clone. One value per submission per run in a
+    /// short-lived CLI process -- see `pipeline::hash` for the only place
+    /// that computes a real one.
+    pub fn new(hex: impl Into<String>) -> Self {
+        Self(Box::leak(hex.into().into_boxed_str()))
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        self.0
+    }
+
+    /// First 12 hex chars, for messages that name a hash rather than
+    /// re-parse it.
+    pub fn short(&self) -> &'static str {
+        &self.0[..12.min(self.0.len())]
+    }
+}
+
+impl fmt::Display for InputHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl Serialize for InputHash {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0)
+    }
+}
+
+// Derive can't produce this: `&'static str` has nothing to borrow from the
+// deserializer, so the value is leaked on the way in.
+impl<'de> Deserialize<'de> for InputHash {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::new(String::deserialize(deserializer)?))
+    }
+}
 
 /// Per-job context threaded through the pipeline stages. `github_user`
 /// identifies a submission directory (see `GithubUser`'s doc comment) --
@@ -29,6 +79,9 @@ pub struct JobContext {
     /// The batch's vendored dependency set, mounted read-only into the
     /// sandbox -- one dir shared by every job (`deps::vendor::vendor`).
     pub vendor_dir: PathBuf,
+    /// Hash of this job's inputs, stamped onto whatever result it produces
+    /// -- see `EvaluationResult::input_hash`.
+    pub input_hash: InputHash,
 }
 
 impl JobContext {
@@ -131,12 +184,10 @@ pub struct EvaluationResult {
     pub assignment_id: AssignmentId,
     pub github_user: GithubUser,
     pub run_id: RunId,
-    /// The graded submission's own commit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graded_commit: Option<CommitSha>,
-    /// The private assignment repo's commit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instructor_commit: Option<CommitSha>,
+    /// Everything this run was computed from. Equality means a re-run
+    /// would do identical work, which is what lets `evaluate` skip and
+    /// `grade`/`show` call a run stale.
+    pub input_hash: InputHash,
     pub status: EvalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall_clock_ms: Option<u64>,

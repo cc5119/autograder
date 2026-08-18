@@ -1,5 +1,6 @@
 pub mod evaluator;
 pub mod grade;
+pub mod hash;
 pub mod manifest_check;
 
 use std::os::unix::fs::PermissionsExt;
@@ -12,7 +13,7 @@ use crate::deps;
 use crate::deps::cargo_lock::CargoLock;
 use crate::error::Result;
 use crate::exec::fs;
-use crate::exec::json::write_json;
+use crate::exec::json::{read_json, write_json};
 use crate::exec::overlay::{self, Context, Rule};
 use crate::id::{GithubUser, RunId};
 use crate::model::{BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext};
@@ -22,6 +23,16 @@ use crate::spec::Spec;
 use crate::str_map;
 
 static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// What one `evaluate_batch` run produced. `evals` covers every submission
+/// found, including the skipped ones -- their existing result is still the
+/// current one, so the tally stays a picture of the whole class rather than
+/// only of what happened to re-run.
+#[derive(Debug)]
+pub struct BatchOutcome {
+    pub evals: Vec<EvaluationResult>,
+    pub skipped: usize,
+}
 
 /// Where `evaluate_batch` persists each `EvaluationResult`, alongside (not
 /// inside) the submission checkouts under `submissions_dir`.
@@ -84,8 +95,7 @@ fn terminal_eval(
         assignment_id: ctx.assignment_id,
         github_user: ctx.github_user,
         run_id: ctx.run_id,
-        graded_commit: None,
-        instructor_commit: None,
+        input_hash: ctx.input_hash,
         status: EvalStatus::BuildFailed(status),
         wall_clock_ms: None,
         diagnostics: Diagnostics {
@@ -174,6 +184,28 @@ fn manifest_diagnostics(
     )
 }
 
+/// The most recently persisted result for one submission, by `run_id` sort
+/// order. `None` if it has never been evaluated.
+pub fn latest_eval(
+    submissions_dir: &Path,
+    github_user: &GithubUser,
+) -> Result<Option<EvaluationResult>> {
+    let dir = submissions_dir.join(EVAL_DIR).join(github_user.as_str());
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut runs: Vec<_> = fs::read_dir_entries(&dir)?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().ends_with(".eval.json"))
+        .collect();
+    runs.sort();
+    match runs.last() {
+        Some(latest) => Ok(Some(read_json(latest)?)),
+        None => Ok(None),
+    }
+}
+
 fn save_eval(submissions_dir: &Path, eval: &EvaluationResult) -> Result<()> {
     let path = submissions_dir
         .join(EVAL_DIR)
@@ -202,12 +234,14 @@ pub fn evaluate_batch(
     evaluator: &dyn Evaluator,
     assignment_dir: &Path,
     spec: &Spec,
-) -> Result<Vec<EvaluationResult>> {
+    force: bool,
+) -> Result<BatchOutcome> {
     let vendor_dir = deps::vendor::batch_vendor_dir(submissions_dir);
     deps::vendor::vendor(assignment_dir, &vendor_dir, spec)?;
 
     let github_users = list_submissions(submissions_dir)?;
     let mut evals = Vec::new();
+    let mut skipped = 0;
 
     // A single reused spinner, not one `ProgressBar` per submission: each
     // iteration just changes its message/finishes it, so the terminal shows
@@ -224,6 +258,20 @@ pub fn evaluate_batch(
 
         let run_id = generate_run_id();
         let checkout_dir = submissions_dir.join(github_user.as_str());
+        let input_hash = hash::input_hash(&checkout_dir, assignment_dir, spec)?;
+
+        // Re-running the evaluator over unchanged inputs can only produce
+        // the result already on disk, so the existing one stands.
+        if !force
+            && let Some(previous) = latest_eval(submissions_dir, &github_user)?
+            && previous.input_hash == input_hash
+        {
+            skipped += 1;
+            progress.suspend(|| println!("{}: skipped (unchanged)", github_user));
+            evals.push(previous);
+            continue;
+        }
+
         // A fresh OS temp dir per submission, becoming `ctx.workspace`
         // (see `JobContext`'s doc comment for the layout) -- dropped and
         // cleaned up automatically at the end of this iteration.
@@ -234,6 +282,7 @@ pub fn evaluate_batch(
             run_id,
             workspace: build_scratch.path().to_path_buf(),
             vendor_dir: vendor_dir.clone(),
+            input_hash,
         };
 
         let diagnostics = manifest_diagnostics(&checkout_dir, assignment_dir, &vendor_dir, spec)?;
@@ -254,5 +303,5 @@ pub fn evaluate_batch(
     }
     progress.finish_and_clear();
 
-    Ok(evals)
+    Ok(BatchOutcome { evals, skipped })
 }

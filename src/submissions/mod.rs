@@ -18,6 +18,7 @@
 
 pub mod forks;
 pub mod github_events;
+pub mod overrides;
 pub mod source;
 
 use indexmap::IndexMap;
@@ -35,6 +36,7 @@ use crate::id::{CommitSha, GithubUser};
 use crate::render::{bar, spinner};
 use crate::submissions::forks::{Fork, Upstream};
 use crate::submissions::github_events::PushEvent;
+use crate::submissions::overrides::Override;
 use crate::submissions::source::{CsvRoster, RosterEntry};
 
 const GIT_BIN: &str = "git";
@@ -87,6 +89,18 @@ pub enum SubmissionDate {
     /// there is. Fetched and checked out anyway: what to do about lateness
     /// is grading's call, not fetch's.
     Late(Commit),
+    /// An instructor named this commit (see [`overrides`]). Never
+    /// deadline-gated, but `late_by` still records how late it was, so
+    /// accepting a submission and pretending it was on time stay separate
+    /// decisions.
+    Override {
+        commit: Commit,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        overridden_at: Timestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        late_by: Option<jiff::SignedDuration>,
+    },
     /// The fork has no commits at all.
     Empty,
 }
@@ -97,6 +111,7 @@ impl SubmissionDate {
     pub fn graded(&self) -> Option<&Commit> {
         match self {
             SubmissionDate::Blessed { commit, .. } => Some(commit),
+            SubmissionDate::Override { commit, .. } => Some(commit),
             SubmissionDate::OnTime(commit) | SubmissionDate::Late(commit) => Some(commit),
             SubmissionDate::Empty => None,
         }
@@ -112,6 +127,10 @@ impl SubmissionDate {
                 ..
             } => Some(*t),
             SubmissionDate::Blessed { commit, .. } => Some(commit.timestamp.commit_date),
+            // An instructor's decision carries no student-verified time:
+            // whatever the commit's own date says, nobody pushed anything
+            // to make this the graded submission.
+            SubmissionDate::Override { .. } => None,
             SubmissionDate::OnTime(commit) | SubmissionDate::Late(commit) => {
                 commit.timestamp.push_event
             }
@@ -156,6 +175,7 @@ pub fn fetch_fork(
     dest: &Path,
     deadline: &Zoned,
     detach: bool,
+    r#override: Option<&Override>,
 ) -> Result<FetchOutcome> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
@@ -189,7 +209,7 @@ pub fn fetch_fork(
         }
     };
 
-    let submission_date = match resolve_commit(dest, &branch, deadline, &events) {
+    let submission_date = match resolve_commit(dest, &branch, deadline, &events, r#override) {
         Ok(date) => date,
         Err(e) => return Ok(FetchOutcome::failed(e)),
     };
@@ -221,15 +241,22 @@ pub fn fetch_fork(
     })
 }
 
-/// Picks the commit to grade: the bless tag if there is one (deadline
-/// exempt), otherwise the latest commit at or before `deadline`, otherwise
-/// the latest commit there is, marked late.
+/// Picks the commit to grade: an instructor's override if there is one,
+/// then the bless tag (deadline exempt), otherwise the latest commit at or
+/// before `deadline`, otherwise the latest commit there is, marked late.
 fn resolve_commit(
     dest: &Path,
     branch: &str,
     deadline: &Zoned,
     events: &[PushEvent],
+    r#override: Option<&Override>,
 ) -> std::result::Result<SubmissionDate, String> {
+    // Ahead of the bless tag: an override exists precisely because the tag
+    // (or the deadline) picked the wrong commit.
+    if let Some(r#override) = r#override {
+        return resolve_override(dest, deadline, events, r#override);
+    }
+
     let fallback = resolve_fallback_commit(dest, branch, deadline, events)?;
 
     let tag_ref = format!("refs/tags/{BLESS_TAG}");
@@ -265,6 +292,60 @@ fn resolve_commit(
             None => Ok(SubmissionDate::Empty),
         },
     }
+}
+
+/// Resolves an instructor's override against the student's own clone.
+/// Anything `git rev-parse` can't resolve is the instructor's typo (or a
+/// commit that isn't in this fork), and fails the fetch for this student
+/// rather than silently falling back to the deadline's pick -- an
+/// exception that quietly didn't apply is worse than one that didn't run.
+fn resolve_override(
+    dest: &Path,
+    deadline: &Zoned,
+    events: &[PushEvent],
+    r#override: &Override,
+) -> std::result::Result<SubmissionDate, String> {
+    let sha = run_git(
+        GIT_BIN,
+        &rev_parse_argv(dest, &format!("{}^{{commit}}", r#override.commit)),
+    )
+    .map_err(|e| {
+        format!(
+            "override names {:?}, which is not a commit in this fork: {e}",
+            r#override.commit
+        )
+    })?;
+    if sha.is_empty() {
+        return Err(format!(
+            "override names {:?}, which is not a commit in this fork",
+            r#override.commit
+        ));
+    }
+
+    let commit_date = commit_date(dest, &sha)?;
+    // Prefer a verified push of this exact commit where there is one --
+    // lateness is worth measuring from a time the student couldn't set.
+    let push_event = events
+        .iter()
+        .filter(|e| e.head == sha)
+        .map(|e| e.created_at)
+        .min();
+    let submitted = push_event.unwrap_or(commit_date);
+    let late_by =
+        (submitted > deadline.timestamp()).then(|| submitted.duration_since(deadline.timestamp()));
+
+    Ok(SubmissionDate::Override {
+        commit: Commit {
+            sha: CommitSha::new(sha),
+            timestamp: CommitTimestamp {
+                push_event,
+                commit_date,
+            },
+        },
+        reason: r#override.reason.clone(),
+        overridden_at: r#override.recorded_at,
+        late_by,
+    })
 }
 
 /// The latest commit on `branch` at or before `deadline`
@@ -373,6 +454,9 @@ impl FetchRecord {
     pub fn late_by(&self) -> Option<jiff::SignedDuration> {
         let commit = match self.submission_date()? {
             SubmissionDate::Late(commit) => commit,
+            // Measured when the override was resolved, against the
+            // deadline in force then -- not re-derived here.
+            SubmissionDate::Override { late_by, .. } => return *late_by,
             _ => return None,
         };
         let submitted = commit
@@ -549,6 +633,10 @@ pub fn fetch_batch(
     // the early ETA nonsense.
     let progress = bar(plan.to_fetch() as u64);
 
+    // Read once for the batch: a re-fetch has to reapply every exception
+    // already granted, or it silently reverts them.
+    let overrides = overrides::load(out_dir)?;
+
     let pool = crate::github::pool(jobs, "fetch")?;
 
     // `Vec<Result<_>>` and not `Result<Vec<_>>`: collecting into the
@@ -559,7 +647,7 @@ pub fn fetch_batch(
         plan.rows
             .par_iter()
             .map(|row| {
-                let fetched = fetch_row(row, out_dir, deadline, detach);
+                let fetched = fetch_row(row, out_dir, deadline, detach, &overrides);
                 if matches!(row.plan, Plan::Fetch { .. }) {
                     progress.inc(1);
                 }
@@ -601,11 +689,19 @@ fn fetch_row(
     out_dir: &Path,
     deadline: &Zoned,
     detach: bool,
+    overrides: &[Override],
 ) -> Result<(GithubUser, FetchRecord)> {
     let github_user = row.entry.github_user;
+    let r#override = overrides::find(overrides, &github_user);
     let (outcome, forks) = match &row.plan {
         Plan::Fetch { fork, also } => {
-            let outcome = fetch_fork(fork, &out_dir.join(github_user.as_str()), deadline, detach)?;
+            let outcome = fetch_fork(
+                fork,
+                &out_dir.join(github_user.as_str()),
+                deadline,
+                detach,
+                r#override.as_ref(),
+            )?;
             let mut forks = vec![fork.clone()];
             forks.extend(also.iter().cloned());
             (outcome, forks)
@@ -926,8 +1022,14 @@ mod tests {
 
         // Deadline is well before the (blessed) commit -- unblessed, this
         // would resolve as `Late`.
-        let date =
-            resolve_commit(repo.path(), "main", &deadline("2026-01-01T00:00:00Z"), &[]).unwrap();
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-01-01T00:00:00Z"),
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert!(matches!(date, SubmissionDate::Blessed { .. }));
         assert_eq!(date.graded().unwrap().sha, sha.as_str());
@@ -939,8 +1041,14 @@ mod tests {
         let on_time = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
         commit(repo.path(), "b.txt", "2026-02-20T00:00:00Z");
 
-        let date =
-            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert!(matches!(date, SubmissionDate::OnTime(_)));
         assert_eq!(date.graded().unwrap().sha, on_time.as_str());
@@ -954,8 +1062,14 @@ mod tests {
         commit(repo.path(), "a.txt", "2026-02-20T00:00:00Z");
         let latest = commit(repo.path(), "b.txt", "2026-02-21T00:00:00Z");
 
-        let date =
-            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert!(matches!(date, SubmissionDate::Late(_)));
         assert_eq!(date.graded().unwrap().sha, latest.as_str());
@@ -965,11 +1079,117 @@ mod tests {
     fn resolve_commit_reports_a_fork_with_no_commits_as_empty() {
         let repo = init_repo();
 
-        let date =
-            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert!(matches!(date, SubmissionDate::Empty));
         assert!(date.graded().is_none());
+    }
+
+    fn override_for(commit: &str) -> Override {
+        Override {
+            github_user: GithubUser::new("alice"),
+            commit: commit.to_string(),
+            reason: Some("tagged the wrong commit".to_string()),
+            recorded_at: "2026-02-16T00:00:00Z".parse().unwrap(),
+        }
+    }
+
+    /// The case the whole feature exists for: the student blessed one
+    /// commit and meant another.
+    #[test]
+    fn an_override_wins_over_a_bless_tag() {
+        let repo = init_repo();
+        let intended = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
+        commit(repo.path(), "b.txt", "2026-02-11T00:00:00Z");
+        git(repo.path(), &["tag", BLESS_TAG]);
+
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            Some(&override_for(&intended)),
+        )
+        .unwrap();
+
+        assert_eq!(date.graded().unwrap().sha, intended.as_str());
+        let SubmissionDate::Override {
+            reason, late_by, ..
+        } = &date
+        else {
+            panic!("expected an override, got {date:?}");
+        };
+        assert_eq!(reason.as_deref(), Some("tagged the wrong commit"));
+        assert!(late_by.is_none(), "the named commit predates the deadline");
+    }
+
+    /// Accepting a late commit and calling it on time are separate
+    /// decisions: the override grades it, and still records how late it is.
+    #[test]
+    fn an_override_records_lateness_without_enforcing_it() {
+        let repo = init_repo();
+        let late = commit(repo.path(), "a.txt", "2026-02-20T00:00:00Z");
+
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            Some(&override_for(&late)),
+        )
+        .unwrap();
+
+        assert_eq!(date.graded().unwrap().sha, late.as_str());
+        let SubmissionDate::Override { late_by, .. } = &date else {
+            panic!("expected an override, got {date:?}");
+        };
+        assert_eq!(late_by.unwrap().as_hours(), 6 * 24);
+    }
+
+    /// A typo'd sha fails this student's fetch rather than quietly falling
+    /// back to the deadline's pick -- an exception that silently didn't
+    /// apply is worse than one that didn't run.
+    #[test]
+    fn an_override_naming_an_unknown_commit_fails_the_fetch() {
+        let repo = init_repo();
+        commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
+
+        let err = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            Some(&override_for("nosuchcommit")),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("nosuchcommit"), "got {err:?}");
+    }
+
+    /// An override accepts any ref `git rev-parse` resolves, not just a
+    /// full sha -- what the instructor has to hand is usually a short sha.
+    #[test]
+    fn an_override_resolves_a_short_sha_to_the_full_commit() {
+        let repo = init_repo();
+        let full = commit(repo.path(), "a.txt", "2026-02-10T00:00:00Z");
+
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            Some(&override_for(&full[..8])),
+        )
+        .unwrap();
+
+        assert_eq!(date.graded().unwrap().sha, full.as_str());
     }
 
     #[test]
@@ -979,8 +1199,14 @@ mod tests {
         let late = commit(repo.path(), "b.txt", "2026-02-20T00:00:00Z");
         git(repo.path(), &["tag", BLESS_TAG]);
 
-        let date =
-            resolve_commit(repo.path(), "main", &deadline("2026-02-14T00:00:00Z"), &[]).unwrap();
+        let date = resolve_commit(
+            repo.path(),
+            "main",
+            &deadline("2026-02-14T00:00:00Z"),
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert_eq!(date.graded().unwrap().sha, late.as_str());
         let SubmissionDate::Blessed { fallback, .. } = &date else {

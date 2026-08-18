@@ -139,8 +139,10 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
         &evaluator,
         assignment_dir.path(),
         &spec,
+        false,
     )
-    .unwrap();
+    .unwrap()
+    .evals;
 
     assert_eq!(evals.len(), 1);
     assert_eq!(evals[0].github_user, "alice");
@@ -181,8 +183,10 @@ fn evaluate_batch_reports_build_failed_when_the_checkout_has_no_id_directory() {
         &evaluator,
         assignment_dir.path(),
         &spec,
+        false,
     )
-    .unwrap();
+    .unwrap()
+    .evals;
 
     assert_eq!(evals.len(), 1);
     assert!(matches!(
@@ -212,8 +216,7 @@ impl Evaluator for CapturingEvaluator<'_> {
             assignment_id: ctx.assignment_id,
             github_user: ctx.github_user,
             run_id: ctx.run_id,
-            graded_commit: None,
-            instructor_commit: None,
+            input_hash: ctx.input_hash,
             status: EvalStatus::Ran {
                 process: ProcessStatus::Exited(0),
                 tests: TestOutcome::Tests(Vec::new()),
@@ -264,6 +267,7 @@ fn evaluate_batch_never_lets_the_submission_checkout_reach_the_harness_package()
         &evaluator,
         assignment_dir.path(),
         &spec,
+        false,
     )
     .unwrap();
 
@@ -297,8 +301,10 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
         &evaluator,
         assignment_dir.path(),
         &spec,
+        false,
     )
-    .unwrap();
+    .unwrap()
+    .evals;
 
     assert_eq!(evals.len(), 1);
     let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
@@ -314,4 +320,127 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
             .unwrap()
             .contains("tokio")
     );
+}
+
+/// Counts how many times the evaluator actually ran, so a skipped
+/// submission is observable rather than inferred from timing.
+struct CountingEvaluator {
+    runs: std::sync::atomic::AtomicUsize,
+}
+
+impl Evaluator for CountingEvaluator {
+    fn evaluate(&self, ctx: &JobContext) -> autograder::error::Result<EvaluationResult> {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(EvaluationResult {
+            assignment_id: ctx.assignment_id,
+            github_user: ctx.github_user,
+            run_id: ctx.run_id,
+            input_hash: ctx.input_hash,
+            status: EvalStatus::Ran {
+                process: ProcessStatus::Exited(0),
+                tests: TestOutcome::Tests(Vec::new()),
+            },
+            wall_clock_ms: None,
+            diagnostics: Default::default(),
+        })
+    }
+}
+
+/// The whole point of `input_hash`: a second pass over untouched
+/// submissions re-runs nothing, but still reports every submission.
+#[test]
+fn evaluate_batch_skips_submissions_whose_inputs_are_unchanged() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    let submissions_dir = tempfile::tempdir().unwrap();
+
+    let spec = workspace_spec(assignment_dir.path(), "hw3", &["hw3"]);
+    write(
+        &submissions_dir.path().join("alice/hw3/src/lib.rs"),
+        "// student code",
+    );
+
+    let evaluator = CountingEvaluator {
+        runs: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let run = |force| {
+        evaluate_batch(
+            submissions_dir.path(),
+            &evaluator,
+            assignment_dir.path(),
+            &spec,
+            force,
+        )
+        .unwrap()
+    };
+
+    let first = run(false);
+    assert_eq!(first.evals.len(), 1);
+    assert_eq!(first.skipped, 0);
+
+    let second = run(false);
+    assert_eq!(second.evals.len(), 1, "a skipped submission still reports");
+    assert_eq!(second.skipped, 1);
+    assert_eq!(evaluator.runs.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    // `--force` re-runs regardless.
+    let forced = run(true);
+    assert_eq!(forced.skipped, 0);
+    assert_eq!(evaluator.runs.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+    // Editing the submission invalidates the recorded result on its own.
+    write(
+        &submissions_dir.path().join("alice/hw3/src/lib.rs"),
+        "// revised student code",
+    );
+    let after_edit = run(false);
+    assert_eq!(after_edit.skipped, 0);
+    assert_eq!(evaluator.runs.load(std::sync::atomic::Ordering::Relaxed), 3);
+}
+
+/// A fixed harness has to invalidate every result the old one produced,
+/// or `evaluate` would keep serving grades from tests that no longer exist.
+#[test]
+fn evaluate_batch_reevaluates_when_the_harness_changes() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    let submissions_dir = tempfile::tempdir().unwrap();
+
+    write(
+        &assignment_dir.path().join("harness/Cargo.toml"),
+        "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    );
+    write(&assignment_dir.path().join("harness/src/lib.rs"), "");
+    write(
+        &assignment_dir.path().join("harness/tests/judge.rs"),
+        "#[test]\nfn counts_words() {}\n",
+    );
+    let spec = workspace_spec(assignment_dir.path(), "hw3", &["harness", "hw3"]);
+    write(
+        &submissions_dir.path().join("alice/hw3/src/lib.rs"),
+        "// student code",
+    );
+
+    let evaluator = CountingEvaluator {
+        runs: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let run = || {
+        evaluate_batch(
+            submissions_dir.path(),
+            &evaluator,
+            assignment_dir.path(),
+            &spec,
+            false,
+        )
+        .unwrap()
+    };
+
+    run();
+    assert_eq!(run().skipped, 1);
+
+    write(
+        &assignment_dir.path().join("harness/tests/judge.rs"),
+        "#[test]\nfn counts_words() { assert!(true); }\n",
+    );
+
+    assert_eq!(run().skipped, 0);
+    assert_eq!(evaluator.runs.load(std::sync::atomic::Ordering::Relaxed), 2);
 }

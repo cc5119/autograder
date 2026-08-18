@@ -2,9 +2,9 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::exec::fs;
-use crate::exec::json::read_json;
+use crate::id::GithubUser;
 use crate::model::EvaluationResult;
-use crate::pipeline::grade;
+use crate::pipeline::{self, grade};
 use crate::report::{csv, summary};
 use crate::spec::Spec;
 use crate::submissions::read_fetch_record;
@@ -42,12 +42,14 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
         .collect::<Result<_>>()?;
     let rows: Vec<_> = grades.iter().zip(metadata.iter()).collect();
 
+    let stale = stale(&evals, submissions, assignment, &spec)?;
+
     let grades_dir = submissions.join(GRADES_DIR);
     let gradebook = grades_dir.join(GRADES_FILE);
     fs::create_dir_all(&grades_dir)?;
     fs::write(&gradebook, csv::render(&rows)?)?;
 
-    print!("{}", summary::render(&grades, &gradebook));
+    print!("{}", summary::render(&grades, &gradebook, &stale));
     Ok(())
 }
 
@@ -60,20 +62,39 @@ fn latest_evals(submissions_dir: &Path) -> Result<Vec<EvaluationResult>> {
     }
     let mut evals = Vec::new();
     for entry in fs::read_dir_entries(&eval_dir)? {
-        if !entry.path().is_dir() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
         }
-        let mut runs: Vec<_> = fs::read_dir_entries(&entry.path())?
-            .into_iter()
-            .map(|e| e.path())
-            .filter(|p| p.to_string_lossy().ends_with(".eval.json"))
-            .collect();
-        runs.sort();
-        if let Some(latest) = runs.last() {
-            evals.push(read_json(latest)?);
+        let Some(github_user) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if let Some(eval) = pipeline::latest_eval(submissions_dir, &GithubUser::new(github_user))? {
+            evals.push(eval);
         }
     }
     Ok(evals)
+}
+
+/// Which of `evals` were computed from inputs that have since changed --
+/// the submission's own content, or the assignment material judging it.
+/// Grading them is still what the recorded run says; it just no longer
+/// describes what's on disk.
+fn stale(
+    evals: &[EvaluationResult],
+    submissions_dir: &Path,
+    assignment_dir: &Path,
+    spec: &Spec,
+) -> Result<Vec<GithubUser>> {
+    let mut stale = Vec::new();
+    for eval in evals {
+        let checkout_dir = submissions_dir.join(eval.github_user.as_str());
+        let current = pipeline::hash::input_hash(&checkout_dir, assignment_dir, spec)?;
+        if current != eval.input_hash {
+            stale.push(eval.github_user);
+        }
+    }
+    Ok(stale)
 }
 
 #[cfg(test)]
@@ -81,6 +102,7 @@ mod tests {
     use super::*;
     use crate::exec::json::write_json;
     use crate::exec::sandbox::ProcessStatus;
+    use crate::model::InputHash;
     use crate::model::{Diagnostics, EvalStatus, TestOutcome, TestResult, TestStatus};
 
     fn write(path: &std::path::Path, contents: &str) {
@@ -119,8 +141,7 @@ max-output-bytes = "64KiB"
             assignment_id: "hw3".into(),
             github_user: "alice".into(),
             run_id: "run-1".into(),
-            graded_commit: None,
-            instructor_commit: None,
+            input_hash: InputHash::new("test"),
             status: EvalStatus::Ran {
                 process: ProcessStatus::Exited(0),
                 tests: TestOutcome::Tests(vec![

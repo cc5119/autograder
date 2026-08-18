@@ -280,7 +280,10 @@ pub fn match_forks(
     // Short-circuiting on the first failure is the point: a collaborator
     // lookup that breaks makes every attribution unreliable, and planning
     // has nothing on disk to salvage (unlike `fetch_batch`).
-    let logins: Vec<Vec<String>> = forks.par_iter().map(&collaborators).collect::<Result<_>>()?;
+    let logins: Vec<Vec<String>> = forks
+        .par_iter()
+        .map(&collaborators)
+        .collect::<Result<_>>()?;
 
     let mut matches = Matches::default();
     for (fork, logins) in forks.into_iter().zip(logins) {
