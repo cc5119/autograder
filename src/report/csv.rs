@@ -59,6 +59,7 @@ mod tests {
             github_user: "alice".into(),
             outcome: crate::model::GradeOutcome::Scored {
                 score: 10.0,
+                points: 3.0,
                 passed: 3,
                 total: 3,
             },
@@ -84,6 +85,7 @@ mod tests {
             github_user: "alice".into(),
             outcome: crate::model::GradeOutcome::Scored {
                 score: 10.0,
+                points: 3.0,
                 passed: 3,
                 total: 3,
             },
@@ -92,6 +94,7 @@ mod tests {
             github_user: "bob".into(),
             outcome: crate::model::GradeOutcome::Scored {
                 score: 5.0,
+                points: 1.0,
                 passed: 1,
                 total: 3,
             },

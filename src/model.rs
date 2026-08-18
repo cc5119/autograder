@@ -245,6 +245,10 @@ pub struct Grade {
 pub enum GradeOutcome {
     Scored {
         score: f64,
+        /// The raw sum of what the tests reported, before `spec.scoring`
+        /// maps it onto the grade scale -- the number `max-sum` is
+        /// measured against.
+        points: f64,
         passed: usize,
         total: usize,
     },

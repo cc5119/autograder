@@ -66,6 +66,7 @@ pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> Strin
         match &grade.outcome {
             GradeOutcome::Scored {
                 score,
+                points,
                 passed,
                 total,
             } => {
@@ -75,7 +76,10 @@ pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> Strin
                 } else {
                     style(tests).yellow().to_string()
                 };
-                let _ = writeln!(s, "  {id:<width$}  {score:>6.1}    {tests}{note}");
+                let _ = writeln!(
+                    s,
+                    "  {id:<width$}  {score:>6.1}  {points:>5.1} pts    {tests}{note}"
+                );
             }
             GradeOutcome::Unscored { reason } => {
                 // Padded before it's styled: the escape codes count toward

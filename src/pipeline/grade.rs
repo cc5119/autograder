@@ -42,6 +42,7 @@ pub fn grade(eval: &EvaluationResult, policy: &Scoring) -> Grade {
         github_user: eval.github_user,
         outcome: GradeOutcome::Scored {
             score,
+            points: reported_sum,
             passed: tests
                 .iter()
                 .filter(|t| t.status == TestStatus::Pass)
