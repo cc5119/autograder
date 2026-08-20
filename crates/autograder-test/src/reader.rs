@@ -1,10 +1,11 @@
-//! On-demand parsing of a command's output.
+//! On-demand parsing of a whitespace-separated stream -- a command's
+//! output, or the driver's own standard input.
 //!
 //! The mirror image of [`crate::Args`], with one deliberate difference in
 //! tone: a bad *argument* is a bug in the harness, so [`crate::Args`] can
 //! afford a terse panic, but bad *output* is the very thing being graded.
 //! Every panic here therefore carries the position and the surrounding
-//! output, because that panic text is what the student ends up reading.
+//! text, because that panic text is what the student ends up reading.
 
 use std::fmt::Debug;
 use std::str::FromStr;
@@ -19,7 +20,7 @@ pub enum Scope {
     All,
 }
 
-/// A cursor over one output stream, tokenized on whitespace and parsed on
+/// A cursor over one stream, tokenized on whitespace and parsed on
 /// demand:
 ///
 /// ```ignore
@@ -32,6 +33,9 @@ pub enum Scope {
 /// r.next_line();
 /// r.end();
 /// ```
+///
+/// [`Reader::stdin`] gives the same cursor over the driver's own standard
+/// input.
 pub struct Reader {
     text: String,
     pos: usize,
@@ -45,17 +49,35 @@ impl Reader {
         }
     }
 
+    /// A cursor over all of standard input, read to EOF -- the stdin
+    /// mirror of [`crate::Args`], for a driver fed on stdin rather than
+    /// argv. Reading to EOF up front means this cannot drive an
+    /// interactive exchange, only a batch of input.
+    pub fn stdin() -> Self {
+        let text = std::io::read_to_string(std::io::stdin()).expect("could not read stdin");
+        Reader::new(text)
+    }
+
     /// The next whitespace-separated token, crossing newlines freely.
-    /// Panics if the output is exhausted or the token does not parse.
+    /// Panics if the stream is exhausted or the token does not parse.
     pub fn read<T: FromStr<Err: Debug>>(&mut self) -> T {
-        match self.next_token(Scope::All) {
-            Some(tok) => self.parse(tok),
+        match self.try_read() {
+            Some(v) => v,
             None => panic!(
-                "expected {}, but the output ended{}",
+                "expected {}, but reached the end{}",
                 std::any::type_name::<T>(),
                 self.context()
             ),
         }
+    }
+
+    /// The next whitespace-separated token, or `None` once nothing is
+    /// left -- for a stream whose length is not known in advance. Only
+    /// the end is soft: a token that is there but does not parse still
+    /// panics, since that is a real mistake rather than a stopping point.
+    pub fn try_read<T: FromStr<Err: Debug>>(&mut self) -> Option<T> {
+        let tok = self.next_token(Scope::All)?;
+        Some(self.parse(tok))
     }
 
     /// Exactly `n` tokens. Running out -- of output, or of line when
@@ -86,14 +108,10 @@ impl Reader {
         std::array::from_fn(|_| match self.next_token(scope) {
             Some(tok) => self.parse(tok),
             None => panic!(
-                "expected {N} values{}, but the {} ended{}",
+                "expected {N} values{}, but reached the end{}",
                 match scope {
                     Scope::Line => " on this line",
                     Scope::All => "",
-                },
-                match scope {
-                    Scope::Line => "line",
-                    Scope::All => "output",
                 },
                 self.context()
             ),
@@ -125,13 +143,13 @@ impl Reader {
         self.text[self.pos..].trim().is_empty()
     }
 
-    /// Asserts the output is fully consumed -- catches stray debug prints
+    /// Asserts everything has been consumed -- catches stray debug prints
     /// after the values the judge asked for.
     pub fn end(&self) {
         let left = self.text[self.pos..].trim();
         assert!(
             left.is_empty(),
-            "expected the output to end, but found {:?}{}",
+            "expected nothing more, but found {:?}{}",
             truncate(left),
             self.context()
         );
@@ -304,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "expected the output to end")]
+    #[should_panic(expected = "expected nothing more")]
     fn end_catches_extra_output() {
         let mut r = Reader::new("1\ndebug: hi\n");
         let _: i32 = r.read();
