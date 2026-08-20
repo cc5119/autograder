@@ -128,14 +128,22 @@ impl Reader {
         out
     }
 
-    /// Advances past the current line, whatever is left on it. A
-    /// [`Scope::Line`] read stops dead at the newline, so this is how a
-    /// line-at-a-time loop moves forward.
-    pub fn next_line(&mut self) {
-        match self.text[self.pos..].find('\n') {
-            Some(i) => self.pos += i + 1,
-            None => self.pos = self.text.len(),
-        }
+    /// Advances past the current line, returning whatever was left on it,
+    /// newline excluded. A [`Scope::Line`] read stops dead at the newline,
+    /// so this is how a line-at-a-time loop moves forward.
+    pub fn next_line(&mut self) -> String {
+        let start = self.pos;
+        let end = match self.text[start..].find('\n') {
+            Some(i) => {
+                self.pos = start + i + 1;
+                start + i
+            }
+            None => {
+                self.pos = self.text.len();
+                self.pos
+            }
+        };
+        self.text[start..end].to_string()
     }
 
     /// True when nothing but whitespace remains.
