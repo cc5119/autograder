@@ -33,7 +33,9 @@ use crate::error::{Error, Result};
 use crate::exec::fs;
 use crate::exec::json::{read_json, write_json};
 use crate::id::{CommitSha, GithubUser};
+use crate::package::template;
 use crate::render::{bar, spinner};
+use crate::str_map;
 use crate::submissions::forks::{Fork, Upstream};
 use crate::submissions::github_events::PushEvent;
 use crate::submissions::overrides::Override;
@@ -763,6 +765,8 @@ pub fn fetch_batch(
     jobs: usize,
     on_result: &(dyn Fn(&GithubUser, &FetchRecord) + Sync),
 ) -> Result<Vec<(GithubUser, FetchRecord)>> {
+    scaffold_out_dir(out_dir)?;
+
     // Only the clones get a progress unit. The rows with no fork to clone
     // finish the instant they're claimed, and counting those would make
     // the early ETA nonsense.
@@ -820,6 +824,25 @@ pub fn fetch_batch(
         return Err(errors.remove(0));
     }
     Ok(records)
+}
+
+/// Creates `out_dir` and scaffolds its `.gitignore` from
+/// `templates/submissions/`. Submissions are commonly fetched inside the
+/// instructor's own repo, and the batch `.vendor` cache is multi-megabyte
+/// and regenerated on demand.
+///
+/// A `.gitignore` that's already there is left alone -- an instructor's
+/// own is theirs to keep.
+fn scaffold_out_dir(out_dir: &Path) -> Result<()> {
+    fs::create_dir_all(out_dir)?;
+    let path = out_dir.join(".gitignore");
+    if path.exists() {
+        return Ok(());
+    }
+    fs::write(
+        &path,
+        template::render_file("submissions/gitignore", &str_map! {})?,
+    )
 }
 
 /// One roster row: its fetch (or the recorded reason there wasn't one)

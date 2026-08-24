@@ -8,20 +8,32 @@ use std::path::Path;
 
 use console::style;
 
-use crate::id::GithubUser;
 use crate::model::{Grade, GradeOutcome};
+use crate::render;
+use crate::report::timing::{DateCheck, Lateness, Side};
+
+/// One line of the listing: a score, plus everything known about it that
+/// isn't the score. Assembled by `commands::grade`, which is the only
+/// place that has both the evaluation and the fetch record in hand.
+pub struct Row<'a> {
+    pub grade: &'a Grade,
+    pub lateness: Lateness,
+    /// `None` when there was no commit to check -- see
+    /// [`DateCheck::from_record`].
+    pub date_check: Option<DateCheck>,
+    /// This score's inputs changed since the run it was graded from: it's
+    /// still what that run produced, it just isn't a score for what's on
+    /// disk now.
+    pub stale: bool,
+}
 
 /// Highest score first, so the scores worth a second look -- and the
 /// unscored rows after them -- land next to the summary at the bottom,
 /// which is what stays on screen after a class-sized listing scrolls.
-///
-/// `stale` names the submissions whose inputs changed since the run they
-/// were graded from: the score is still what that run produced, it just
-/// isn't a score for what's on disk now.
-pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> String {
+pub fn render(rows: &[Row<'_>], gradebook: &Path) -> String {
     let mut s = String::new();
 
-    if grades.is_empty() {
+    if rows.is_empty() {
         let _ = writeln!(
             s,
             "\nNo evaluation results to grade. Run {} first.\n",
@@ -33,36 +45,33 @@ pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> Strin
     let _ = writeln!(
         s,
         "\nGraded {} submissions  {}  {}\n",
-        grades.len(),
+        rows.len(),
         style("->").dim(),
         gradebook.display()
     );
 
-    let mut rows: Vec<&Grade> = grades.iter().collect();
+    let mut rows: Vec<&Row> = rows.iter().collect();
     rows.sort_by(|a, b| {
-        match (a.score(), b.score()) {
+        match (a.grade.score(), b.grade.score()) {
             (Some(x), Some(y)) => y.total_cmp(&x),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
         }
         // Ties broken by name, so re-running doesn't reshuffle the list.
-        .then_with(|| a.github_user.cmp(&b.github_user))
+        .then_with(|| a.grade.github_user.cmp(&b.grade.github_user))
     });
 
     let width = rows
         .iter()
-        .map(|g| g.github_user.as_str().len())
+        .map(|r| r.grade.github_user.as_str().len())
         .max()
         .unwrap_or(0);
 
-    for grade in &rows {
+    for row in &rows {
+        let grade = row.grade;
         let id = grade.github_user.as_str();
-        let note = if stale.contains(&grade.github_user) {
-            style("    stale").yellow().to_string()
-        } else {
-            String::new()
-        };
+        let note = notes(row);
         match &grade.outcome {
             GradeOutcome::Scored {
                 score,
@@ -94,7 +103,7 @@ pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> Strin
         }
     }
 
-    let scores: Vec<f64> = rows.iter().filter_map(|g| g.score()).collect();
+    let scores: Vec<f64> = rows.iter().filter_map(|r| r.grade.score()).collect();
     let unscored = rows.len() - scores.len();
 
     let _ = writeln!(s);
@@ -111,19 +120,103 @@ pub fn render(grades: &[Grade], gradebook: &Path, stale: &[GithubUser]) -> Strin
     if let Some(stats) = distribution(&scores) {
         let _ = writeln!(s, "  {stats}");
     }
-    if !stale.is_empty() {
+    let late = rows
+        .iter()
+        .filter(|r| matches!(r.lateness, Lateness::Late(_)))
+        .count();
+    if late > 0 {
+        let _ = writeln!(
+            s,
+            "  {}",
+            style(format!("{late} submitted after the deadline")).red()
+        );
+    }
+    // Counted, not listed: which ones they are is on their own lines, and
+    // the point of the count is to say whether to go looking at all.
+    let discrepancies = rows
+        .iter()
+        .filter(|r| !matches!(r.date_check, None | Some(DateCheck::Verified)))
+        .count();
+    if discrepancies > 0 {
         let _ = writeln!(
             s,
             "  {}",
             style(format!(
-                "{} graded from an evaluation older than the current content -- re-run autograder evaluate",
-                stale.len()
+                "{discrepancies} with a submission date GitHub's push history doesn't confirm"
+            ))
+            .yellow()
+        );
+    }
+    let stale = rows.iter().filter(|r| r.stale).count();
+    if stale > 0 {
+        let _ = writeln!(
+            s,
+            "  {}",
+            style(format!(
+                "{stale} graded from an evaluation older than the current content -- re-run autograder evaluate",
             ))
             .yellow()
         );
     }
     let _ = writeln!(s);
     s
+}
+
+/// Every annotation this row earned, in one string ready to append to the
+/// line -- each already padded and styled, since a `{:<width$}` count of
+/// styled text would include the escape codes.
+///
+/// A row can earn several: a late submission whose dates disagree is
+/// exactly the row worth seeing both facts about.
+fn notes(row: &Row<'_>) -> String {
+    let mut notes = String::new();
+
+    if let Lateness::Late(by) = row.lateness {
+        let _ = write!(
+            notes,
+            "    {}",
+            style(format!("{} late", render::duration(by))).red()
+        );
+    }
+
+    match &row.date_check {
+        None | Some(DateCheck::Verified) => {}
+        Some(DateCheck::Unverified) => {
+            let _ = write!(notes, "    {}", style("unverified date").yellow());
+        }
+        Some(DateCheck::Straddles {
+            commit_date,
+            push_event,
+        }) => {
+            let phrase = |side: &Side| match side {
+                Side::OnTime => "on time",
+                Side::Late => "late",
+            };
+            let _ = write!(
+                notes,
+                "    {}",
+                style(format!(
+                    "committed {}, pushed {}",
+                    phrase(commit_date),
+                    phrase(push_event)
+                ))
+                .yellow()
+            );
+        }
+        Some(DateCheck::CommitAfterPush(by)) => {
+            let _ = write!(
+                notes,
+                "    {}",
+                style(format!("commit dated {} after its push", render::duration(*by))).red()
+            );
+        }
+    }
+
+    if row.stale {
+        let _ = write!(notes, "    {}", style("stale").yellow());
+    }
+
+    notes
 }
 
 /// `None` for an empty set -- there's no mean of nothing, and the count

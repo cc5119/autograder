@@ -5,6 +5,7 @@ use crate::exec::fs;
 use crate::id::GithubUser;
 use crate::model::EvaluationResult;
 use crate::pipeline::{self, grade};
+use crate::report::timing::{DateCheck, Lateness};
 use crate::report::{csv, summary};
 use crate::spec::Spec;
 use crate::submissions::read_fetch_record;
@@ -30,16 +31,24 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
         .map(|eval| grade::grade(eval, &spec.scoring))
         .collect();
 
-    // The roster's extra columns, if this student has a fetch record --
-    // blank otherwise (e.g. an eval persisted before a fetch ever ran).
-    let metadata: Vec<_> = grades
+    // One read per student, for the roster's extra columns and for when
+    // the submission arrived -- an `EvaluationResult` carries no
+    // timestamps, so timing can only come from the fetch record. Absent
+    // (e.g. an eval persisted before a fetch ever ran) leaves both blank.
+    let records: Vec<_> = grades
         .iter()
-        .map(|grade| {
-            Ok(read_fetch_record(submissions, &grade.github_user)?
-                .map(|record| record.metadata)
-                .unwrap_or_default())
-        })
+        .map(|grade| read_fetch_record(submissions, &grade.github_user))
         .collect::<Result<_>>()?;
+
+    let metadata: Vec<_> = records
+        .iter()
+        .map(|record| {
+            record
+                .as_ref()
+                .map(|record| record.metadata.clone())
+                .unwrap_or_default()
+        })
+        .collect();
     let rows: Vec<_> = grades.iter().zip(metadata.iter()).collect();
 
     let stale = stale(&evals, submissions, assignment, &spec)?;
@@ -49,7 +58,17 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
     fs::create_dir_all(&grades_dir)?;
     fs::write(&gradebook, csv::render(&rows)?)?;
 
-    print!("{}", summary::render(&grades, &gradebook, &stale));
+    let summary_rows: Vec<_> = grades
+        .iter()
+        .zip(records.iter())
+        .map(|(grade, record)| summary::Row {
+            grade,
+            lateness: Lateness::from_record(record.as_ref()),
+            date_check: DateCheck::from_record(record.as_ref()),
+            stale: stale.contains(&grade.github_user),
+        })
+        .collect();
+    print!("{}", summary::render(&summary_rows, &gradebook));
     Ok(())
 }
 
