@@ -6,7 +6,8 @@ use crate::error::{Error, Result};
 use crate::model::Grade;
 
 /// Gradebook CSV: `github_user,Nota,<roster metadata columns...>`. `Nota`
-/// is blank when the build failed or the run left no readable results.
+/// is rounded to one decimal, the precision a grade is reported in, and is
+/// blank when the build failed or the run left no readable results.
 /// Metadata columns are the union of every row's keys, in the order each
 /// key first appears -- when every fetch record carries the same roster
 /// columns, that reproduces the roster's own column order. A row missing a
@@ -31,7 +32,10 @@ pub fn render(rows: &[(&Grade, &IndexMap<String, String>)]) -> Result<String> {
     for (grade, metadata) in rows {
         let mut record = vec![
             grade.github_user.to_string(),
-            grade.score().map(|s| s.to_string()).unwrap_or_default(),
+            grade
+                .score()
+                .map(|s| format!("{s:.1}"))
+                .unwrap_or_default(),
         ];
         record.extend(
             columns
@@ -75,7 +79,7 @@ mod tests {
         let csv = render(&[(&alice, &empty), (&bob, &empty)]).unwrap();
         let mut lines = csv.lines();
         assert_eq!(lines.next(), Some("github_user,Nota"));
-        assert_eq!(lines.next(), Some("alice,10"));
+        assert_eq!(lines.next(), Some("alice,10.0"));
         assert_eq!(lines.next(), Some("bob,"));
     }
 
@@ -119,7 +123,7 @@ mod tests {
             lines.next(),
             Some("github_user,Nota,student_id,section,email")
         );
-        assert_eq!(lines.next(), Some("alice,10,A123,A,"));
-        assert_eq!(lines.next(), Some("bob,5,A456,,bob@x.edu"));
+        assert_eq!(lines.next(), Some("alice,10.0,A123,A,"));
+        assert_eq!(lines.next(), Some("bob,5.0,A456,,bob@x.edu"));
     }
 }
