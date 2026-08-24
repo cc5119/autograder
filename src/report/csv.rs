@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 use crate::error::{Error, Result};
 use crate::model::Grade;
 
-/// Gradebook CSV: `github_user,score,<roster metadata columns...>`. `score`
+/// Gradebook CSV: `github_user,Nota,<roster metadata columns...>`. `Nota`
 /// is blank when the build failed or the run left no readable results.
 /// Metadata columns are the union of every row's keys, in the order each
 /// key first appears -- when every fetch record carries the same roster
@@ -22,7 +22,7 @@ pub fn render(rows: &[(&Grade, &IndexMap<String, String>)]) -> Result<String> {
     }
 
     let mut writer = csv::Writer::from_writer(Vec::new());
-    let mut header = vec!["github_user".to_string(), "score".to_string()];
+    let mut header = vec!["github_user".to_string(), "Nota".to_string()];
     header.extend(columns.iter().map(|c| c.to_string()));
     writer.write_record(&header).map_err(|source| Error::Csv {
         path: PathBuf::from("<gradebook>"),
@@ -74,7 +74,7 @@ mod tests {
 
         let csv = render(&[(&alice, &empty), (&bob, &empty)]).unwrap();
         let mut lines = csv.lines();
-        assert_eq!(lines.next(), Some("github_user,score"));
+        assert_eq!(lines.next(), Some("github_user,Nota"));
         assert_eq!(lines.next(), Some("alice,10"));
         assert_eq!(lines.next(), Some("bob,"));
     }
@@ -117,7 +117,7 @@ mod tests {
         let mut lines = csv.lines();
         assert_eq!(
             lines.next(),
-            Some("github_user,score,student_id,section,email")
+            Some("github_user,Nota,student_id,section,email")
         );
         assert_eq!(lines.next(), Some("alice,10,A123,A,"));
         assert_eq!(lines.next(), Some("bob,5,A456,,bob@x.edu"));

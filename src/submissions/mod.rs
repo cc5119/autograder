@@ -269,6 +269,9 @@ fn resolve_commit(
     .ok();
 
     if let Some(sha) = tag_sha.filter(|sha| !sha.is_empty()) {
+        // Not `tag_push_event`: that times the tag, and the commit's own
+        // arrival is a different fact -- one we can name a push for.
+        let push_event = github_events::first_push_of(events, &sha);
         let tag_push_event = github_events::latest(events, &tag_ref, None).map(|e| e.created_at);
         let commit_date = commit_date(dest, &sha)?;
         return Ok(SubmissionDate::Blessed {
@@ -276,7 +279,7 @@ fn resolve_commit(
             commit: Commit {
                 sha: CommitSha::new(sha),
                 timestamp: CommitTimestamp {
-                    push_event: tag_push_event,
+                    push_event,
                     commit_date,
                 },
             },
@@ -327,11 +330,7 @@ fn resolve_override(
     let commit_date = commit_date(dest, &sha)?;
     // Prefer a verified push of this exact commit where there is one --
     // lateness is worth measuring from a time the student couldn't set.
-    let push_event = events
-        .iter()
-        .filter(|e| e.head == sha)
-        .map(|e| e.created_at)
-        .min();
+    let push_event = github_events::first_push_of(events, &sha);
     let submitted = push_event.unwrap_or(commit_date);
     let late_by =
         (submitted > deadline.timestamp()).then(|| submitted.duration_since(deadline.timestamp()));

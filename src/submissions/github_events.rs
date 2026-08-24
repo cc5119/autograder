@@ -72,6 +72,22 @@ fn parse_push_events(stdout: &[u8]) -> Result<Vec<PushEvent>> {
     Ok(events)
 }
 
+/// When `sha` first arrived on the server: the earliest push carrying it
+/// as its head, or `None` if no push did.
+///
+/// The only way to fill a [`CommitTimestamp::push_event`], which means a
+/// verified push of *that* commit and nothing else -- a push of some other
+/// commit says nothing about when this one showed up.
+///
+/// [`CommitTimestamp::push_event`]: super::CommitTimestamp::push_event
+pub fn first_push_of(events: &[PushEvent], sha: &str) -> Option<Timestamp> {
+    events
+        .iter()
+        .filter(|e| e.head == sha)
+        .map(|e| e.created_at)
+        .min()
+}
+
 pub fn latest<'a>(
     events: &'a [PushEvent],
     ref_name: &str,
