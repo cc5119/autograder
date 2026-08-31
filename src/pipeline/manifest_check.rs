@@ -7,6 +7,19 @@
 //! dependencies, via `crate::deps::cargo_lock::CargoLock::direct_dependencies`),
 //! so it can never drift from what the reference solution actually
 //! depends on.
+//!
+//! The path-dependency rejection is not redundant with the blessed
+//! `cargo-lock-sha256`, for two reasons. The sandbox builds `--offline`,
+//! not `--locked` (see `crate::pipeline::evaluator::nextest`), so the
+//! lockfile does not pin what a student's manifest resolves to -- what
+//! actually constrains it is the vendor directory, and path dependencies
+//! never go through the vendor directory at all. And a lockfile records no
+//! location for a path dependency, only its name and version, so a
+//! sibling crate directory shadowing an allowlisted name produces a
+//! byte-identical lock entry that no hash could distinguish. The one
+//! exception is a package the instructor owns and overlays themselves:
+//! `[assignment].extra-packages`, accepted only at the exact relative path
+//! the grading workspace's layout puts it at.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -136,6 +149,7 @@ impl DependencySpec {
 pub fn check_manifest(
     manifest_toml: &str,
     allowed_crates: &BTreeMap<String, String>,
+    extra_packages: &[String],
     vendor_dir: Option<&Path>,
 ) -> Result<Vec<ManifestDiagnostic>> {
     let manifest: CargoManifest = toml::from_str(manifest_toml)
@@ -152,8 +166,13 @@ pub fn check_manifest(
             diagnostics.push(ManifestDiagnostic::GitDependency { name: name.clone() });
             continue;
         }
-        if dep.path().is_some() {
-            diagnostics.push(ManifestDiagnostic::PathDependency { name: name.clone() });
+        // A path dependency resolves off disk, so neither the allowlist's
+        // version nor the vendored one says anything about it -- an
+        // accepted one is fully checked by the path itself.
+        if let Some(path) = dep.path() {
+            if !is_extra_package_path(name, path, extra_packages) {
+                diagnostics.push(ManifestDiagnostic::PathDependency { name: name.clone() });
+            }
             continue;
         }
 
@@ -200,6 +219,44 @@ pub fn check_manifest(
     }
 
     Ok(diagnostics)
+}
+
+/// Whether `path` (as written in `{id}/Cargo.toml`, so relative to `{id}/`)
+/// is the one location an `[assignment].extra-packages` dependency is
+/// allowed to point at: `../<name>`, the sibling directory the grading
+/// workspace overlays that package into.
+///
+/// Both halves matter. The name has to be a declared extra package,
+/// because otherwise any allowlisted crate could be shadowed by a local
+/// directory; and the path has to be exactly the sibling, because a
+/// student ships their whole `{id}/**` subtree and could otherwise put a
+/// crate named `messaging` at `{id}/messaging/` and point at that instead
+/// of the instructor's.
+fn is_extra_package_path(name: &str, path: &str, extra_packages: &[String]) -> bool {
+    extra_packages.iter().any(|package| package == name)
+        && normalize(path).as_deref() == Some(format!("../{name}").as_str())
+}
+
+/// `path` with `.` components dropped and separators collapsed, so
+/// `"./../messaging"` and `"../messaging/"` both compare equal to
+/// `"../messaging"`. `None` for anything absolute -- never legitimate here,
+/// and not something a textual comparison should be trusted to judge.
+fn normalize(path: &str) -> Option<String> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return None;
+    }
+    let components: Vec<&str> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::CurDir => None,
+            std::path::Component::ParentDir => Some(".."),
+            std::path::Component::Normal(part) => part.to_str(),
+            // Absolute-path components, already rejected above.
+            _ => None,
+        })
+        .collect();
+    Some(components.join("/"))
 }
 
 /// Best-effort padding of a plain version string ("1", "0.8", "1.2") into a
@@ -281,7 +338,7 @@ mod tests {
 [dependencies]
 tokio = "1"
 "#;
-        let diagnostics = check_manifest(manifest, &allowlist(&[]), None).unwrap();
+        let diagnostics = check_manifest(manifest, &allowlist(&[]), &[], None).unwrap();
         assert_eq!(
             diagnostics,
             vec![ManifestDiagnostic::DisallowedCrate {
@@ -297,7 +354,8 @@ tokio = "1"
 [dependencies]
 serde = "1.2"
 "#;
-        let diagnostics = check_manifest(manifest, &allowlist(&[("serde", "1")]), None).unwrap();
+        let diagnostics =
+            check_manifest(manifest, &allowlist(&[("serde", "1")]), &[], None).unwrap();
         assert!(diagnostics.is_empty());
     }
 
@@ -307,7 +365,8 @@ serde = "1.2"
 [dependencies]
 serde = "2.0"
 "#;
-        let diagnostics = check_manifest(manifest, &allowlist(&[("serde", "1")]), None).unwrap();
+        let diagnostics =
+            check_manifest(manifest, &allowlist(&[("serde", "1")]), &[], None).unwrap();
         assert_eq!(
             diagnostics,
             vec![ManifestDiagnostic::VersionOutsideVendored {
@@ -333,8 +392,13 @@ serde = "2.0"
 [dependencies]
 serde = "=1.2.3"
 "#;
-        let diagnostics =
-            check_manifest(manifest, &allowlist(&[("serde", "1")]), Some(vendor.path())).unwrap();
+        let diagnostics = check_manifest(
+            manifest,
+            &allowlist(&[("serde", "1")]),
+            &[],
+            Some(vendor.path()),
+        )
+        .unwrap();
 
         assert_eq!(
             diagnostics,
@@ -361,8 +425,13 @@ serde = "=1.2.3"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 "#;
-        let diagnostics =
-            check_manifest(manifest, &allowlist(&[("serde", "1")]), Some(vendor.path())).unwrap();
+        let diagnostics = check_manifest(
+            manifest,
+            &allowlist(&[("serde", "1")]),
+            &[],
+            Some(vendor.path()),
+        )
+        .unwrap();
 
         assert_eq!(
             diagnostics,
@@ -383,7 +452,7 @@ local = { path = "../local" }
 [patch.crates-io]
 serde = { path = "../fake-serde" }
 "#;
-        let diagnostics = check_manifest(manifest, &allowlist(&[]), None).unwrap();
+        let diagnostics = check_manifest(manifest, &allowlist(&[]), &[], None).unwrap();
 
         assert!(diagnostics.contains(&ManifestDiagnostic::GitDependency {
             name: "evil".into()
@@ -392,6 +461,78 @@ serde = { path = "../fake-serde" }
             name: "local".into()
         }));
         assert!(diagnostics.contains(&ManifestDiagnostic::DisallowedPatchSection));
+    }
+
+    fn extra(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// The whole point of `[assignment].extra-packages`: `{id}` is allowed
+    /// to depend on the instructor's support package, which can only be a
+    /// path dependency.
+    #[test]
+    fn a_declared_extra_package_is_an_allowed_path_dependency() {
+        let manifest = r#"
+[dependencies]
+messaging = { path = "../messaging" }
+"#;
+        let diagnostics =
+            check_manifest(manifest, &allowlist(&[]), &extra(&["messaging"]), None).unwrap();
+
+        assert!(diagnostics.is_empty());
+    }
+
+    /// Spelling variations of the same sibling directory are the same
+    /// directory -- only where the path lands matters.
+    #[test]
+    fn an_extra_package_path_is_compared_after_normalizing_it() {
+        for path in ["./../messaging", "../messaging/", ".././messaging"] {
+            let manifest = format!("[dependencies]\nmessaging = {{ path = {path:?} }}\n");
+            let diagnostics =
+                check_manifest(&manifest, &allowlist(&[]), &extra(&["messaging"]), None).unwrap();
+
+            assert!(diagnostics.is_empty(), "{path} should be accepted");
+        }
+    }
+
+    /// A student ships their entire `{id}/**` subtree, so they can plant a
+    /// crate named `messaging` inside their own package. Allowing the
+    /// *name* without pinning the *path* would let that shadow the
+    /// instructor's copy with one the student wrote.
+    #[test]
+    fn an_extra_package_name_pointed_somewhere_else_is_still_rejected() {
+        for path in ["messaging", "../../messaging", "src/messaging", "/tmp/x"] {
+            let manifest = format!("[dependencies]\nmessaging = {{ path = {path:?} }}\n");
+            let diagnostics =
+                check_manifest(&manifest, &allowlist(&[]), &extra(&["messaging"]), None).unwrap();
+
+            assert_eq!(
+                diagnostics,
+                vec![ManifestDiagnostic::PathDependency {
+                    name: "messaging".into()
+                }],
+                "{path} should be rejected"
+            );
+        }
+    }
+
+    /// The sibling location is only blessed for the packages the spec
+    /// actually declares -- an undeclared name at the same path is not.
+    #[test]
+    fn an_undeclared_package_at_the_sibling_path_is_rejected() {
+        let manifest = r#"
+[dependencies]
+messaging = { path = "../messaging" }
+"#;
+        let diagnostics =
+            check_manifest(manifest, &allowlist(&[]), &extra(&["other"]), None).unwrap();
+
+        assert_eq!(
+            diagnostics,
+            vec![ManifestDiagnostic::PathDependency {
+                name: "messaging".into()
+            }]
+        );
     }
 
     #[test]
@@ -412,6 +553,7 @@ rand = { version = "0.8", features = ["small_rng"] }
         let diagnostics = check_manifest(
             manifest,
             &allowlist(&[("rand", "0.8")]),
+            &[],
             Some(vendor.path()),
         )
         .unwrap();

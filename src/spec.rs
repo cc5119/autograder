@@ -15,6 +15,14 @@ pub struct Assignment {
     pub deadline: Zoned,
     /// The name of the `harness` package
     pub harness: String,
+    /// Further workspace packages the instructor owns, beyond `{harness}`:
+    /// support libraries `{id}` and/or the harness link against (a fake
+    /// server, a driver protocol). They sit at the same trust level as the
+    /// harness -- always overlaid from the instructor tree, so a student's
+    /// edits to them are discarded -- and are the only path dependencies
+    /// `{id}`'s manifest may declare (see `crate::pipeline::manifest_check`).
+    #[serde(rename = "extra-packages", default)]
+    pub extra_packages: Vec<String>,
     /// SHA-256 of the `Cargo.lock` blessed for this assignment
     #[serde(rename = "cargo-lock-sha256")]
     pub cargo_lock_sha256: String,
@@ -244,6 +252,24 @@ max-sum = 20.0
 scale-min = 1.0
 scale-max = 7.0
 "#;
+
+    /// The two-package workspace is the common case, so an assignment that
+    /// says nothing about support packages must keep parsing unchanged.
+    #[test]
+    fn extra_packages_defaults_to_empty() {
+        let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
+        assert!(spec.assignment.extra_packages.is_empty());
+    }
+
+    #[test]
+    fn parses_extra_packages_in_order() {
+        let toml = PUBLIC_TOML.replace(
+            "harness = \"harness\"",
+            "harness = \"harness\"\nextra-packages = [\"messaging\", \"protocol\"]",
+        );
+        let spec: Spec = toml::from_str(&toml).unwrap();
+        assert_eq!(spec.assignment.extra_packages, ["messaging", "protocol"]);
+    }
 
     #[test]
     fn parses_a_sum_formula_spec() {

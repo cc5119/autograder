@@ -41,12 +41,18 @@ pub fn input_hash(checkout_dir: &Path, assignment_dir: &Path, spec: &Spec) -> Re
     for name in ["Cargo.toml", "Cargo.lock"] {
         entries.push((format!("instructor/{name}"), assignment_dir.join(name)));
     }
-    let harness_dir = assignment_dir.join(&spec.assignment.harness);
-    for rel in fs::walk_regular_files(&harness_dir)? {
-        entries.push((
-            format!("instructor/{}/{}", spec.assignment.harness, rel.display()),
-            harness_dir.join(rel),
-        ));
+    // The harness and the support packages alike: every tree
+    // `package_rules`/`apply_extra_packages` copy from the instructor side.
+    let instructor_packages =
+        std::iter::once(&spec.assignment.harness).chain(spec.assignment.extra_packages.iter());
+    for package in instructor_packages {
+        let package_dir = assignment_dir.join(package);
+        for rel in fs::walk_regular_files(&package_dir)? {
+            entries.push((
+                format!("instructor/{}/{}", package, rel.display()),
+                package_dir.join(rel),
+            ));
+        }
     }
 
     // Sorted so the digest depends on the file set, not on the order the
@@ -91,10 +97,11 @@ pub fn input_hash(checkout_dir: &Path, assignment_dir: &Path, spec: &Spec) -> Re
 fn spec_digest(spec: &Spec) -> String {
     let limits = &spec.build_limits;
     format!(
-        "id={}\nharness={}\ncargo-lock-sha256={}\nimage={}\n\
+        "id={}\nharness={}\nextra-packages={}\ncargo-lock-sha256={}\nimage={}\n\
          wall-clock-ms={}\ncpus={}\nmemory={}\npids={}\nmax-output-bytes={}\n",
         spec.assignment.id,
         spec.assignment.harness,
+        spec.assignment.extra_packages.join(","),
         spec.assignment.cargo_lock_sha256,
         spec.sandbox.image,
         limits.wall_clock.0.as_millis(),
@@ -196,6 +203,47 @@ max-output-bytes = "64KiB"
             &assignment_dir.path().join("harness/tests/public.rs"),
             "fn t() { assert!(true) }",
         );
+        let after = input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap();
+
+        assert_ne!(before, after);
+    }
+
+    /// Support packages are as much an evaluation input as the harness:
+    /// fixing a bug in one changes what every submission compiles against,
+    /// so it has to invalidate the results produced before the fix.
+    #[test]
+    fn changing_an_extra_package_changes_the_hash() {
+        let checkout = tempfile::tempdir().unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write(&checkout.path().join("hw3/src/lib.rs"), "pub fn f() {}");
+        let mut spec = assignment(assignment_dir.path(), "fn t() {}");
+        spec.assignment.extra_packages = vec!["messaging".to_string()];
+        write(
+            &assignment_dir.path().join("messaging/src/lib.rs"),
+            "pub fn send() {}",
+        );
+        let before = input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap();
+
+        write(
+            &assignment_dir.path().join("messaging/src/lib.rs"),
+            "pub fn send() { todo!() }",
+        );
+        let after = input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap();
+
+        assert_ne!(before, after);
+    }
+
+    /// Adding a package to `[assignment].extra-packages` changes what the
+    /// grading workspace contains even before a byte of it is edited.
+    #[test]
+    fn declaring_an_extra_package_changes_the_hash() {
+        let checkout = tempfile::tempdir().unwrap();
+        let assignment_dir = tempfile::tempdir().unwrap();
+        write(&checkout.path().join("hw3/src/lib.rs"), "pub fn f() {}");
+        let mut spec = assignment(assignment_dir.path(), "fn t() {}");
+        let before = input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap();
+
+        spec.assignment.extra_packages = vec!["messaging".to_string()];
         let after = input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap();
 
         assert_ne!(before, after);

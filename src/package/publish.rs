@@ -19,6 +19,11 @@
 //! solution. The judge always lives in `harness/`, a sibling package of
 //! `{id}`, for both `library` and `binary` (see `evaluator::library`'s and
 //! `evaluator::binary`'s module doc comments).
+//!
+//! A workspace may carry further instructor-owned packages beyond the
+//! harness -- `[assignment].extra-packages` -- and those ship verbatim in
+//! both modes: a support library has no student view distinct from the
+//! instructor's, so there is nothing to resolve in either direction.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,6 +58,17 @@ fn rules(mode: PublishMode) -> Vec<Rule> {
         Rule::File("{harness}/Cargo.toml", None),
         Rule::Glob("{harness}/src/**", None),
         Rule::Glob("{harness}/tests/**", Some(strip_stub)),
+    ]
+}
+
+/// One `[assignment].extra-packages` package, resolved against `{extra}`.
+/// Shipped verbatim: a support library is not a solution, so there is
+/// nothing to strip -- the student view and the instructor's are the same
+/// file. Applied once per package (see [`Rule`]'s `{key}` substitution).
+fn extra_package_rules() -> Vec<Rule> {
+    vec![
+        Rule::File("{extra}/Cargo.toml", None),
+        Rule::Glob("{extra}/src/**", None),
     ]
 }
 
@@ -95,6 +111,19 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
         id.as_str(),
     )?;
 
+    // Same courtesy for the support packages: `overlay::apply` would fail
+    // on the missing `Cargo.toml` anyway, but naming the spec key that
+    // asked for it turns that into a fixable message.
+    for package in &spec.assignment.extra_packages {
+        if !assignment_dir.join(package).is_dir() {
+            return Err(Error::InvalidSpec(format!(
+                "no {package}/ directory found in {} -- every name in \
+                 [assignment].extra-packages must be a sibling package directory",
+                assignment_dir.display()
+            )));
+        }
+    }
+
     check_student_view_is_clean(assignment_dir)?;
 
     let ctx = Context::new(
@@ -103,6 +132,12 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
     );
 
     overlay::apply(&ctx, out_dir, &rules(mode))?;
+
+    let extra_rules = extra_package_rules();
+    for package in &spec.assignment.extra_packages {
+        let ctx = Context::new(assignment_dir, str_map! {"extra" => package});
+        overlay::apply(&ctx, out_dir, &extra_rules)?;
+    }
 
     let workflow_dir = out_dir.join(".github/workflows");
     fs::create_dir_all(&workflow_dir)?;

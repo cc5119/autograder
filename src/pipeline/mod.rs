@@ -82,6 +82,32 @@ pub(crate) fn package_rules() -> Vec<Rule> {
     ]
 }
 
+/// One instructor-owned support package (`[assignment].extra-packages`),
+/// resolved against `{extra}` -- so this one static table serves every
+/// package, applied once per name (see [`apply_extra_packages`]).
+pub(crate) fn extra_package_rules() -> Vec<Rule> {
+    vec![
+        Rule::File("{extra}/Cargo.toml", None),
+        Rule::Glob("{extra}/src/**", None),
+    ]
+}
+
+/// Overlays every `[assignment].extra-packages` package from `source` onto
+/// `dest`. Always called *after* the checkout overlay, and always reading
+/// from the instructor tree: a student who edits a support package in their
+/// own repo has those edits overwritten here rather than compiled.
+pub(crate) fn apply_extra_packages(source: &Path, dest: &Path, spec: &Spec) -> Result<()> {
+    let rules = extra_package_rules();
+    for package in &spec.assignment.extra_packages {
+        overlay::apply(
+            &Context::new(source, str_map! {"extra" => package}),
+            dest,
+            &rules,
+        )?;
+    }
+    Ok(())
+}
+
 /// Builds an `EvaluationResult` for a build-stage failure that happened
 /// before Evaluate ever ran (missing crate dir, disallowed dependency), so
 /// a non-fatal per-submission problem still produces a well-formed,
@@ -148,6 +174,7 @@ pub(crate) fn evaluate_submission(
         &ctx.workspace,
         &package_rules(),
     )?;
+    apply_extra_packages(assignment_dir, &ctx.workspace, spec)?;
 
     // The sandboxed container process runs as an unprivileged,
     // rootless-podman-remapped uid, so we must grant "other" write
@@ -180,6 +207,7 @@ fn manifest_diagnostics(
     manifest_check::check_manifest(
         &contents,
         &allowed_crates,
+        &spec.assignment.extra_packages,
         vendor_dir.is_dir().then_some(vendor_dir),
     )
 }
@@ -304,4 +332,135 @@ pub fn evaluate_batch(
     progress.finish_and_clear();
 
     Ok(BatchOutcome { evals, skipped })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::Spec;
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn spec_with_extra_packages(dir: &Path, packages: &[&str]) -> Spec {
+        let extra = packages
+            .iter()
+            .map(|p| format!("{p:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write(
+            &dir.join(crate::spec::SPEC_FILE),
+            &format!(
+                r#"
+[assignment]
+id = "hw3"
+deadline = "2026-02-14T23:59:59[UTC]"
+harness = "harness"
+extra-packages = [{extra}]
+cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[sandbox]
+image = "example/image:latest"
+
+[build-limits]
+wall-clock = "30s"
+cpus = 1
+memory = "512MiB"
+pids = 64
+max-output-bytes = "64KiB"
+
+[scoring]
+formula = "sum"
+base = 0.0
+"#
+            ),
+        );
+        Spec::load(dir).unwrap()
+    }
+
+    /// A support package is instructor-owned, so a student who edits their
+    /// own copy must not be compiled against it. `checkout_rules` never
+    /// copies anything outside `{id}/`, and `apply_extra_packages` reads
+    /// from the instructor tree afterwards -- between them, the bytes that
+    /// land in the workspace are always the instructor's.
+    #[test]
+    fn an_extra_package_is_overlaid_from_the_instructor_tree_not_the_checkout() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        let spec = spec_with_extra_packages(assignment_dir.path(), &["messaging"]);
+        write(
+            &assignment_dir.path().join("messaging/Cargo.toml"),
+            "[package]\nname = \"messaging\"\nversion = \"0.1.0\"\n",
+        );
+        write(
+            &assignment_dir.path().join("messaging/src/lib.rs"),
+            "pub fn valid() -> bool { real() }",
+        );
+
+        // The student's checkout carries a tampered copy of the same package.
+        let checkout_dir = tempfile::tempdir().unwrap();
+        write(&checkout_dir.path().join("hw3/src/lib.rs"), "pub fn f() {}");
+        write(
+            &checkout_dir.path().join("messaging/src/lib.rs"),
+            "pub fn valid() -> bool { true }",
+        );
+
+        let workspace = tempfile::tempdir().unwrap();
+        let subs = str_map! {"id" => spec.assignment.id, "harness" => spec.assignment.harness};
+        overlay::apply(
+            &Context::new(checkout_dir.path(), subs),
+            workspace.path(),
+            &checkout_rules(),
+        )
+        .unwrap();
+        apply_extra_packages(assignment_dir.path(), workspace.path(), &spec).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("messaging/src/lib.rs")).unwrap(),
+            "pub fn valid() -> bool { real() }"
+        );
+    }
+
+    /// Every name in `extra-packages` gets its own `apply` pass, so a
+    /// workspace can carry more than one support package.
+    #[test]
+    fn every_declared_extra_package_is_overlaid() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        let spec = spec_with_extra_packages(assignment_dir.path(), &["messaging", "protocol"]);
+        for package in ["messaging", "protocol"] {
+            write(
+                &assignment_dir.path().join(package).join("Cargo.toml"),
+                &format!("[package]\nname = {package:?}\nversion = \"0.1.0\"\n"),
+            );
+            write(
+                &assignment_dir.path().join(package).join("src/lib.rs"),
+                &format!("pub fn {package}() {{}}"),
+            );
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        apply_extra_packages(assignment_dir.path(), workspace.path(), &spec).unwrap();
+
+        for package in ["messaging", "protocol"] {
+            assert!(workspace.path().join(package).join("Cargo.toml").is_file());
+            assert!(workspace.path().join(package).join("src/lib.rs").is_file());
+        }
+    }
+
+    /// An assignment that declares no support packages is the common case
+    /// and must be entirely unaffected.
+    #[test]
+    fn no_extra_packages_copies_nothing() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        let spec = spec_with_extra_packages(assignment_dir.path(), &[]);
+        let workspace = tempfile::tempdir().unwrap();
+
+        apply_extra_packages(assignment_dir.path(), workspace.path(), &spec).unwrap();
+
+        assert_eq!(
+            fs::walk_regular_files(workspace.path()).unwrap(),
+            Vec::<std::path::PathBuf>::new()
+        );
+    }
 }

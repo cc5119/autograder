@@ -30,6 +30,10 @@ pub fn run(local_sandbox: bool) -> Result<()> {
         assignment_dir,
         &pipeline::package_rules(),
     )?;
+    // The student's own checkout is the only tree `ci` has -- it stands in
+    // for the instructor's here, so a locally edited support package is
+    // visible to `autograder ci` even though `evaluate` would discard it.
+    pipeline::apply_extra_packages(&checkout_dir, assignment_dir, &spec)?;
 
     // `vendor::vendor` checks `Cargo.lock` against the blessed hash itself
     // and refuses to run against a mismatch -- a student's own edited lock

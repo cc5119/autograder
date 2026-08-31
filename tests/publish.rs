@@ -343,3 +343,107 @@ fn publish_never_copies_a_vendor_directory_dropped_in_the_solution_crate() {
 
     assert!(!out_dir.path().join("hw3/vendor").exists());
 }
+
+/// Turns the two-package fixture into the three-package shape
+/// `[assignment].extra-packages` exists for: a support library `{id}`
+/// depends on by path, which the instructor owns and students may not
+/// edit. Re-locks afterward, since adding a workspace member changes the
+/// resolved graph `publish` refuses to ship a stale hash for.
+fn add_extra_package(assignment_dir: &std::path::Path, id: &str, package: &str) {
+    write(
+        &assignment_dir.join("Cargo.toml"),
+        &format!(
+            "[workspace]\nresolver = \"3\"\nmembers = [\"{id}\", \"harness\", \"{package}\"]\n"
+        ),
+    );
+    write(
+        &assignment_dir.join(package).join("Cargo.toml"),
+        &format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+    );
+    write(
+        &assignment_dir.join(package).join("src/lib.rs"),
+        "pub fn helper() -> u32 {\n    7\n}\n",
+    );
+    write(
+        &assignment_dir.join(id).join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"{id}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+             [features]\nstudent = []\n\n\
+             [dependencies]\n{package} = {{ path = \"../{package}\" }}\n"
+        ),
+    );
+
+    let spec_path = assignment_dir.join(SPEC_FILE);
+    let spec = std::fs::read_to_string(&spec_path).unwrap();
+    write(
+        &spec_path,
+        &spec.replace(
+            "harness = \"harness\"",
+            &format!("harness = \"harness\"\nextra-packages = [\"{package}\"]"),
+        ),
+    );
+
+    autograder::deps::lock::lock(assignment_dir).unwrap();
+}
+
+/// The two-package layout is a floor, not a ceiling: a workspace carrying
+/// an instructor-owned support library has to ship it, or the starter the
+/// student clones doesn't resolve as a workspace at all.
+#[test]
+fn publish_ships_every_extra_package() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    add_extra_package(assignment_dir.path(), "hw3", "messaging");
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let outcome = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+
+    assert!(outcome.out_dir.join("messaging/Cargo.toml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(outcome.out_dir.join("messaging/src/lib.rs")).unwrap(),
+        "pub fn helper() -> u32 {\n    7\n}\n"
+    );
+}
+
+/// A support package is not a solution, so `PublishMode` must not change
+/// it -- there is no hidden view to strip or restore.
+#[test]
+fn an_extra_package_ships_identically_in_both_modes() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    add_extra_package(assignment_dir.path(), "hw3", "messaging");
+
+    let starter = tempfile::tempdir().unwrap();
+    let solution = tempfile::tempdir().unwrap();
+    publish(assignment_dir.path(), starter.path(), PublishMode::Starter).unwrap();
+    publish(
+        assignment_dir.path(),
+        solution.path(),
+        PublishMode::Solution,
+    )
+    .unwrap();
+
+    let read = |dir: &tempfile::TempDir| {
+        std::fs::read_to_string(dir.path().join("messaging/src/lib.rs")).unwrap()
+    };
+    assert_eq!(read(&starter), read(&solution));
+}
+
+/// A name in `extra-packages` with no directory behind it is an
+/// instructor-side typo, and should say so rather than surfacing as a bare
+/// missing-file error from the overlay.
+#[test]
+fn publish_rejects_an_extra_package_with_no_directory() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    add_extra_package(assignment_dir.path(), "hw3", "messaging");
+    std::fs::remove_dir_all(assignment_dir.path().join("messaging")).unwrap();
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+
+    assert!(
+        matches!(&err, Error::InvalidSpec(message) if message.contains("extra-packages")),
+        "unexpected error: {err}"
+    );
+}

@@ -69,7 +69,11 @@ impl<'de> Deserialize<'de> for InputHash {
 ///   Cargo.lock
 ///   {assignment_id}/   <- submission_package_dir(): the student's own package
 ///   {harness}/         <- the trusted judge package
+///   {extra-packages}/  <- instructor-owned support packages, if any
 /// ```
+///
+/// Everything but `{assignment_id}/` is overlaid from the instructor tree
+/// after the checkout, so a student's edits to it never reach the build.
 #[derive(Debug, Clone)]
 pub struct JobContext {
     pub assignment_id: AssignmentId,
