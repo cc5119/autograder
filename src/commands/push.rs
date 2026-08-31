@@ -105,23 +105,34 @@ impl Vcs {
         if available { Vcs::Jj } else { Vcs::Git }
     }
 
+    /// Checked before ever shelling out: `git`/`jj rev-parse`-style lookups
+    /// search upward past `dir` for an enclosing repo when `dir` isn't one
+    /// itself (e.g. a published dir that's merely `.gitignore`d inside a
+    /// larger repo) -- without this, a `main` branch up there would be
+    /// misread as belonging to `dir`.
     fn already_has_a_local_bookmark(&self, dir: &Path) -> bool {
         match self {
-            Vcs::Git => Command::new("git")
-                .args([
-                    "rev-parse",
-                    "--verify",
-                    "-q",
-                    &format!("refs/heads/{BOOKMARK}"),
-                ])
-                .current_dir(dir)
-                .output()
-                .is_ok_and(|output| output.status.success()),
-            Vcs::Jj => Command::new("jj")
-                .args(["bookmark", "list", BOOKMARK])
-                .current_dir(dir)
-                .output()
-                .is_ok_and(|output| !output.stdout.is_empty()),
+            Vcs::Git => {
+                dir.join(".git").exists()
+                    && Command::new("git")
+                        .args([
+                            "rev-parse",
+                            "--verify",
+                            "-q",
+                            &format!("refs/heads/{BOOKMARK}"),
+                        ])
+                        .current_dir(dir)
+                        .output()
+                        .is_ok_and(|output| output.status.success())
+            }
+            Vcs::Jj => {
+                dir.join(".jj").exists()
+                    && Command::new("jj")
+                        .args(["bookmark", "list", BOOKMARK])
+                        .current_dir(dir)
+                        .output()
+                        .is_ok_and(|output| !output.stdout.is_empty())
+            }
         }
     }
 
