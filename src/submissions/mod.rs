@@ -452,9 +452,18 @@ impl FetchRecord {
     /// How late the graded commit is, or `None` if it isn't. Measured
     /// against the verified push time where there is one, since the
     /// commit's own date is the student's to set.
+    ///
+    /// A bless tag exempts a commit from the deadline *gate* -- it's
+    /// checked out and graded whatever the date -- but that's a decision
+    /// about acceptance, not about truth: a blessed commit pushed after
+    /// the deadline was still late, and burying that would launder it the
+    /// same way reporting an override as on-time would. So `Blessed` is
+    /// measured here exactly like `Late`, against `self.deadline` -- the
+    /// one that was in force when this fetch selected the commit.
     pub fn late_by(&self) -> Option<jiff::SignedDuration> {
         let commit = match self.submission_date()? {
             SubmissionDate::Late(commit) => commit,
+            SubmissionDate::Blessed { commit, .. } => commit,
             // Measured when the override was resolved, against the
             // deadline in force then -- not re-derived here.
             SubmissionDate::Override { late_by, .. } => return *late_by,
@@ -464,7 +473,11 @@ impl FetchRecord {
             .timestamp
             .push_event
             .unwrap_or(commit.timestamp.commit_date);
-        Some(submitted.duration_since(self.deadline.timestamp()))
+        let by = submitted.duration_since(self.deadline.timestamp());
+        // Unlike `Late`, `Blessed` isn't only ever constructed after the
+        // deadline -- a bless tag on an on-time commit is the common case
+        // -- so a non-positive gap means on time, not "negatively late".
+        (!by.is_negative()).then_some(by)
     }
 }
 
@@ -1418,6 +1431,59 @@ mod tests {
                         commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
                     },
                 }),
+            },
+        };
+
+        assert!(record.late_by().is_none());
+    }
+
+    /// The case the fix exists for: a bless tag exempts the commit from
+    /// the deadline gate, but that's not the same as it having been on
+    /// time.
+    #[test]
+    fn late_by_reports_a_blessed_commit_pushed_after_the_deadline() {
+        let record = FetchRecord {
+            fetched_at: Timestamp::now(),
+            deadline: deadline("2026-02-14T00:00:00Z"),
+            forks: Vec::new(),
+            metadata: IndexMap::new(),
+            result: FetchResult::Ok {
+                submission_date: SubmissionDate::Blessed {
+                    tag_push_event: None,
+                    commit: Commit {
+                        sha: CommitSha::new("abc123"),
+                        timestamp: CommitTimestamp {
+                            push_event: Some("2026-02-14T03:00:00Z".parse().unwrap()),
+                            commit_date: "2026-02-14T02:59:00Z".parse().unwrap(),
+                        },
+                    },
+                    fallback: None,
+                },
+            },
+        };
+
+        assert_eq!(record.late_by().unwrap().as_hours(), 3);
+    }
+
+    #[test]
+    fn late_by_is_none_for_a_blessed_commit_that_was_on_time() {
+        let record = FetchRecord {
+            fetched_at: Timestamp::now(),
+            deadline: deadline("2026-02-14T00:00:00Z"),
+            forks: Vec::new(),
+            metadata: IndexMap::new(),
+            result: FetchResult::Ok {
+                submission_date: SubmissionDate::Blessed {
+                    tag_push_event: None,
+                    commit: Commit {
+                        sha: CommitSha::new("abc123"),
+                        timestamp: CommitTimestamp {
+                            push_event: Some("2026-02-10T00:00:00Z".parse().unwrap()),
+                            commit_date: "2026-02-10T00:00:00Z".parse().unwrap(),
+                        },
+                    },
+                    fallback: None,
+                },
             },
         };
 

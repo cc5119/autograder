@@ -117,7 +117,12 @@ fn render_fetch(out: &mut String, record: &FetchRecord) {
 
 fn render_submission_date(out: &mut String, record: &FetchRecord, date: &SubmissionDate) {
     let note = match date {
-        SubmissionDate::Blessed { .. } => style("  (blessed)").to_string(),
+        SubmissionDate::Blessed { .. } => match record.late_by() {
+            Some(by) => style(format!("  (blessed, {} late)", render::duration(by)))
+                .red()
+                .to_string(),
+            None => style("  (blessed)").to_string(),
+        },
         SubmissionDate::Override { reason, .. } => {
             let late = match record.late_by() {
                 Some(by) => format!(", {} late", render::duration(by)),

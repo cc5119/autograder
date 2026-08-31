@@ -32,11 +32,17 @@ impl Lateness {
             return Lateness::Unknown;
         };
         match record.submission_date() {
-            Some(SubmissionDate::OnTime(_) | SubmissionDate::Blessed { .. }) => Lateness::OnTime,
-            Some(SubmissionDate::Late(_)) => match record.late_by() {
-                Some(by) => Lateness::Late(by),
-                None => Lateness::Unknown,
-            },
+            Some(SubmissionDate::OnTime(_)) => Lateness::OnTime,
+            // A bless tag exempts the commit from the deadline *gate*, not
+            // from being reported honestly -- `late_by` derives it the
+            // same way as `Late`, and is `None` for a blessed commit that
+            // really was on time.
+            Some(SubmissionDate::Late(_) | SubmissionDate::Blessed { .. }) => {
+                match record.late_by() {
+                    Some(by) => Lateness::Late(by),
+                    None => Lateness::OnTime,
+                }
+            }
             _ => Lateness::Unknown,
         }
     }
