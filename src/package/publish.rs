@@ -4,20 +4,22 @@
 //! according to [`PublishMode`]. No hand-maintained `public/`/`solution/`
 //! sibling repo.
 //!
-//! [`strip_stub`] resolves `{id}/src/**` and `harness/tests/**` to the
-//! student view (`PublishMode::Starter`'s only option for the harness, and
-//! `{id}/src/**` too when the mode is `Starter`), via the convention
-//! `crate::package::stub` applies to ordinary items: an unmarked `#[test]`
-//! fn ships by default, and only one stacked with `#[cfg(not(feature =
-//! "student"))]` (alongside its own `#[cfg(test)]`, since that alone isn't
-//! a directive -- see that module's doc comment) is dropped, which is how
-//! an adversarial test stays hidden. [`unstrip_stub`] is its mirror image,
-//! resolving `{id}/src/**` to the real solution view instead --
-//! `PublishMode::Solution` uses it for `{id}/src/**`, but `harness/tests/**`
-//! always resolves as the student view regardless of mode, since the
-//! adversarial judge tests are never meant to ship, even alongside a
-//! solution. The judge always lives in `harness/`, a sibling package of
-//! `{id}`, for both `library` and `binary` (see `evaluator::library`'s and
+//! [`strip_stub`] resolves `{id}/src/**`, `harness/src/**` and
+//! `harness/tests/**` to the student view (`PublishMode::Starter`'s only
+//! option for the harness, and `{id}/src/**` too when the mode is
+//! `Starter`), via the convention `crate::package::stub` applies to
+//! ordinary items: an unmarked `#[test]` fn ships by default, and only one
+//! stacked with `#[cfg(not(feature = "student"))]` (alongside its own
+//! `#[cfg(test)]`, since that alone isn't a directive -- see that module's
+//! doc comment) is dropped, which is how an adversarial test (or a
+//! confidential helper under `harness/src`) stays hidden. [`unstrip_stub`]
+//! is its mirror image, resolving `{id}/src/**` to the real solution view
+//! instead -- `PublishMode::Solution` uses it for `{id}/src/**`, but
+//! `harness/src/**` and `harness/tests/**` always resolve as the student
+//! view regardless of mode, since the harness itself is never a solution to
+//! ship a variant of, and its adversarial parts are never meant to ship at
+//! all. The judge always lives in `harness/`, a sibling package of `{id}`,
+//! for both `library` and `binary` (see `evaluator::library`'s and
 //! `evaluator::binary`'s module doc comments).
 //!
 //! A workspace may carry further instructor-owned packages beyond the
@@ -56,7 +58,7 @@ fn rules(mode: PublishMode) -> Vec<Rule> {
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
         Rule::Glob("{id}/src/**", Some(src_hook)),
         Rule::File("{harness}/Cargo.toml", None),
-        Rule::Glob("{harness}/src/**", None),
+        Rule::Glob("{harness}/src/**", Some(strip_stub)),
         Rule::Glob("{harness}/tests/**", Some(strip_stub)),
     ]
 }

@@ -103,16 +103,18 @@ fn empty_shadow_dir() -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
-/// Like [`repo_root_mounts`], except `harness_dir/tests` -- the only
-/// confidential part of the harness (`{harness}/src/**` already ships to
-/// students unstripped via `publish`; only `{harness}/tests/**`'s
-/// non-`keep` items are meant to stay hidden, see `package::publish`'s
-/// module doc comment) -- is shadowed by an empty read-only directory.
+/// Like [`repo_root_mounts`], except `harness_dir/src` and
+/// `harness_dir/tests` -- the only confidential parts of the harness
+/// (`harness_dir/Cargo.toml` stays visible, since it's a workspace member
+/// manifest Cargo must read to resolve the workspace even when only
+/// building `<id>`, and holds no `#[cfg]`-stripped content to hide -- see
+/// `package::publish`'s module doc comment) -- are each shadowed by an
+/// empty read-only directory.
 ///
 /// Read-only mounting stops writes, not reads: a `build.rs` executing here
-/// could otherwise just read hidden tests off disk while compiling. Only
-/// stage 1 (building `<id>`) needs this, since `<id>`'s own `build.rs` is
-/// the thing that could read it; stage 2 and the run stage use plain
+/// could otherwise just read hidden tests or src off disk while compiling.
+/// Only stage 1 (building `<id>`) needs this, since `<id>`'s own `build.rs`
+/// is the thing that could read it; stage 2 and the run stage use plain
 /// [`repo_root_mounts`] instead.
 pub(crate) fn hidden_tests_mounts(
     repo_root: &Path,
@@ -121,11 +123,13 @@ pub(crate) fn hidden_tests_mounts(
     vendor_dir: &Path,
 ) -> Result<Vec<Mount>> {
     let mut mounts = repo_root_mounts(repo_root, workspace, harness_dir, vendor_dir);
-    mounts.push(Mount {
-        host_path: empty_shadow_dir()?,
-        container_path: harness_dir.join("tests"),
-        mode: MountMode::ReadOnly,
-    });
+    for subdir in ["src", "tests"] {
+        mounts.push(Mount {
+            host_path: empty_shadow_dir()?,
+            container_path: harness_dir.join(subdir),
+            mode: MountMode::ReadOnly,
+        });
+    }
     Ok(mounts)
 }
 

@@ -18,24 +18,26 @@
 //! `evaluate` runs three sandboxed stages:
 //!
 //! 1. **build `<id>`** -- `cargo build -p <id>`, `hidden_tests_mounts`
-//!    (harness/tests hidden, so a student `build.rs` can't read it).
+//!    (harness/src and harness/tests hidden, so a student `build.rs` can't
+//!    read them).
 //! 2. **build `<harness_package>`** -- a *separate* sandbox call from stage
 //!    1, never combined into one `cargo build -p a -p b`: that would force
 //!    student and harness compilation to share one mount set. `full_mounts`
-//!    (real `harness/tests`): `<id>` is already built and cached from stage
-//!    1, so nothing student-authored newly executes here, only the
-//!    harness's own trusted code -- and hiding `harness/tests` would break
-//!    any harness `Cargo.toml` that declares an explicit `[[test]]` target
-//!    path, since Cargo validates declared target paths exist while
+//!    (real `harness/src` and `harness/tests`): `<id>` is already built and
+//!    cached from stage 1, so nothing student-authored newly executes here,
+//!    only the harness's own trusted code -- and hiding either would break
+//!    the harness's own build (it needs its real `src` to compile itself),
+//!    or any harness `Cargo.toml` that declares an explicit `[[test]]`
+//!    target path, since Cargo validates declared target paths exist while
 //!    loading the manifest, even for a plain `cargo build`.
 //! 3. **run** -- `cargo nextest run -p <harness_package>`, directly against
-//!    real source (no archive), `repo_root_mounts` (harness/tests visible)
-//!    and no `SandboxLimits`. Both are safe now because the only
-//!    student-authored code executing here is `isolate`-boxed: it can't see
-//!    `harness/tests` regardless of this container's mounts (verified in
-//!    `spike/isolate-podman/`), and its resource limits come from
-//!    `autograder-test` calls in the harness's own test code, not from
-//!    `autograder.toml`.
+//!    real source (no archive), `repo_root_mounts` (harness/src and
+//!    harness/tests visible) and no `SandboxLimits`. Both are safe now
+//!    because the only student-authored code executing here is
+//!    `isolate`-boxed: it can't see `harness/tests` regardless of this
+//!    container's mounts (verified in `spike/isolate-podman/`), and its
+//!    resource limits come from `autograder-test` calls in the harness's
+//!    own test code, not from `autograder.toml`.
 //!
 //! `repo_root` isn't a descendant of `submission_package_dir()` (see
 //! `JobContext`'s doc comment for the layout), so Cargo can't discover that
@@ -726,7 +728,7 @@ base = 0.0
     }
 
     #[test]
-    fn stage_1_builds_only_id_with_harness_tests_hidden_and_build_limits() {
+    fn stage_1_builds_only_id_with_harness_src_and_tests_hidden_and_build_limits() {
         let assignment_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
@@ -746,13 +748,15 @@ base = 0.0
         assert!(!build_spec.args.contains(&"--test".to_string()));
         assert!(build_spec.limits.is_some());
 
-        let shadow = build_spec
-            .mounts
-            .iter()
-            .find(|m| m.container_path == harness_dir.join("tests"))
-            .expect("stage 1 shadows harness/tests");
-        assert_eq!(shadow.mode, crate::exec::sandbox::MountMode::ReadOnly);
-        assert_ne!(shadow.host_path, harness_dir.join("tests"));
+        for subdir in ["src", "tests"] {
+            let shadow = build_spec
+                .mounts
+                .iter()
+                .find(|m| m.container_path == harness_dir.join(subdir))
+                .unwrap_or_else(|| panic!("stage 1 shadows harness/{subdir}"));
+            assert_eq!(shadow.mode, crate::exec::sandbox::MountMode::ReadOnly);
+            assert_ne!(shadow.host_path, harness_dir.join(subdir));
+        }
     }
 
     #[test]
@@ -778,15 +782,17 @@ base = 0.0
         assert!(!build_spec.args.contains(&"hw3".to_string()));
         assert!(build_spec.limits.is_some());
 
-        // Real harness/tests, not shadowed -- `<id>` is already built by
-        // stage 1, so nothing student-authored newly executes here (see
-        // this module's doc comment).
-        assert!(
-            build_spec
-                .mounts
-                .iter()
-                .all(|m| m.container_path != harness_dir.join("tests"))
-        );
+        // Real harness/src and harness/tests, not shadowed -- `<id>` is
+        // already built by stage 1, so nothing student-authored newly
+        // executes here (see this module's doc comment).
+        for subdir in ["src", "tests"] {
+            assert!(
+                build_spec
+                    .mounts
+                    .iter()
+                    .all(|m| m.container_path != harness_dir.join(subdir))
+            );
+        }
     }
 
     #[test]
