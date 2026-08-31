@@ -78,6 +78,7 @@ pub fn render(rows: &[Row<'_>], gradebook: &Path) -> String {
                 points,
                 passed,
                 total,
+                ..
             } => {
                 let tests = format!("{passed}/{total} tests");
                 let tests = if passed == total {
@@ -176,6 +177,16 @@ fn notes(row: &Row<'_>) -> String {
             notes,
             "    {}",
             style(format!("{} late", render::duration(by))).red()
+        );
+    }
+
+    if let GradeOutcome::Scored { penalty, .. } = &row.grade.outcome
+        && *penalty > 0.0
+    {
+        let _ = write!(
+            notes,
+            "    {}",
+            style(format!("-{:.0}% late penalty", penalty * 100.0)).red()
         );
     }
 

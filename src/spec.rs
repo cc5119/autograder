@@ -176,6 +176,81 @@ impl<'de> Deserialize<'de> for Scoring {
     }
 }
 
+/// How a late submission's score is docked, applied to the final `score`
+/// (after `spec.scoring`'s formula) rather than to raw points, so it
+/// composes with either `sum` or `affine` scoring without knowing the
+/// point scale.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LatePenaltyFormula {
+    /// `fraction_off = clamp(rate * days_late_after_grace, 0, max_penalty)`.
+    Linear {
+        rate: f64,
+        grace: jiff::SignedDuration,
+        max_penalty: f64,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct LatePenalty {
+    pub formula: LatePenaltyFormula,
+}
+
+impl LatePenalty {
+    /// The fraction of `score` to deduct for a submission that was
+    /// `late_by` past the deadline. `late_by` is expected non-negative --
+    /// callers only reach here when there's lateness to penalize at all.
+    pub fn fraction_off(&self, late_by: jiff::SignedDuration) -> f64 {
+        match self.formula {
+            LatePenaltyFormula::Linear {
+                rate,
+                grace,
+                max_penalty,
+            } => {
+                let over_grace = (late_by.as_secs_f64() - grace.as_secs_f64()).max(0.0);
+                let days_late = over_grace / 86_400.0;
+                (rate * days_late).clamp(0.0, max_penalty)
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawLatePenalty {
+    formula: String,
+    rate: f64,
+    #[serde(default)]
+    grace: Option<Duration>,
+    #[serde(default, rename = "max-penalty")]
+    max_penalty: Option<f64>,
+}
+
+impl<'de> Deserialize<'de> for LatePenalty {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawLatePenalty::deserialize(deserializer)?;
+        let formula = match raw.formula.as_str() {
+            "linear" => LatePenaltyFormula::Linear {
+                rate: raw.rate,
+                grace: raw
+                    .grace
+                    .map(|d| jiff::SignedDuration::try_from(d.0).map_err(serde::de::Error::custom))
+                    .transpose()?
+                    .unwrap_or(jiff::SignedDuration::ZERO),
+                max_penalty: raw.max_penalty.unwrap_or(1.0),
+            },
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown [late-penalty].formula {other:?}, expected \"linear\""
+                )));
+            }
+        };
+        Ok(LatePenalty { formula })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Spec {
     pub assignment: Assignment,
@@ -183,6 +258,10 @@ pub struct Spec {
     #[serde(rename = "build-limits")]
     pub build_limits: BuildLimits,
     pub scoring: Scoring,
+    /// Absent means no penalty for lateness -- the deadline still gates
+    /// which commit `fetch` picks, but a late score isn't docked for it.
+    #[serde(rename = "late-penalty", default)]
+    pub late_penalty: Option<LatePenalty>,
 }
 
 impl Spec {
@@ -312,6 +391,84 @@ scale-max = 7.0
         );
         let result: std::result::Result<Spec, _> = toml::from_str(&toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn late_penalty_is_absent_by_default() {
+        let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
+        assert!(spec.late_penalty.is_none());
+    }
+
+    #[test]
+    fn parses_a_linear_late_penalty_with_defaulted_grace_and_cap() {
+        let toml = format!("{PUBLIC_TOML}\n[late-penalty]\nformula = \"linear\"\nrate = 0.1\n");
+        let spec: Spec = toml::from_str(&toml).unwrap();
+        assert_eq!(
+            spec.late_penalty.unwrap().formula,
+            LatePenaltyFormula::Linear {
+                rate: 0.1,
+                grace: jiff::SignedDuration::ZERO,
+                max_penalty: 1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_a_linear_late_penalty_with_an_explicit_grace_and_cap() {
+        let toml = format!(
+            "{PUBLIC_TOML}\n[late-penalty]\nformula = \"linear\"\nrate = 0.1\ngrace = \"1h\"\nmax-penalty = 0.5\n"
+        );
+        let spec: Spec = toml::from_str(&toml).unwrap();
+        assert_eq!(
+            spec.late_penalty.unwrap().formula,
+            LatePenaltyFormula::Linear {
+                rate: 0.1,
+                grace: jiff::SignedDuration::from_hours(1),
+                max_penalty: 0.5,
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_late_penalty_formula_is_a_clear_parse_error() {
+        let toml =
+            format!("{PUBLIC_TOML}\n[late-penalty]\nformula = \"exponential\"\nrate = 0.1\n");
+        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn linear_penalty_is_zero_within_the_grace_window() {
+        let penalty = LatePenalty {
+            formula: LatePenaltyFormula::Linear {
+                rate: 0.1,
+                grace: jiff::SignedDuration::from_hours(1),
+                max_penalty: 1.0,
+            },
+        };
+        assert_eq!(
+            penalty.fraction_off(jiff::SignedDuration::from_mins(30)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn linear_penalty_accrues_per_day_late_after_grace_and_clamps_at_the_cap() {
+        let penalty = LatePenalty {
+            formula: LatePenaltyFormula::Linear {
+                rate: 0.1,
+                grace: jiff::SignedDuration::ZERO,
+                max_penalty: 0.5,
+            },
+        };
+        assert_eq!(
+            penalty.fraction_off(jiff::SignedDuration::from_hours(24)),
+            0.1
+        );
+        assert_eq!(
+            penalty.fraction_off(jiff::SignedDuration::from_hours(24 * 10)),
+            0.5
+        );
     }
 
     #[test]

@@ -66,6 +66,7 @@ mod tests {
                 points: 3.0,
                 passed: 3,
                 total: 3,
+                penalty: 0.0,
             },
         };
         let bob = Grade {
@@ -92,6 +93,7 @@ mod tests {
                 points: 3.0,
                 passed: 3,
                 total: 3,
+                penalty: 0.0,
             },
         };
         let bob = Grade {
@@ -101,6 +103,7 @@ mod tests {
                 points: 1.0,
                 passed: 1,
                 total: 3,
+                penalty: 0.0,
             },
         };
         let alice_metadata: IndexMap<String, String> = [

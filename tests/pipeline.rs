@@ -146,7 +146,7 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
 
     assert_eq!(evals.len(), 1);
     assert_eq!(evals[0].github_user, "alice");
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
+    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring, None, None);
     assert_eq!(grade.score(), Some(1.0));
 
     let persisted = persisted_evals(submissions_dir.path(), "alice");
@@ -307,7 +307,7 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
     .evals;
 
     assert_eq!(evals.len(), 1);
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
+    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring, None, None);
     assert_eq!(grade.score(), None);
 
     let persisted = persisted_evals(submissions_dir.path(), "alice");

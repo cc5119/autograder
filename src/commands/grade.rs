@@ -26,19 +26,24 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
     let spec = Spec::load(assignment)?;
     let evals = latest_evals(submissions)?;
 
-    let grades: Vec<_> = evals
-        .iter()
-        .map(|eval| grade::grade(eval, &spec.scoring))
-        .collect();
-
     // One read per student, for the roster's extra columns and for when
     // the submission arrived -- an `EvaluationResult` carries no
-    // timestamps, so timing can only come from the fetch record. Absent
-    // (e.g. an eval persisted before a fetch ever ran) leaves both blank.
-    let records: Vec<_> = grades
+    // timestamps, so timing (and therefore the late penalty) can only
+    // come from the fetch record. Absent (e.g. an eval persisted before a
+    // fetch ever ran) leaves both blank and unpenalized.
+    let records: Vec<_> = evals
         .iter()
-        .map(|grade| read_fetch_record(submissions, &grade.github_user))
+        .map(|eval| read_fetch_record(submissions, &eval.github_user))
         .collect::<Result<_>>()?;
+
+    let grades: Vec<_> = evals
+        .iter()
+        .zip(records.iter())
+        .map(|(eval, record)| {
+            let late_by = record.as_ref().and_then(|r| r.late_by());
+            grade::grade(eval, &spec.scoring, spec.late_penalty.as_ref(), late_by)
+        })
+        .collect();
 
     let metadata: Vec<_> = records
         .iter()

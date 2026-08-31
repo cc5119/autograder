@@ -248,13 +248,19 @@ pub struct Grade {
 #[serde(rename_all = "snake_case")]
 pub enum GradeOutcome {
     Scored {
+        /// After `spec.scoring` and, for a late submission, after
+        /// `spec.late_penalty` has already been deducted.
         score: f64,
         /// The raw sum of what the tests reported, before `spec.scoring`
         /// maps it onto the grade scale -- the number `max-sum` is
-        /// measured against.
+        /// measured against. Never docked for lateness.
         points: f64,
         passed: usize,
         total: usize,
+        /// Fraction of the pre-penalty score that `late_penalty` deducted,
+        /// `0.0` when there was none to apply.
+        #[serde(default)]
+        penalty: f64,
     },
     /// The build failed or the run left no readable results -- neither
     /// leaves a trustworthy set of tests to score. `reason` says which.
