@@ -18,8 +18,8 @@
 //! `evaluate` runs three sandboxed stages:
 //!
 //! 1. **build `<id>`** -- `cargo build -p <id>`, `hidden_tests_mounts`
-//!    (harness/src and harness/tests hidden, so a student `build.rs` can't
-//!    read them).
+//!    (harness/ swapped for its student view, so a student `build.rs` can't
+//!    read the confidential parts of harness/src and harness/tests).
 //! 2. **build `<harness_package>`** -- a *separate* sandbox call from stage
 //!    1, never combined into one `cargo build -p a -p b`: that would force
 //!    student and harness compilation to share one mount set. `full_mounts`
@@ -47,11 +47,12 @@
 //! (`vendor::VENDOR_CONFIG_FILE`).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::deps::vendor;
 use crate::error::{Error, Result};
 use crate::exec::fs;
+use crate::exec::overlay::{self, Context};
 use crate::exec::sandbox::{
     Mount, ProcessStatus, Profile, Sandbox, SandboxLimits, SandboxOutcome, SandboxSpec,
 };
@@ -59,7 +60,9 @@ use crate::model::{
     BuildStatus, Diagnostics, EvalStatus, EvaluationResult, JobContext, TestOutcome, TestResult,
     TestStatus,
 };
+use crate::package::publish;
 use crate::spec::Spec;
+use crate::str_map;
 
 use super::{Evaluator, sandbox_limits, write_nextest_config};
 
@@ -107,14 +110,22 @@ impl<S: Sandbox> Nextest<S> {
         )
     }
 
-    /// For the two build stages (see this module's doc comment).
-    fn hidden_tests_mounts(&self, ctx: &JobContext) -> Result<Vec<Mount>> {
-        super::hidden_tests_mounts(
+    /// For stage 1 (see this module's doc comment). Writes the student view
+    /// of the harness under `stage1_dir`, which must therefore outlive the
+    /// stage 1 sandbox call.
+    fn hidden_tests_mounts(&self, ctx: &JobContext, stage1_dir: &Path) -> Result<Vec<Mount>> {
+        overlay::apply(
+            &Context::new(&ctx.workspace, str_map! {"harness" => self.harness_package}),
+            stage1_dir,
+            &publish::student_harness_rules(),
+        )?;
+        Ok(super::hidden_tests_mounts(
             &ctx.workspace,
             &ctx.submission_package_dir(),
             &self.harness_dir(ctx),
             &ctx.vendor_dir,
-        )
+            &stage1_dir.join(&self.harness_package),
+        ))
     }
 
     /// Writes `repo_root/.cargo/config.toml`, copied verbatim from the
@@ -142,6 +153,7 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
         let env = self.cargo_env(ctx);
 
         // Stage 1 (see this module's doc comment).
+        let stage1_dir = fs::temp_dir()?;
         let build_id_spec = SandboxSpec {
             command: "cargo".to_string(),
             args: vec![
@@ -153,11 +165,12 @@ impl<S: Sandbox> Evaluator for Nextest<S> {
             limits: Some(self.limits.clone()),
             workdir: repo_root.clone(),
             env: env.clone(),
-            mounts: self.hidden_tests_mounts(ctx)?,
+            mounts: self.hidden_tests_mounts(ctx, stage1_dir.path())?,
             profile: Profile::Build,
         };
 
         let build_id_outcome = self.sandbox.run(&build_id_spec)?;
+        drop(stage1_dir);
         if !build_id_outcome.succeeded() {
             return Ok(build_failed_result(
                 ctx,
@@ -555,6 +568,14 @@ base = 0.0
         let harness_dir = repo_root.join("harness");
         std::fs::create_dir_all(&submission_dir).unwrap();
         std::fs::create_dir_all(&harness_dir).unwrap();
+        // Stage 1 derives the student view of the harness from it.
+        std::fs::write(
+            harness_dir.join("Cargo.toml"),
+            "[package]\nname = \"harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [[bin]]\nname = \"harness\"\n\n\
+             [dependencies]\nhw3 = { path = \"../hw3\" }\n",
+        )
+        .unwrap();
         (submission_dir, harness_dir)
     }
 
@@ -728,7 +749,7 @@ base = 0.0
     }
 
     #[test]
-    fn stage_1_builds_only_id_with_harness_src_and_tests_hidden_and_build_limits() {
+    fn stage_1_builds_only_id_with_the_student_view_of_the_harness_and_build_limits() {
         let assignment_dir = tempfile::tempdir().unwrap();
         write_harness_manifest(assignment_dir.path());
         let repo_root = tempfile::tempdir().unwrap();
@@ -748,15 +769,62 @@ base = 0.0
         assert!(!build_spec.args.contains(&"--test".to_string()));
         assert!(build_spec.limits.is_some());
 
-        for subdir in ["src", "tests"] {
-            let shadow = build_spec
-                .mounts
+        // Exactly one mount at harness/ (podman rejects duplicates), and not
+        // the real harness.
+        let harness_mounts: Vec<_> = build_spec
+            .mounts
+            .iter()
+            .filter(|m| m.container_path.starts_with(&harness_dir))
+            .collect();
+        assert_eq!(harness_mounts.len(), 1, "{harness_mounts:?}");
+        assert_eq!(harness_mounts[0].container_path, harness_dir);
+        assert_eq!(
+            harness_mounts[0].mode,
+            crate::exec::sandbox::MountMode::ReadOnly
+        );
+        assert_ne!(harness_mounts[0].host_path, harness_dir);
+    }
+
+    #[test]
+    fn stage_1_harness_is_the_student_view_of_the_real_one() {
+        let repo_root = tempfile::tempdir().unwrap();
+        let (_workspace, harness_dir) = job_dirs(repo_root.path());
+        std::fs::create_dir_all(harness_dir.join("src")).unwrap();
+        std::fs::write(
+            harness_dir.join("src/main.rs"),
+            "fn main() {}\n\n#[cfg(not(feature = \"student\"))]\nfn hidden_helper() {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(harness_dir.join("tests")).unwrap();
+        std::fs::write(
+            harness_dir.join("tests/judge.rs"),
+            "#[test]\nfn public() {}\n\n\
+             #[cfg(test)]\n#[cfg(not(feature = \"student\"))]\n#[test]\nfn adversarial() {}\n",
+        )
+        .unwrap();
+        let stage1_dir = tempfile::tempdir().unwrap();
+        let evaluator = Nextest::new(&spec(), ScriptedSandbox::new(vec![]));
+
+        let mounts = evaluator
+            .hidden_tests_mounts(&ctx(repo_root.path().to_path_buf()), stage1_dir.path())
+            .unwrap();
+
+        let student_harness = stage1_dir.path().join("harness");
+        assert!(
+            mounts
                 .iter()
-                .find(|m| m.container_path == harness_dir.join(subdir))
-                .unwrap_or_else(|| panic!("stage 1 shadows harness/{subdir}"));
-            assert_eq!(shadow.mode, crate::exec::sandbox::MountMode::ReadOnly);
-            assert_ne!(shadow.host_path, harness_dir.join(subdir));
-        }
+                .any(|m| m.container_path == harness_dir && m.host_path == student_harness)
+        );
+        assert_eq!(
+            std::fs::read_to_string(student_harness.join("Cargo.toml")).unwrap(),
+            std::fs::read_to_string(harness_dir.join("Cargo.toml")).unwrap()
+        );
+        let main = std::fs::read_to_string(student_harness.join("src/main.rs")).unwrap();
+        assert!(main.contains("fn main"));
+        assert!(!main.contains("hidden_helper"));
+        let judge = std::fs::read_to_string(student_harness.join("tests/judge.rs")).unwrap();
+        assert!(judge.contains("fn public"));
+        assert!(!judge.contains("adversarial"));
     }
 
     #[test]
@@ -869,6 +937,12 @@ base = 0.0
         let spec: Spec = toml::from_str(toml).unwrap();
         let repo_root = tempfile::tempdir().unwrap();
         let (_workspace, _harness_dir) = job_dirs(repo_root.path());
+        std::fs::create_dir_all(repo_root.path().join("judge")).unwrap();
+        std::fs::copy(
+            assignment_dir.path().join("judge/Cargo.toml"),
+            repo_root.path().join("judge/Cargo.toml"),
+        )
+        .unwrap();
 
         // Stage 1 (build id) succeeds; stage 2 (build harness, scoped to
         // the custom harness package name) fails -- that's the one that

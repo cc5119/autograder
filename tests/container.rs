@@ -37,6 +37,58 @@ fn latest_persisted_eval(submissions_dir: &std::path::Path, github_user: &str) -
     read_json(runs.last().unwrap()).unwrap()
 }
 
+/// Stage 1 hides `harness/src`, but Cargo still loads the harness's
+/// manifest there -- one relying on an inferred target path (a `[[bin]]`
+/// without `path`) used to fail the whole workspace, and so every
+/// submission's build, before any student code compiled.
+#[test]
+fn a_harness_relying_on_inferred_target_paths_still_builds_in_stage_1() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    let submissions_dir = tempfile::tempdir().unwrap();
+
+    let _ = library_package(assignment_dir.path(), "hw3");
+    let harness_manifest = assignment_dir.path().join("harness/Cargo.toml");
+    let contents = std::fs::read_to_string(&harness_manifest).unwrap();
+    // `src/bin/driver.rs` is exactly where Cargo infers `driver` to live.
+    let inferred = contents.replace("path = \"src/bin/driver.rs\"\n", "");
+    assert_ne!(
+        inferred, contents,
+        "template no longer declares the driver's path"
+    );
+    std::fs::write(&harness_manifest, inferred).unwrap();
+    let spec = Spec::load(assignment_dir.path()).unwrap();
+
+    for file in ["Cargo.toml", "src/lib.rs"] {
+        write(
+            &submissions_dir.path().join("alice/hw3").join(file),
+            &std::fs::read_to_string(assignment_dir.path().join("hw3").join(file)).unwrap(),
+        );
+    }
+
+    let evaluator = Nextest::new(&spec, sandbox());
+    evaluate_batch(
+        submissions_dir.path(),
+        &evaluator,
+        assignment_dir.path(),
+        &spec,
+        true,
+    )
+    .unwrap();
+
+    let stored_eval = latest_persisted_eval(submissions_dir.path(), "alice");
+    assert!(
+        matches!(
+            stored_eval.status,
+            EvalStatus::Ran {
+                tests: TestOutcome::Tests(_),
+                ..
+            }
+        ),
+        "expected the submission to build and the judge to run: {:?}",
+        stored_eval.status
+    );
+}
+
 /// A student `build.rs` compiles before the judge and, on a
 /// vulnerable build, overwrites the harness to forge the grade. Fixed, the
 /// harness is un-writable in the sandbox and the real judge survives.
@@ -81,8 +133,10 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         &evaluator,
         assignment_dir.path(),
         &spec,
+        true,
     )
-    .unwrap();
+    .unwrap()
+    .evals;
 
     assert_eq!(evals.len(), 1);
     let stored_eval = latest_persisted_eval(submissions_dir.path(), "mallory");
@@ -107,7 +161,7 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         "student's injected judge ran -- harness was writable (CRITICAL #1). tests: {names:?}"
     );
 
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring);
+    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring, None, None);
     assert_eq!(
         grade.score(),
         Some(1.0),

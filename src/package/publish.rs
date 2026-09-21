@@ -49,7 +49,7 @@ fn rules(mode: PublishMode) -> Vec<Rule> {
         PublishMode::Starter => strip_stub,
         PublishMode::Solution => unstrip_stub,
     };
-    vec![
+    let mut rules = vec![
         Rule::File("Cargo.toml", None),
         Rule::File("Cargo.lock", None),
         Rule::Glob("README.md", None),
@@ -57,6 +57,17 @@ fn rules(mode: PublishMode) -> Vec<Rule> {
         Rule::File(".gitignore", None),
         Rule::File("{id}/Cargo.toml", Some(validate_manifest)),
         Rule::Glob("{id}/src/**", Some(src_hook)),
+    ];
+    rules.extend(student_harness_rules());
+    rules
+}
+
+/// The student view of the harness, the same in both modes (see this
+/// module's doc comment). Also what `evaluate`'s stage 1 mounts in place of
+/// the real harness: public already, so a student `build.rs` may read it,
+/// and a complete package Cargo can load.
+pub(crate) fn student_harness_rules() -> Vec<Rule> {
+    vec![
         Rule::File("{harness}/Cargo.toml", None),
         Rule::Glob("{harness}/src/**", Some(strip_stub)),
         Rule::Glob("{harness}/tests/**", Some(strip_stub)),

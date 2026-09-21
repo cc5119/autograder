@@ -93,23 +93,13 @@ pub(crate) fn repo_root_mounts(
     mounts
 }
 
-/// A shared, permanently-empty host directory to shadow a path a container
-/// must see *something* mounted at, but nothing readable -- read-only, and
-/// nothing ever writes into it, so bind-mounting the same host path into
-/// many concurrent containers is safe.
-fn empty_shadow_dir() -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join("autograder-empty-mount");
-    crate::exec::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-/// Like [`repo_root_mounts`], except `harness_dir/src` and
-/// `harness_dir/tests` -- the only confidential parts of the harness
-/// (`harness_dir/Cargo.toml` stays visible, since it's a workspace member
-/// manifest Cargo must read to resolve the workspace even when only
-/// building `<id>`, and holds no `#[cfg]`-stripped content to hide -- see
-/// `package::publish`'s module doc comment) -- are each shadowed by an
-/// empty read-only directory.
+/// Like [`repo_root_mounts`], except `harness_dir` shows `student_harness`
+/// -- the student view of the harness (see
+/// `package::publish::student_harness_rules`) -- instead of the real one,
+/// whose `#[cfg(not(feature = "student"))]` parts are confidential. Cargo
+/// still loads the harness's manifest to resolve the workspace even when
+/// only building `<id>`, so it has to see a complete package there, which
+/// the student view is: the starter repo ships and compiles exactly it.
 ///
 /// Read-only mounting stops writes, not reads: a `build.rs` executing here
 /// could otherwise just read hidden tests or src off disk while compiling.
@@ -121,16 +111,16 @@ pub(crate) fn hidden_tests_mounts(
     workspace: &Path,
     harness_dir: &Path,
     vendor_dir: &Path,
-) -> Result<Vec<Mount>> {
+    student_harness: &Path,
+) -> Vec<Mount> {
     let mut mounts = repo_root_mounts(repo_root, workspace, harness_dir, vendor_dir);
-    for subdir in ["src", "tests"] {
-        mounts.push(Mount {
-            host_path: empty_shadow_dir()?,
-            container_path: harness_dir.join(subdir),
-            mode: MountMode::ReadOnly,
-        });
+    // Retargeted, not stacked: podman rejects two mounts at one destination.
+    for mount in &mut mounts {
+        if mount.container_path == harness_dir {
+            mount.host_path = student_harness.to_path_buf();
+        }
     }
-    Ok(mounts)
+    mounts
 }
 
 /// Turns a prepared workspace into a raw evaluation result. The real impl
