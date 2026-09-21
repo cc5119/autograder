@@ -35,8 +35,13 @@ jiff = { version = "0.2", features = ["serde"] }
 csv = "1"
 semver = "1"
 roxmltree = "0.21.1"
-ra_ap_syntax = "=0.0.344"
-cfg-expr = "=0.20.8"
+ra_ap_syntax = "=0.0.349"
+# Unused directly: caps a transitive dep of `ra_ap_syntax`, whose lexer
+# refuses to compile unless `unicode-ident` and `unicode-properties` agree
+# on the Unicode version. unicode-ident 1.0.25 moved to Unicode 18, while
+# unicode-properties 0.1.4 (latest) is still on 17. Drop once that catches up.
+unicode-ident = "<1.0.25"
+cfg-expr = "=0.20.9"
 tempfile = "3"
 ignore = "0.4"
 include_dir = "0.7"

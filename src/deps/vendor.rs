@@ -69,6 +69,7 @@ pub fn vendor(assignment_dir: &Path, vendor_dir: &Path, spec: &Spec) -> Result<(
     // the directory (or prints any config), since there's nothing to
     // vendor or redirect.
     fs::create_dir_all(&vendor_dir)?;
+    grant_others_read(&vendor_dir)?;
 
     // `cargo vendor`'s own stdout is the one place that already knows
     // about every source it redirected -- crates-io *and* each git
@@ -81,9 +82,56 @@ pub fn vendor(assignment_dir: &Path, vendor_dir: &Path, spec: &Spec) -> Result<(
     Ok(())
 }
 
+/// Adds read (and, for directories, traverse) permission for "other" to
+/// everything under `dir`. `cargo vendor` keeps each file's mode from the
+/// published `.crate` tarball, and some ship owner/group-only files (e.g.
+/// `fnv` 1.0.7's `lib.rs` is `0640`). The build sandbox runs as an
+/// unprivileged uid that sees the vendor dir as "other", so such a file
+/// fails the whole build at Cargo's checksum step with "Permission denied".
+fn grant_others_read(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for entry in fs::read_dir_entries(dir)? {
+        let path = entry.path();
+        let file_type = fs::file_type(&entry)?;
+        let extra = if file_type.is_dir() {
+            0o005
+        } else if file_type.is_file() {
+            0o004
+        } else {
+            continue;
+        };
+        let mut perms = fs::entry_metadata(&entry)?.permissions();
+        perms.set_mode(perms.mode() | extra);
+        fs::set_permissions(&path, perms)?;
+        if file_type.is_dir() {
+            grant_others_read(&path)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grant_others_read_opens_up_owner_group_only_files_and_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let crate_dir = dir.path().join("fnv");
+        let file = crate_dir.join("lib.rs");
+        write(&file, "");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::set_permissions(&crate_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+
+        grant_others_read(dir.path()).unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o644);
+        assert_eq!(mode(&crate_dir), 0o755);
+    }
 
     fn write(path: &Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
