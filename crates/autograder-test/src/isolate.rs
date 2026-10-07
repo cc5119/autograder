@@ -81,6 +81,9 @@ pub(crate) fn run(cmd: Command) -> Outcome {
         argv.push(format!("--time={}", t.as_secs()));
     }
     argv.push(format!("--wall-time={}", cmd.wall_time.as_secs()));
+    if let Some(n) = cmd.processes {
+        argv.push(format!("--processes={n}"));
+    }
     argv.push("--run".to_string());
     argv.push("--".to_string());
     argv.push(format!("./{}", cmd.target));

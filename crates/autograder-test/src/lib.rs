@@ -103,6 +103,7 @@ pub struct Command {
     memory_bytes: Option<u64>,
     cpu_time: Option<Duration>,
     wall_time: Duration,
+    processes: Option<u32>,
     features: Vec<String>,
 }
 
@@ -117,6 +118,7 @@ impl Command {
             memory_bytes: Some(256 * 1024 * 1024),
             cpu_time: None,
             wall_time: Duration::from_secs(3),
+            processes: None,
             features: Vec::new(),
         }
     }
@@ -176,6 +178,15 @@ impl Command {
 
     pub fn wall_time_secs(mut self, s: u64) -> Self {
         self.wall_time = Duration::from_secs(s);
+        self
+    }
+
+    /// Maximum number of processes *and threads* the target may have alive
+    /// at once (`isolate --processes`). Without this, isolate allows a
+    /// single one, so any `thread::spawn` in the target fails. Only enforced
+    /// when grading -- locally the target runs unrestricted.
+    pub fn processes(mut self, n: u32) -> Self {
+        self.processes = Some(n);
         self
     }
 
