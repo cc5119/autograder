@@ -218,7 +218,11 @@ fn notes(row: &Row<'_>) -> String {
             let _ = write!(
                 notes,
                 "    {}",
-                style(format!("commit dated {} after its push", render::duration(*by))).red()
+                style(format!(
+                    "commit dated {} after its push",
+                    render::duration(*by)
+                ))
+                .red()
             );
         }
     }

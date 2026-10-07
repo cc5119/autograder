@@ -65,8 +65,11 @@ pub enum Rule {
     Glob(&'static str, Option<GlobHook>),
 }
 
-pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
+/// Returns the path of every file written, relative to `dest`, in the order
+/// they were written.
+pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<Vec<PathBuf>> {
     let all_files = fs::walk_regular_files(&ctx.source_root)?;
+    let mut written = Vec::new();
 
     for rule in rules {
         match rule {
@@ -85,7 +88,7 @@ pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
                     Some(hook) => hook(path, file, ctx)?,
                     None => file,
                 };
-                write_file(dest, file)?;
+                written.push(write_file(dest, file)?);
             }
             Rule::Glob(pattern, hook) => {
                 let pattern = ctx.resolve(pattern);
@@ -116,13 +119,13 @@ pub fn apply(ctx: &Context, dest: &Path, rules: &[Rule]) -> Result<()> {
                     None => matches,
                 };
                 for file in matches {
-                    write_file(dest, file)?;
+                    written.push(write_file(dest, file)?);
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(written)
 }
 
 fn read_file(source_root: &Path, rel_path: PathBuf) -> Result<MatchedFile> {
@@ -131,12 +134,13 @@ fn read_file(source_root: &Path, rel_path: PathBuf) -> Result<MatchedFile> {
     Ok(MatchedFile { rel_path, content })
 }
 
-fn write_file(dest: &Path, file: MatchedFile) -> Result<()> {
+fn write_file(dest: &Path, file: MatchedFile) -> Result<PathBuf> {
     let dst = dest.join(&file.rel_path);
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&dst, file.content)
+    fs::write(&dst, file.content)?;
+    Ok(file.rel_path)
 }
 
 #[cfg(test)]

@@ -72,10 +72,7 @@ pub enum DateCheck {
     Unverified,
     /// The two dates land on opposite sides of the deadline: one says on
     /// time and the other says late. The gate used `push_event`.
-    Straddles {
-        commit_date: Side,
-        push_event: Side,
-    },
+    Straddles { commit_date: Side, push_event: Side },
     /// The commit is dated later than the push that carried it, beyond
     /// what clock skew explains -- a commit can't be pushed before it
     /// exists.

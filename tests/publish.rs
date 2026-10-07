@@ -447,3 +447,144 @@ fn publish_rejects_an_extra_package_with_no_directory() {
         "unexpected error: {err}"
     );
 }
+
+fn write_publish_toml(assignment_dir: &std::path::Path, include: &str) {
+    write(
+        &assignment_dir.join("publish.toml"),
+        &format!("allowed-warnings = []\nallowed-errors = []\ninclude = {include}\n"),
+    );
+}
+
+/// A README image lives outside every package, so only `include` can ship
+/// it -- and it ships byte for byte, binary or not.
+#[test]
+fn publish_ships_included_files_verbatim_including_binary_ones() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("diagram.svg"), "<svg/>");
+    let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00];
+    std::fs::create_dir_all(assignment_dir.path().join("img")).unwrap();
+    std::fs::write(assignment_dir.path().join("img/plot.png"), png).unwrap();
+    write_publish_toml(assignment_dir.path(), r#"["diagram.svg", "img/*.png"]"#);
+
+    let out_dir = tempfile::tempdir().unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(out_dir.path().join("diagram.svg")).unwrap(),
+        "<svg/>"
+    );
+    assert_eq!(
+        std::fs::read(out_dir.path().join("img/plot.png")).unwrap(),
+        png
+    );
+}
+
+/// Files nobody listed still stay behind: `include` is opt-in.
+#[test]
+fn publish_does_not_ship_unlisted_top_level_files() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("notes.md"), "private");
+
+    let out_dir = tempfile::tempdir().unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+
+    assert!(!out_dir.path().join("notes.md").exists());
+}
+
+/// Including the harness verbatim would ship the hidden tests the rule
+/// table strips, so it has to be refused -- before anything is written.
+#[test]
+fn publish_rejects_an_include_pattern_reaching_into_a_package() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(
+        &assignment_dir.path().join("harness/tests/judge.rs"),
+        JUDGE_RS,
+    );
+    write_publish_toml(assignment_dir.path(), r#"["harness/**"]"#);
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+
+    assert!(
+        matches!(&err, Error::InvalidSpec(message) if message.contains("harness")),
+        "unexpected error: {err}"
+    );
+    assert!(!out_dir.path().join(SPEC_FILE).exists());
+}
+
+#[test]
+fn publish_rejects_an_include_pattern_matching_nothing() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write_publish_toml(assignment_dir.path(), r#"["diagarm.svg"]"#);
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+
+    assert!(
+        matches!(&err, Error::InvalidSpec(message) if message.contains("diagarm.svg")),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn publish_rejects_an_include_pattern_climbing_out_of_the_assignment() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write_publish_toml(assignment_dir.path(), r#"["../secrets.txt"]"#);
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+
+    assert!(
+        matches!(err, Error::InvalidSpec(_)),
+        "unexpected error: {err}"
+    );
+}
+
+/// The mistake that motivated `include`: the README embeds an image that
+/// publish left behind. The error names the file and the fix.
+#[test]
+fn publish_rejects_a_readme_linking_to_a_file_that_did_not_ship() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("diagram.svg"), "<svg/>");
+    write(
+        &assignment_dir.path().join("README.md"),
+        "# hw3\n\n![diagram](diagram.svg)\n",
+    );
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let err = publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap_err();
+
+    let message = err.to_string();
+    assert!(
+        message.contains("diagram.svg"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains(r#"include = ["diagram.svg"]"#),
+        "unexpected error: {message}"
+    );
+}
+
+/// Links into the packages and to directories resolve against what
+/// shipped, so an ordinary README passes once its image is included.
+#[test]
+fn publish_accepts_a_readme_whose_links_all_shipped() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    write(&assignment_dir.path().join("diagram.svg"), "<svg/>");
+    write(
+        &assignment_dir.path().join("README.md"),
+        "# hw3\n\n![diagram](diagram.svg)\n\nEdit [`lib.rs`](hw3/src/lib.rs); \
+         tests are in [harness](harness). See [Rust](https://www.rust-lang.org).\n",
+    );
+    write_publish_toml(assignment_dir.path(), r#"["diagram.svg"]"#);
+
+    let out_dir = tempfile::tempdir().unwrap();
+    publish(assignment_dir.path(), out_dir.path(), PublishMode::Starter).unwrap();
+}

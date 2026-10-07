@@ -32,10 +32,7 @@ pub fn render(rows: &[(&Grade, &IndexMap<String, String>)]) -> Result<String> {
     for (grade, metadata) in rows {
         let mut record = vec![
             grade.github_user.to_string(),
-            grade
-                .score()
-                .map(|s| format!("{s:.1}"))
-                .unwrap_or_default(),
+            grade.score().map(|s| format!("{s:.1}")).unwrap_or_default(),
         ];
         record.extend(
             columns

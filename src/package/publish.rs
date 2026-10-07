@@ -26,9 +26,16 @@
 //! harness -- `[assignment].extra-packages` -- and those ship verbatim in
 //! both modes: a support library has no student view distinct from the
 //! instructor's, so there is nothing to resolve in either direction.
+//!
+//! Anything else the starter needs -- an image the README embeds, say --
+//! ships only if `publish.toml`'s `include` names it (see
+//! [`resolve_includes`]): the rule table above stays the only thing that
+//! decides what leaves the private package by default, so a stray file
+//! never ships by accident. [`check_readme_links`] then catches the
+//! opposite mistake, a README pointing at something that didn't ship.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -38,6 +45,7 @@ use crate::exec::overlay::{self, Context, MatchedFile, Rule};
 use crate::package::PublishMode;
 use crate::spec::{self, Spec};
 use crate::{deps, package, str_map};
+use ignore::overrides::OverrideBuilder;
 
 #[derive(Debug, Clone)]
 pub struct PublishOutcome {
@@ -137,19 +145,40 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
         }
     }
 
-    check_student_view_is_clean(assignment_dir)?;
+    let config = load_publish_config(assignment_dir)?;
+    check_student_view_is_clean(assignment_dir, &config)?;
+
+    // Resolved before anything is written, so a bad pattern leaves `out_dir`
+    // untouched like the other spec errors above.
+    let packages: Vec<&str> = [id.as_str(), spec.assignment.harness.as_str()]
+        .into_iter()
+        .chain(spec.assignment.extra_packages.iter().map(String::as_str))
+        .collect();
+    let included = resolve_includes(assignment_dir, &config.include, &packages)?;
 
     let ctx = Context::new(
         assignment_dir,
         str_map! {"id" => id, "harness" => spec.assignment.harness},
     );
 
-    overlay::apply(&ctx, out_dir, &rules(mode))?;
+    let mut published: HashSet<PathBuf> = HashSet::new();
+    published.extend(overlay::apply(&ctx, out_dir, &rules(mode))?);
 
     let extra_rules = extra_package_rules();
     for package in &spec.assignment.extra_packages {
         let ctx = Context::new(assignment_dir, str_map! {"extra" => package});
-        overlay::apply(&ctx, out_dir, &extra_rules)?;
+        published.extend(overlay::apply(&ctx, out_dir, &extra_rules)?);
+    }
+
+    // Copied as bytes, not through `overlay`'s `String` content, so binary
+    // files (a PNG, a PDF) ship intact.
+    for rel_path in included {
+        let dst = out_dir.join(&rel_path);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&assignment_dir.join(&rel_path), &dst)?;
+        published.insert(rel_path);
     }
 
     let workflow_dir = out_dir.join(".github/workflows");
@@ -157,6 +186,8 @@ pub fn publish(assignment_dir: &Path, out_dir: &Path, mode: PublishMode) -> Resu
     let workflow_path = workflow_dir.join("autograde.yml");
     let workflow_yaml = autograde_workflow_yaml()?;
     fs::write(&workflow_path, workflow_yaml)?;
+
+    check_readme_links(assignment_dir, out_dir, &published)?;
 
     format_published_tree(out_dir)?;
 
@@ -276,6 +307,11 @@ struct PublishConfig {
     /// starter that's meant not to compile is a legitimate assignment.
     #[serde(default)]
     allowed_errors: Vec<String>,
+    /// Extra files to ship verbatim, as globs relative to the assignment
+    /// directory (gitignore syntax, like the rule table's). See
+    /// [`resolve_includes`].
+    #[serde(default)]
+    include: Vec<String>,
 }
 
 fn load_publish_config(assignment_dir: &Path) -> Result<PublishConfig> {
@@ -290,8 +326,7 @@ fn load_publish_config(assignment_dir: &Path) -> Result<PublishConfig> {
     })
 }
 
-fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
-    let config = load_publish_config(assignment_dir)?;
+fn check_student_view_is_clean(assignment_dir: &Path, config: &PublishConfig) -> Result<()> {
     let output = std::process::Command::new("cargo")
         .args(["check", "--features", "student", "--message-format=json"])
         .current_dir(assignment_dir)
@@ -367,6 +402,208 @@ fn check_student_view_is_clean(assignment_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolves `publish.toml`'s `include` patterns to the files they name,
+/// relative to `assignment_dir`. Each pattern must match at least one file
+/// -- one matching nothing is almost certainly a typo, and failing silently
+/// would ship a starter missing the very file it was added for.
+///
+/// No pattern may reach into a package directory (`packages`: `{id}`, the
+/// harness, the extra packages): those ship through the rule table, which
+/// strips the solution and the hidden tests, and a verbatim copy on top
+/// would undo exactly that. `target/` and dot-directories (`.git`, `.jj`)
+/// are never candidates, so a broad pattern like `*.svg` can't drag build
+/// output or VCS internals along.
+fn resolve_includes(
+    assignment_dir: &Path,
+    patterns: &[String],
+    packages: &[&str],
+) -> Result<Vec<PathBuf>> {
+    if patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let candidates: Vec<PathBuf> = fs::walk_regular_files(assignment_dir)?
+        .into_iter()
+        .filter(|rel_path| {
+            let first = rel_path.components().next();
+            !matches!(first, Some(Component::Normal(name))
+                if name == "target" || name.to_string_lossy().starts_with('.'))
+        })
+        .collect();
+
+    let mut included = Vec::new();
+    for pattern in patterns {
+        if pattern.starts_with('!') || pattern.split('/').any(|part| part == "..") {
+            return Err(Error::InvalidSpec(format!(
+                "{PUBLISH_CONFIG_FILE}: include pattern {pattern:?} must name files inside \
+                 {} -- negated patterns and `..` are not supported",
+                assignment_dir.display()
+            )));
+        }
+        // `"."` for the same reason as in `overlay::apply`: `candidates` are
+        // already relative to `assignment_dir`.
+        let matcher = OverrideBuilder::new(".")
+            .add(pattern)
+            .and_then(|builder| builder.build())
+            .map_err(|e| {
+                Error::InvalidSpec(format!(
+                    "{PUBLISH_CONFIG_FILE}: invalid include pattern {pattern:?}: {e}"
+                ))
+            })?;
+        let matches: Vec<&PathBuf> = candidates
+            .iter()
+            .filter(|rel_path| matcher.matched(rel_path, false).is_whitelist())
+            .collect();
+        if matches.is_empty() {
+            return Err(Error::InvalidSpec(format!(
+                "{PUBLISH_CONFIG_FILE}: include pattern {pattern:?} matches no file in {}",
+                assignment_dir.display()
+            )));
+        }
+        for rel_path in matches {
+            if let Some(package) = packages.iter().find(|p| rel_path.starts_with(p)) {
+                return Err(Error::InvalidSpec(format!(
+                    "{PUBLISH_CONFIG_FILE}: include pattern {pattern:?} matches {}, inside the \
+                     `{package}` package -- packages ship through publish's own rules (which \
+                     strip the solution and hidden tests), so they can't be included verbatim. \
+                     Anchor the pattern with a leading `/` if it was meant for a top-level file.",
+                    rel_path.display()
+                )));
+            }
+            included.push(rel_path.clone());
+        }
+    }
+    included.sort();
+    included.dedup();
+    Ok(included)
+}
+
+/// Refuses to publish a README whose relative links point at something
+/// that didn't ship -- typically an image or diagram left out of
+/// `include`. Checked against `published` (what this run wrote), not
+/// `out_dir`'s contents, since a re-publish over an older tree would
+/// otherwise find stale files there and pass.
+///
+/// A link to a directory is fine as long as some published file is under
+/// it. External links (`scheme://`, `mailto:`), in-page anchors and
+/// root-absolute paths are skipped.
+fn check_readme_links(
+    assignment_dir: &Path,
+    out_dir: &Path,
+    published: &HashSet<PathBuf>,
+) -> Result<()> {
+    let readme = out_dir.join("README.md");
+    if !readme.is_file() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&readme)?;
+
+    let mut broken: Vec<String> = readme_link_targets(&content)
+        .into_iter()
+        .filter(|target| match normalize_link(target) {
+            Some(rel_path) => !published.iter().any(|p| p.starts_with(&rel_path)),
+            None => true,
+        })
+        .collect();
+    broken.sort();
+    broken.dedup();
+    if broken.is_empty() {
+        return Ok(());
+    }
+
+    let list: Vec<String> = broken.iter().map(|t| format!("  - {t}")).collect();
+    let mut message = format!(
+        "refusing to publish: README.md links to {} path(s) that the published tree doesn't \
+         contain:\n\n{}\n",
+        broken.len(),
+        list.join("\n")
+    );
+    let includable: Vec<String> = broken
+        .iter()
+        .filter_map(|t| normalize_link(t))
+        .filter(|rel_path| assignment_dir.join(rel_path).exists())
+        .map(|rel_path| format!("{:?}", rel_path.to_string_lossy()))
+        .collect();
+    if !includable.is_empty() {
+        message.push_str(&format!(
+            "\nif they should ship, list them in {}:\n\n    include = [{}]\n",
+            assignment_dir.join(PUBLISH_CONFIG_FILE).display(),
+            includable.join(", ")
+        ));
+    }
+    Err(Error::Other(message))
+}
+
+/// The link targets in `markdown` that refer to a file in the repository:
+/// inline links and images (`[text](target)`, `![alt](target)`) and
+/// reference definitions (`[label]: target`). Fenced code blocks and inline
+/// code spans are skipped, since they show syntax rather than link.
+fn readme_link_targets(markdown: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        // Drop inline code spans: every other backtick-delimited segment.
+        let line: String = line.split('`').step_by(2).collect::<Vec<_>>().join(" ");
+
+        if let Some(rest) = line.trim_start().strip_prefix('[')
+            && let Some((_, after)) = rest.split_once("]:")
+            && let Some(target) = after.split_whitespace().next()
+        {
+            targets.push(target.to_string());
+            continue;
+        }
+
+        let mut rest = line.as_str();
+        while let Some(start) = rest.find("](") {
+            rest = &rest[start + 2..];
+            let end = rest.find(')').unwrap_or(rest.len());
+            if let Some(target) = rest[..end].split_whitespace().next() {
+                targets.push(target.to_string());
+            }
+            rest = &rest[end..];
+        }
+    }
+    targets
+        .into_iter()
+        .map(|t| t.trim_start_matches('<').trim_end_matches('>').to_string())
+        .filter(|t| {
+            !(t.is_empty()
+                || t.starts_with('#')
+                || t.starts_with('/')
+                || t.contains("://")
+                || t.starts_with("mailto:"))
+        })
+        .collect()
+}
+
+/// `target` as a path relative to the repository root, without its
+/// `#fragment`/`?query` or `.` components. `None` if it climbs out of the
+/// root with `..`, which can't point at anything that ships.
+fn normalize_link(target: &str) -> Option<PathBuf> {
+    let path = target.split(['#', '?']).next().unwrap_or_default();
+    let mut normalized = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(normalized)
 }
 
 struct Problem {
@@ -487,6 +724,56 @@ mod tests {
 
         let err = validate_manifest("hw3/Cargo.toml", file, &ctx).unwrap_err();
         assert!(matches!(err, Error::InvalidSpec(_)));
+    }
+
+    #[test]
+    fn readme_link_targets_finds_inline_links_images_and_reference_definitions() {
+        let markdown = "\
+# Title
+
+See [`main.rs`](hw3/src/main.rs) and the [harness](harness).
+
+![diagram](diagram.svg \"Strategy\")
+
+[ref]: docs/notes.pdf
+";
+        assert_eq!(
+            readme_link_targets(markdown),
+            [
+                "hw3/src/main.rs",
+                "harness",
+                "diagram.svg",
+                "docs/notes.pdf"
+            ]
+        );
+    }
+
+    #[test]
+    fn readme_link_targets_skips_external_links_anchors_and_code() {
+        let markdown = "\
+[Wikipedia](https://es.wikipedia.org/wiki/Conjunto_de_Mandelbrot)
+[mail](mailto:someone@example.com) [section](#pruebas) [abs](/root)
+Inline code `[a](not-a-link.rs)` is not a link.
+
+```md
+[inside](fenced.rs)
+```
+";
+        assert!(readme_link_targets(markdown).is_empty());
+    }
+
+    #[test]
+    fn normalize_link_drops_fragments_and_dot_components() {
+        assert_eq!(
+            normalize_link("./docs/../img/a.svg#top"),
+            Some(PathBuf::from("img/a.svg"))
+        );
+        assert_eq!(normalize_link("harness/"), Some(PathBuf::from("harness")));
+    }
+
+    #[test]
+    fn normalize_link_rejects_paths_that_climb_out_of_the_root() {
+        assert_eq!(normalize_link("../other/README.md"), None);
     }
 
     #[test]
