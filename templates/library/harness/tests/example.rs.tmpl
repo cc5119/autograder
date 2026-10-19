@@ -1,0 +1,17 @@
+use crate::run;
+
+#[test]
+fn test_example() {
+    run(&[]).assert_stdout("true");
+}
+
+// Hidden tests: dropped from the published harness.
+#[cfg(not(feature = "student"))]
+mod hidden {
+    use super::*;
+
+    #[test]
+    fn test_example_hidden() {
+        run(&[]).assert_stdout("true");
+    }
+}

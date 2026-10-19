@@ -1,5 +1,14 @@
-#[test]
-fn example_test() {
-    let outcome = autograder_test::bin("driver").run();
-    assert!(outcome.success());
+//! Each test runs the `driver` and checks its output. See `harness/src/bin/driver.rs`
+//! for the format of its arguments and output.
+
+mod example;
+
+use autograder_test::Outcome;
+
+/// Runs the driver with `args`.
+fn run(args: &[&str]) -> Outcome {
+    autograder_test::cmd!("driver", features = ["student"])
+        .args(args)
+        .run()
+        .assert_success()
 }

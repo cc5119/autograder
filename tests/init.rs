@@ -19,6 +19,7 @@ fn init_produces_a_loadable_library_package() {
     assert!(outcome.dir.join("harness/Cargo.toml").is_file());
     assert!(outcome.dir.join("harness/src/bin/driver.rs").is_file());
     assert!(outcome.dir.join("harness/tests/judge.rs").is_file());
+    assert!(outcome.dir.join("harness/tests/example.rs").is_file());
 
     let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();
     assert_eq!(spec.assignment.id, "hw3");
@@ -56,4 +57,24 @@ fn generated_solution_crate_builds() {
         "generated solution crate failed to build: {}",
         String::from_utf8_lossy(&build.stderr)
     );
+}
+
+#[test]
+fn generated_harness_tests_compile() {
+    let dir = tempfile::tempdir().unwrap();
+    let outcome = autograder::package::init::init(dir.path(), "hw3").unwrap();
+
+    for features in [&[][..], &["--features", "student"]] {
+        let build = std::process::Command::new("cargo")
+            .args(["test", "--no-run", "-p", "harness"])
+            .args(features)
+            .current_dir(&outcome.dir)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "generated harness tests failed to compile with {features:?}: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
 }

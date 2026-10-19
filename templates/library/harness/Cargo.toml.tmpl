@@ -2,6 +2,9 @@
 name = "harness"
 version = "0.0.0"
 edition = "2024"
+# A single test binary (tests/judge.rs, one module per topic) instead of
+# Cargo's default of one binary per file under tests/.
+autotests = false
 
 [features]
 student = ["{id}/student"]
@@ -11,8 +14,12 @@ name = "driver"
 path = "src/bin/driver.rs"
 test = false
 
+[[test]]
+name = "judge"
+path = "tests/judge.rs"
+
 [dependencies]
 {id} = { path = "../{id}" }
 
 [dev-dependencies]
-autograder-test = { git = "https://github.com/nilehmann/autograder" }
+autograder-test = { git = "https://github.com/cc5119/autograder" }

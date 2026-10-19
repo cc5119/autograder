@@ -30,13 +30,16 @@ pub fn init(dir: &Path, id: &str) -> Result<InitOutcome> {
         )));
     }
 
-    // The host's own time zone, so the placeholder is meaningful. Whole
-    // seconds, so it reads as an editable value, and no offset -- jiff
-    // derives that from the zone, and one edited by hand can only ever
-    // contradict it (see `spec::Spec`).
-    let deadline = (&Zoned::now() + 1.week())
-        .strftime("%Y-%m-%dT%H:%M:%S[%Q]")
-        .to_string();
+    // End of day a week from now, in the host's own time zone, so the
+    // placeholder is meaningful. No offset -- jiff derives that from the
+    // zone, and one edited by hand can only ever contradict it (see
+    // `spec::Spec`).
+    let next_week = &Zoned::now() + 1.week();
+    let deadline = format!(
+        "{}T23:59:59[{}]",
+        next_week.date(),
+        next_week.strftime("%Q")
+    );
     let placeholders = str_map! {"id" => id, "deadline" => deadline};
 
     for (rel_path, content) in template::render_tree("library", &placeholders)? {
