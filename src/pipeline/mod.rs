@@ -370,10 +370,6 @@ cpus = 1
 memory = "512MiB"
 pids = 64
 max-output-bytes = "64KiB"
-
-[scoring]
-formula = "sum"
-base = 0.0
 "#
             ),
         );

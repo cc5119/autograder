@@ -150,7 +150,6 @@ mod tests {
             r#"
 [assignment]
 id = "hw3"
-name = "Binary search tree"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{}"
@@ -164,10 +163,6 @@ cpus = 1
 memory = "512MiB"
 pids = 64
 max-output-bytes = "64KiB"
-
-[scoring]
-formula = "sum"
-base = 0.0
 "#,
             crate::deps::cargo_lock::sha256_hex(LOCK_TOML)
         )
@@ -242,6 +237,10 @@ base = 0.0
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
             &public_spec(),
+        );
+        write(
+            &assignment_dir.path().join(crate::spec::GRADING_FILE),
+            "[scoring]\nformula = \"sum\"\nbase = 0.0\n",
         );
         write(
             &assignment_dir.path().join("Cargo.toml"),

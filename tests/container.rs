@@ -10,7 +10,11 @@ use autograder::exec::sandbox::{ContainerSandbox, Sandbox};
 use autograder::model::{EvalStatus, EvaluationResult, TestOutcome};
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::nextest::Nextest;
-use autograder::spec::Spec;
+use autograder::spec::{Scoring, ScoringFormula, Spec};
+
+const SUM: Scoring = Scoring {
+    formula: ScoringFormula::Sum { base: 0.0 },
+};
 
 use crate::common::{library_package, write};
 
@@ -161,7 +165,7 @@ fn student_build_script_cannot_forge_the_grade_by_overwriting_the_harness() {
         "student's injected judge ran -- harness was writable (CRITICAL #1). tests: {names:?}"
     );
 
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring, None, None);
+    let grade = autograder::pipeline::grade::grade(&evals[0], &SUM, None, None);
     assert_eq!(
         grade.score(),
         Some(1.0),

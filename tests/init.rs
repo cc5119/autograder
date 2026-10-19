@@ -4,7 +4,7 @@
 //! one piece of private logic worth isolating).
 
 use autograder::error::Error;
-use autograder::spec::Spec;
+use autograder::spec::{Grading, ScoringFormula, Spec};
 use jiff::Zoned;
 
 #[test]
@@ -24,6 +24,12 @@ fn init_produces_a_loadable_library_package() {
     let spec = Spec::load_file(&outcome.dir.join("autograder.toml")).unwrap();
     assert_eq!(spec.assignment.id, "hw3");
     assert!(spec.assignment.deadline > Zoned::now());
+
+    let grading = Grading::load(&outcome.dir).unwrap();
+    assert!(matches!(
+        grading.scoring.formula,
+        ScoringFormula::Affine { .. }
+    ));
 }
 
 #[test]

@@ -166,7 +166,6 @@ mod tests {
             r#"
 [assignment]
 id = "hw3"
-name = "Binary search tree"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{}"
@@ -180,10 +179,6 @@ cpus = 2
 memory = "2GiB"
 pids = 256
 max-output-bytes = "1MiB"
-
-[scoring]
-formula = "sum"
-base = 0.0
 "#,
             "0".repeat(64),
         );

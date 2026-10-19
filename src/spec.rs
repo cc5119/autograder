@@ -7,8 +7,12 @@ use crate::error::{Error, Result};
 use crate::id::AssignmentId;
 
 pub const SPEC_FILE: &str = "autograder.toml";
+/// The grading policy. Private: `publish` never ships it, so students don't
+/// see how scores or late penalties are computed.
+pub const GRADING_FILE: &str = "grading.toml";
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Assignment {
     /// The assignment `id` is used as the name for the package students must complete/submit
     pub id: AssignmentId,
@@ -29,6 +33,7 @@ pub struct Assignment {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sandbox {
     /// The container image `ContainerSandbox` requires to already exist
     /// locally -- `autograder` never pulls images itself.
@@ -104,6 +109,7 @@ impl<'de> Deserialize<'de> for Duration {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildLimits {
     #[serde(rename = "wall-clock")]
     pub wall_clock: Duration,
@@ -134,7 +140,7 @@ pub struct Scoring {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct RawScoring {
     formula: String,
     #[serde(default)]
@@ -177,7 +183,7 @@ impl<'de> Deserialize<'de> for Scoring {
 }
 
 /// How a late submission's score is docked, applied to the final `score`
-/// (after `spec.scoring`'s formula) rather than to raw points, so it
+/// (after `grading.scoring`'s formula) rather than to raw points, so it
 /// composes with either `sum` or `affine` scoring without knowing the
 /// point scale.
 #[derive(Debug, Clone, PartialEq)]
@@ -215,7 +221,7 @@ impl LatePenalty {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct RawLatePenalty {
     formula: String,
     rate: f64,
@@ -252,16 +258,12 @@ impl<'de> Deserialize<'de> for LatePenalty {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Spec {
     pub assignment: Assignment,
     pub sandbox: Sandbox,
     #[serde(rename = "build-limits")]
     pub build_limits: BuildLimits,
-    pub scoring: Scoring,
-    /// Absent means no penalty for lateness -- the deadline still gates
-    /// which commit `fetch` picks, but a late score isn't docked for it.
-    #[serde(rename = "late-penalty", default)]
-    pub late_penalty: Option<LatePenalty>,
 }
 
 impl Spec {
@@ -278,6 +280,35 @@ impl Spec {
     }
 }
 
+/// The grading policy `grade` applies to persisted evaluations. Lives in
+/// its own file so it never ships with the published `autograder.toml`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Grading {
+    pub scoring: Scoring,
+    /// Absent means no penalty for lateness -- the deadline still gates
+    /// which commit `fetch` picks, but a late score isn't docked for it.
+    #[serde(rename = "late-penalty", default)]
+    pub late_penalty: Option<LatePenalty>,
+}
+
+impl Grading {
+    pub fn load(dir: &Path) -> Result<Grading> {
+        let path = dir.join(GRADING_FILE);
+        if !path.is_file() {
+            return Err(Error::InvalidSpec(format!(
+                "grade requires {GRADING_FILE} in {} (with a [scoring] table)",
+                dir.display()
+            )));
+        }
+        let contents = crate::exec::fs::read_to_string(&path)?;
+        toml::from_str(&contents).map_err(|source| Error::Toml {
+            path,
+            source: Box::new(source),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,7 +316,6 @@ mod tests {
     const PUBLIC_TOML: &str = r#"
 [assignment]
 id = "hw3"
-name = "Binary search tree"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -300,31 +330,15 @@ cpus = 2
 memory = "2GiB"
 pids = 256
 max-output-bytes = "1MiB"
+"#;
 
+    const SUM_GRADING_TOML: &str = r#"
 [scoring]
 formula = "sum"
 base = 1.0
 "#;
 
-    const AFFINE_TOML: &str = r#"
-[assignment]
-id = "hw3"
-name = "Binary search tree"
-deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
-harness = "harness"
-cargo-lock-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-
-[sandbox]
-image = "autograder-base:1.86.0"
-
-[build-limits]
-wall-clock = "120s"
-cpus = 2
-memory = "2GiB"
-pids = 256
-max-output-bytes = "1MiB"
-
+    const AFFINE_GRADING_TOML: &str = r#"
 [scoring]
 formula = "affine"
 max-sum = 20.0
@@ -351,7 +365,7 @@ scale-max = 7.0
     }
 
     #[test]
-    fn parses_a_sum_formula_spec() {
+    fn parses_a_spec() {
         let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
         assert_eq!(spec.assignment.id, "hw3");
         assert_eq!(spec.build_limits.memory, ByteSize(2 * 1024 * 1024 * 1024));
@@ -360,14 +374,38 @@ scale-max = 7.0
             Duration(std::time::Duration::from_secs(120))
         );
         assert_eq!(spec.build_limits.max_output_bytes, ByteSize(1024 * 1024));
-        assert_eq!(spec.scoring.formula, ScoringFormula::Sum { base: 1.0 });
+    }
+
+    /// Scoring and late penalty live in the private `grading.toml`; left in
+    /// the spec they'd be published to students.
+    #[test]
+    fn spec_rejects_grading_tables() {
+        for table in [
+            SUM_GRADING_TOML,
+            "[late-penalty]\nformula = \"linear\"\nrate = 0.1\n",
+        ] {
+            let toml = format!("{PUBLIC_TOML}\n{table}");
+            assert!(toml::from_str::<Spec>(&toml).is_err());
+        }
     }
 
     #[test]
-    fn parses_an_affine_formula_spec() {
-        let spec: Spec = toml::from_str(AFFINE_TOML).unwrap();
+    fn spec_rejects_unknown_fields() {
+        let toml = PUBLIC_TOML.replace("cpus = 2", "cpus = 2\ncpu = 2");
+        assert!(toml::from_str::<Spec>(&toml).is_err());
+    }
+
+    #[test]
+    fn parses_a_sum_formula() {
+        let grading: Grading = toml::from_str(SUM_GRADING_TOML).unwrap();
+        assert_eq!(grading.scoring.formula, ScoringFormula::Sum { base: 1.0 });
+    }
+
+    #[test]
+    fn parses_an_affine_formula() {
+        let grading: Grading = toml::from_str(AFFINE_GRADING_TOML).unwrap();
         assert_eq!(
-            spec.scoring.formula,
+            grading.scoring.formula,
             ScoringFormula::Affine {
                 max_sum: 20.0,
                 scale_min: 1.0,
@@ -378,33 +416,34 @@ scale-max = 7.0
 
     #[test]
     fn affine_formula_missing_a_required_field_is_a_clear_parse_error() {
-        let toml = AFFINE_TOML.replace("max-sum = 20.0\n", "");
-        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+        let toml = AFFINE_GRADING_TOML.replace("max-sum = 20.0\n", "");
+        let result: std::result::Result<Grading, _> = toml::from_str(&toml);
         assert!(result.is_err());
     }
 
     #[test]
     fn unknown_formula_is_a_clear_parse_error() {
-        let toml = PUBLIC_TOML.replace(
+        let toml = SUM_GRADING_TOML.replace(
             "formula = \"sum\"\nbase = 1.0",
             "formula = \"geometric-mean\"",
         );
-        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+        let result: std::result::Result<Grading, _> = toml::from_str(&toml);
         assert!(result.is_err());
     }
 
     #[test]
     fn late_penalty_is_absent_by_default() {
-        let spec: Spec = toml::from_str(PUBLIC_TOML).unwrap();
-        assert!(spec.late_penalty.is_none());
+        let grading: Grading = toml::from_str(SUM_GRADING_TOML).unwrap();
+        assert!(grading.late_penalty.is_none());
     }
 
     #[test]
     fn parses_a_linear_late_penalty_with_defaulted_grace_and_cap() {
-        let toml = format!("{PUBLIC_TOML}\n[late-penalty]\nformula = \"linear\"\nrate = 0.1\n");
-        let spec: Spec = toml::from_str(&toml).unwrap();
+        let toml =
+            format!("{SUM_GRADING_TOML}\n[late-penalty]\nformula = \"linear\"\nrate = 0.1\n");
+        let grading: Grading = toml::from_str(&toml).unwrap();
         assert_eq!(
-            spec.late_penalty.unwrap().formula,
+            grading.late_penalty.unwrap().formula,
             LatePenaltyFormula::Linear {
                 rate: 0.1,
                 grace: jiff::SignedDuration::ZERO,
@@ -416,11 +455,11 @@ scale-max = 7.0
     #[test]
     fn parses_a_linear_late_penalty_with_an_explicit_grace_and_cap() {
         let toml = format!(
-            "{PUBLIC_TOML}\n[late-penalty]\nformula = \"linear\"\nrate = 0.1\ngrace = \"1h\"\nmax-penalty = 0.5\n"
+            "{SUM_GRADING_TOML}\n[late-penalty]\nformula = \"linear\"\nrate = 0.1\ngrace = \"1h\"\nmax-penalty = 0.5\n"
         );
-        let spec: Spec = toml::from_str(&toml).unwrap();
+        let grading: Grading = toml::from_str(&toml).unwrap();
         assert_eq!(
-            spec.late_penalty.unwrap().formula,
+            grading.late_penalty.unwrap().formula,
             LatePenaltyFormula::Linear {
                 rate: 0.1,
                 grace: jiff::SignedDuration::from_hours(1),
@@ -432,8 +471,8 @@ scale-max = 7.0
     #[test]
     fn unknown_late_penalty_formula_is_a_clear_parse_error() {
         let toml =
-            format!("{PUBLIC_TOML}\n[late-penalty]\nformula = \"exponential\"\nrate = 0.1\n");
-        let result: std::result::Result<Spec, _> = toml::from_str(&toml);
+            format!("{SUM_GRADING_TOML}\n[late-penalty]\nformula = \"exponential\"\nrate = 0.1\n");
+        let result: std::result::Result<Grading, _> = toml::from_str(&toml);
         assert!(result.is_err());
     }
 

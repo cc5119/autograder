@@ -5,7 +5,7 @@
 //! shape.
 
 use autograder::package::publish::publish;
-use autograder::spec::SPEC_FILE;
+use autograder::spec::{GRADING_FILE, SPEC_FILE};
 use autograder::{error::Error, package::PublishMode};
 
 use crate::common::{library_package, write};
@@ -90,6 +90,19 @@ fn publish_ships_the_spec_file_verbatim_under_the_same_name() {
     let source = std::fs::read_to_string(assignment_dir.path().join(SPEC_FILE)).unwrap();
     let shipped = std::fs::read_to_string(out_dir.path().join(SPEC_FILE)).unwrap();
     assert_eq!(shipped, source);
+}
+
+#[test]
+fn publish_never_ships_the_grading_policy() {
+    let assignment_dir = tempfile::tempdir().unwrap();
+    library_package(assignment_dir.path(), "hw3");
+    assert!(assignment_dir.path().join(GRADING_FILE).is_file());
+
+    for mode in [PublishMode::Starter, PublishMode::Solution] {
+        let out_dir = tempfile::tempdir().unwrap();
+        publish(assignment_dir.path(), out_dir.path(), mode).unwrap();
+        assert!(!out_dir.path().join(GRADING_FILE).exists());
+    }
 }
 
 #[test]

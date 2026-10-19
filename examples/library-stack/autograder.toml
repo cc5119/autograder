@@ -1,6 +1,5 @@
 [assignment]
 id = "library-stack"
-name = "Stack (library example)"
 deadline = "2099-01-01T00:00:00[UTC]"
 harness = "harness"
 cargo-lock-sha256 = "df010df7f6ca240b0fd5d292440e4665b16ef4ff761464701f866f801bcedce9"
@@ -14,7 +13,3 @@ cpus = 2
 memory = "1GiB"
 pids = 128
 max-output-bytes = "64KiB"
-
-[scoring]
-formula = "sum"
-base = 0.0

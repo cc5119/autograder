@@ -7,7 +7,7 @@ use crate::model::EvaluationResult;
 use crate::pipeline::{self, grade};
 use crate::report::timing::{DateCheck, Lateness};
 use crate::report::{csv, summary};
-use crate::spec::Spec;
+use crate::spec::{Grading, Spec};
 use crate::submissions::read_fetch_record;
 
 /// Where `evaluate_batch` persisted results, and where this command writes
@@ -18,12 +18,13 @@ const GRADES_DIR: &str = ".grades";
 const GRADES_FILE: &str = "grades.csv";
 
 /// Computes scores from persisted `EvaluationResult`s (no student code, no
-/// evaluator) -- applies `spec.scoring` fresh from disk every time, so
+/// evaluator) -- applies `grading.toml` fresh from disk every time, so
 /// editing it always reflects the current policy, never one baked in
 /// earlier. Writes a single gradebook CSV to
 /// `<submissions>/.grades/grades.csv`.
 pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
     let spec = Spec::load(assignment)?;
+    let grading = Grading::load(assignment)?;
     let evals = latest_evals(submissions)?;
 
     // One read per student, for the roster's extra columns and for when
@@ -41,7 +42,12 @@ pub fn run(assignment: &Path, submissions: &Path) -> Result<()> {
         .zip(records.iter())
         .map(|(eval, record)| {
             let late_by = record.as_ref().and_then(|r| r.late_by());
-            grade::grade(eval, &spec.scoring, spec.late_penalty.as_ref(), late_by)
+            grade::grade(
+                eval,
+                &grading.scoring,
+                grading.late_penalty.as_ref(),
+                late_by,
+            )
         })
         .collect();
 
@@ -134,12 +140,11 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    fn spec_toml(scoring_block: &str) -> String {
+    fn spec_toml() -> String {
         format!(
             r#"
 [assignment]
 id = "hw3"
-name = "Binary search tree"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{sha}"
@@ -153,8 +158,6 @@ cpus = 1
 memory = "512MiB"
 pids = 64
 max-output-bytes = "64KiB"
-
-{scoring_block}
 "#,
             sha = "0".repeat(64)
         )
@@ -197,7 +200,11 @@ max-output-bytes = "64KiB"
 
         write(
             &assignment_dir.path().join(crate::spec::SPEC_FILE),
-            &spec_toml("[scoring]\nformula = \"sum\"\nbase = 0.0"),
+            &spec_toml(),
+        );
+        write(
+            &assignment_dir.path().join(crate::spec::GRADING_FILE),
+            "[scoring]\nformula = \"sum\"\nbase = 0.0",
         );
         write_json(
             &submissions_dir.path().join(".eval/alice/run-1.eval.json"),
@@ -212,14 +219,25 @@ max-output-bytes = "64KiB"
         assert!(gradebook.contains("alice,1"));
 
         write(
-            &assignment_dir.path().join(crate::spec::SPEC_FILE),
-            &spec_toml(
-                "[scoring]\nformula = \"affine\"\nmax-sum = 2.0\nscale-min = 0.0\nscale-max = 10.0",
-            ),
+            &assignment_dir.path().join(crate::spec::GRADING_FILE),
+            "[scoring]\nformula = \"affine\"\nmax-sum = 2.0\nscale-min = 0.0\nscale-max = 10.0",
         );
         run(assignment_dir.path(), submissions_dir.path()).unwrap();
         let gradebook =
             std::fs::read_to_string(submissions_dir.path().join(".grades/grades.csv")).unwrap();
         assert!(gradebook.contains("alice,5"));
+    }
+
+    #[test]
+    fn grade_requires_a_grading_file() {
+        let assignment_dir = tempfile::tempdir().unwrap();
+        let submissions_dir = tempfile::tempdir().unwrap();
+        write(
+            &assignment_dir.path().join(crate::spec::SPEC_FILE),
+            &spec_toml(),
+        );
+
+        let err = run(assignment_dir.path(), submissions_dir.path()).unwrap_err();
+        assert!(matches!(err, crate::error::Error::InvalidSpec(_)));
     }
 }

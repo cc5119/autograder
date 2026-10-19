@@ -19,7 +19,11 @@ use autograder::model::{
 };
 use autograder::pipeline::evaluate_batch;
 use autograder::pipeline::evaluator::{Evaluator, StubEvaluator};
-use autograder::spec::Spec;
+use autograder::spec::{Scoring, ScoringFormula, Spec};
+
+const SUM: Scoring = Scoring {
+    formula: ScoringFormula::Sum { base: 0.0 },
+};
 
 use crate::common::write;
 
@@ -71,7 +75,6 @@ fn workspace_spec(assignment_dir: &std::path::Path, id: &str, members: &[&str]) 
         r#"
 [assignment]
 id = "{id}"
-name = "Binary search tree"
 deadline = "2026-02-14T23:59:59-08:00[America/Los_Angeles]"
 harness = "harness"
 cargo-lock-sha256 = "{}"
@@ -85,10 +88,6 @@ cpus = 2
 memory = "2GiB"
 pids = 256
 max-output-bytes = "1MiB"
-
-[scoring]
-formula = "sum"
-base = 0.0
 "#,
         autograder::deps::cargo_lock::sha256_hex(&lock)
     );
@@ -146,7 +145,7 @@ fn evaluate_batch_runs_end_to_end_over_a_flat_submissions_dir() {
 
     assert_eq!(evals.len(), 1);
     assert_eq!(evals[0].github_user, "alice");
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring, None, None);
+    let grade = autograder::pipeline::grade::grade(&evals[0], &SUM, None, None);
     assert_eq!(grade.score(), Some(1.0));
 
     let persisted = persisted_evals(submissions_dir.path(), "alice");
@@ -307,7 +306,7 @@ fn evaluate_batch_scores_zero_for_a_disallowed_dependency_without_running_the_ev
     .evals;
 
     assert_eq!(evals.len(), 1);
-    let grade = autograder::pipeline::grade::grade(&evals[0], &spec.scoring, None, None);
+    let grade = autograder::pipeline::grade::grade(&evals[0], &SUM, None, None);
     assert_eq!(grade.score(), None);
 
     let persisted = persisted_evals(submissions_dir.path(), "alice");

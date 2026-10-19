@@ -1,0 +1,3 @@
+[scoring]
+formula = "sum"
+base = 0.0

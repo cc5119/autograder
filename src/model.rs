@@ -248,10 +248,10 @@ pub struct Grade {
 #[serde(rename_all = "snake_case")]
 pub enum GradeOutcome {
     Scored {
-        /// After `spec.scoring` and, for a late submission, after
-        /// `spec.late_penalty` has already been deducted.
+        /// After `grading.scoring` and, for a late submission, after
+        /// `grading.late_penalty` has already been deducted.
         score: f64,
-        /// The raw sum of what the tests reported, before `spec.scoring`
+        /// The raw sum of what the tests reported, before `grading.scoring`
         /// maps it onto the grade scale -- the number `max-sum` is
         /// measured against. Never docked for lateness.
         points: f64,

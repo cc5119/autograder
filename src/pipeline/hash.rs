@@ -3,8 +3,9 @@
 //! Covers both halves of what an evaluation is computed from: the student's
 //! checkout, and the instructor material that judges it (the same files
 //! `package_rules` copies, plus the spec). Hashing only the submission
-//! would leave every result stale-blind to a fixed test or a changed
-//! scoring policy -- the harness is as much an input as the student's code.
+//! would leave every result stale-blind to a fixed test -- the harness is as
+//! much an input as the student's code. The grading policy (`grading.toml`)
+//! is not: `grade` applies it to already-persisted results.
 //!
 //! `.git` is excluded: its internals (pack ordering, ref logs) differ
 //! between clones of the same commit, so including it would make an
@@ -84,16 +85,10 @@ pub fn input_hash(checkout_dir: &Path, assignment_dir: &Path, spec: &Spec) -> Re
 }
 
 /// The parts of the spec an evaluation actually depends on, rendered
-/// canonically. Deliberately not the file's bytes:
-///
-/// * `[scoring]` is applied by `commands::grade` to an already-persisted
-///   result, fresh from disk every run -- retuning a formula changes
-///   scores without changing what any evaluation would produce.
-/// * `[assignment].deadline` is the Fetch stage's input; by the time a
-///   checkout is on disk, evaluate never consults it.
-///
-/// Hashing either would make an edit that provably cannot change an
-/// `EvaluationResult` invalidate every one of them.
+/// canonically. Deliberately not the file's bytes: `[assignment].deadline`
+/// is the Fetch stage's input; by the time a checkout is on disk, evaluate
+/// never consults it. Hashing it would make an edit that provably cannot
+/// change an `EvaluationResult` invalidate every one of them.
 fn spec_digest(spec: &Spec) -> String {
     let limits = &spec.build_limits;
     format!(
@@ -125,12 +120,10 @@ mod tests {
     /// A minimal assignment dir: the spec plus the manifests and harness
     /// the instructor half of the hash reads.
     fn assignment(dir: &Path, harness_test: &str) -> Spec {
-        assignment_with(dir, harness_test, "30s", "formula = \"sum\"\nbase = 0.0")
+        assignment_with(dir, harness_test, "30s")
     }
 
-    /// `wall_clock` and `scoring` are the two knobs the tests below vary:
-    /// one is an evaluation input and one isn't.
-    fn assignment_with(dir: &Path, harness_test: &str, wall_clock: &str, scoring: &str) -> Spec {
+    fn assignment_with(dir: &Path, harness_test: &str, wall_clock: &str) -> Spec {
         write(
             &dir.join(SPEC_FILE),
             &format!(
@@ -150,9 +143,6 @@ cpus = 1
 memory = "512MiB"
 pids = 64
 max-output-bytes = "64KiB"
-
-[scoring]
-{scoring}
 "#
             ),
         );
@@ -263,36 +253,6 @@ max-output-bytes = "64KiB"
         assert_eq!(before, after);
     }
 
-    /// `grade` applies the scoring policy to an already-persisted result,
-    /// so retuning a formula must not invalidate a single evaluation.
-    #[test]
-    fn changing_the_scoring_policy_does_not_change_the_hash() {
-        let checkout = tempfile::tempdir().unwrap();
-        let assignment_dir = tempfile::tempdir().unwrap();
-        write(&checkout.path().join("hw3/src/lib.rs"), "pub fn f() {}");
-
-        let before = {
-            let spec = assignment_with(
-                assignment_dir.path(),
-                "fn t() {}",
-                "30s",
-                "formula = \"sum\"\nbase = 0.0",
-            );
-            input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap()
-        };
-        let after = {
-            let spec = assignment_with(
-                assignment_dir.path(),
-                "fn t() {}",
-                "30s",
-                "formula = \"affine\"\nmax-sum = 9.0\nscale-min = 1.0\nscale-max = 7.0",
-            );
-            input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap()
-        };
-
-        assert_eq!(before, after);
-    }
-
     /// A build limit is a real evaluation input: the same submission can
     /// pass under a longer wall clock and time out under a shorter one.
     #[test]
@@ -306,12 +266,7 @@ max-output-bytes = "64KiB"
             input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap()
         };
         let after = {
-            let spec = assignment_with(
-                assignment_dir.path(),
-                "fn t() {}",
-                "120s",
-                "formula = \"sum\"\nbase = 0.0",
-            );
+            let spec = assignment_with(assignment_dir.path(), "fn t() {}", "120s");
             input_hash(checkout.path(), assignment_dir.path(), &spec).unwrap()
         };
 
